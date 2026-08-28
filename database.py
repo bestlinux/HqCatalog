@@ -84,6 +84,7 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
         lido TEXT DEFAULT 'Não Lido',
         avaliacao INTEGER DEFAULT 0,
         capa TEXT DEFAULT '',
+        resenha TEXT DEFAULT '',
         criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """
@@ -109,6 +110,8 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
                     client.execute("ALTER TABLE hqs ADD COLUMN capa TEXT DEFAULT ''")
                     if "capa_url" in cols:
                         client.execute("UPDATE hqs SET capa = capa_url WHERE (capa IS NULL OR capa = '') AND capa_url IS NOT NULL")
+                if "resenha" not in cols:
+                    client.execute("ALTER TABLE hqs ADD COLUMN resenha TEXT DEFAULT ''")
             except Exception:
                 pass
         finally:
@@ -135,6 +138,8 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
                 cursor.execute("ALTER TABLE hqs ADD COLUMN capa TEXT DEFAULT ''")
                 if "capa_url" in columns:
                     cursor.execute("UPDATE hqs SET capa = capa_url WHERE (capa IS NULL OR capa = '') AND capa_url IS NOT NULL")
+            if "resenha" not in columns:
+                cursor.execute("ALTER TABLE hqs ADD COLUMN resenha TEXT DEFAULT ''")
 
             conn.commit()
         finally:
@@ -172,8 +177,9 @@ def salvar_hqs(
             avaliacao_raw = 0
         avaliacao_val = max(0, min(5, avaliacao_raw))
         capa = (item.get("capa") or item.get("capa_url") or "").strip()
+        resenha = (item.get("resenha") or "").strip()
 
-        registros.append((titulo, edicao, editora, genero, escritor, ilustrador, prateleira_val, lido_val, avaliacao_val, capa))
+        registros.append((titulo, edicao, editora, genero, escritor, ilustrador, prateleira_val, lido_val, avaliacao_val, capa, resenha))
 
     if not registros:
         return 0
@@ -184,8 +190,8 @@ def salvar_hqs(
             for reg in registros:
                 client.execute(
                     """
-                    INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, capa)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, capa, resenha)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     list(reg)
                 )
@@ -197,8 +203,8 @@ def salvar_hqs(
             cursor = conn.cursor()
             cursor.executemany(
                 """
-                INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, capa)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, capa, resenha)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 registros,
             )
@@ -220,7 +226,7 @@ def listar_todas_hqs(
     """
     Consulta o banco e retorna todas as HQs em formato pandas DataFrame ou lista de dicts.
     """
-    query = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, criado_em FROM hqs WHERE 1=1"
+    query = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resenha, criado_em FROM hqs WHERE 1=1"
     params = []
 
     if prateleira_filtro and prateleira_filtro != "Todas":
@@ -241,8 +247,8 @@ def listar_todas_hqs(
 
     if busca and busca.strip():
         termo = f"%{busca.strip()}%"
-        query += " AND (titulo LIKE ? OR editora LIKE ? OR edicao LIKE ? OR genero LIKE ? OR escritor LIKE ? OR ilustrador LIKE ?)"
-        params.extend([termo, termo, termo, termo, termo, termo])
+        query += " AND (titulo LIKE ? OR editora LIKE ? OR edicao LIKE ? OR genero LIKE ? OR escritor LIKE ? OR ilustrador LIKE ? OR resenha LIKE ?)"
+        params.extend([termo, termo, termo, termo, termo, termo, termo])
 
     query += " ORDER BY id DESC"
 
@@ -403,7 +409,7 @@ def deletar_hq(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> bool:
 
 def obter_hq_por_id(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict[str, Any]]:
     """Busca os dados de uma HQ específica pelo seu ID."""
-    sql = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, criado_em FROM hqs WHERE id = ?"
+    sql = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resenha, criado_em FROM hqs WHERE id = ?"
     if is_using_turso():
         client = get_turso_client()
         try:
@@ -438,6 +444,7 @@ def atualizar_hq(
     lido: str = "Não Lido",
     avaliacao: int = 0,
     capa: str = "",
+    resenha: str = "",
     db_path: str = DB_DEFAULT_PATH
 ) -> bool:
     """Atualiza os campos de um registro de HQ existente."""
@@ -448,7 +455,7 @@ def atualizar_hq(
 
     sql = """
     UPDATE hqs
-    SET titulo = ?, edicao = ?, editora = ?, genero = ?, escritor = ?, ilustrador = ?, prateleira = ?, lido = ?, avaliacao = ?, capa = ?
+    SET titulo = ?, edicao = ?, editora = ?, genero = ?, escritor = ?, ilustrador = ?, prateleira = ?, lido = ?, avaliacao = ?, capa = ?, resenha = ?
     WHERE id = ?
     """
     params = [
@@ -462,6 +469,7 @@ def atualizar_hq(
         lido.strip(),
         val_avaliacao,
         capa.strip(),
+        resenha.strip(),
         hq_id
     ]
 
@@ -536,6 +544,28 @@ def definir_avaliacao(hq_id: int, avaliacao: int, db_path: str = DB_DEFAULT_PATH
             conn.close()
 
 
+def definir_resenha(hq_id: int, resenha: str, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """Atualiza diretamente a resenha/opinião de uma HQ."""
+    sql = "UPDATE hqs SET resenha = ? WHERE id = ?"
+    resenha_clean = (resenha or "").strip()
+    if is_using_turso():
+        client = get_turso_client()
+        try:
+            res = client.execute(sql, [resenha_clean, hq_id])
+            return res.rows_affected > 0
+        finally:
+            client.close()
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (resenha_clean, hq_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+
 def alternar_status_leitura(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[str]:
     """Alterna rapidamente o status de leitura entre 'Lido' e 'Não Lido'."""
     hq = obter_hq_por_id(hq_id, db_path)
@@ -555,6 +585,7 @@ def alternar_status_leitura(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optio
         lido=novo_status,
         avaliacao=int(hq.get("avaliacao") or 0),
         capa=hq.get("capa") or "",
+        resenha=hq.get("resenha") or "",
         db_path=db_path
     )
     return novo_status

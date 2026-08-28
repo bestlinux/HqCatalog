@@ -209,5 +209,28 @@ class TestHqCatalog(unittest.TestCase):
         self.assertTrue(auth.verificar_credenciais("colecionador", "batman2026"))
         self.assertFalse(auth.verificar_credenciais("admin", "admin123"))
 
+    def test_resenha_functionality(self):
+        # 1. Salvar com resenha inicial
+        database.salvar_hqs([
+            {
+                "titulo": "Watchmen",
+                "edicao": "Edição Definitiva",
+                "editora": "Panini",
+                "resenha": "Uma obra-prima absoluta dos quadrinhos."
+            }
+        ], "Estante 1", self.test_db)
+
+        hq = database.obter_hq_por_id(1, self.test_db)
+        self.assertEqual(hq["resenha"], "Uma obra-prima absoluta dos quadrinhos.")
+
+        # 2. Atualizar resenha diretamente
+        database.definir_resenha(1, "Roteiro genial de Alan Moore e arte impecável de Dave Gibbons.", self.test_db)
+        hq_updated = database.obter_hq_por_id(1, self.test_db)
+        self.assertEqual(hq_updated["resenha"], "Roteiro genial de Alan Moore e arte impecável de Dave Gibbons.")
+
+        # 3. Busca por texto dentro da resenha
+        df_busca = database.listar_todas_hqs(busca="Alan Moore", db_path=self.test_db)
+        self.assertEqual(len(df_busca), 1)
+
 if __name__ == "__main__":
     unittest.main()

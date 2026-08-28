@@ -267,6 +267,132 @@ if st.session_state["ultimos_itens_salvos"]:
 
 st.markdown("---")
 
+# -------------------------------------------------------------
+# MODAIS (DIALOGS) DE AÇÕES RÁPIDAS
+# -------------------------------------------------------------
+@st.dialog("✏️ Editar HQ")
+def dialog_editar_hq():
+    id_para_editar = st.number_input("Informe o ID da HQ que deseja editar:", min_value=1, step=1, key="dlg_input_edit_id")
+    hq_atual = database.obter_hq_por_id(int(id_para_editar))
+    if hq_atual:
+        st.caption(f"Editando registro **#{hq_atual['id']}** cadastrado em `{hq_atual['criado_em']}`")
+        if hq_atual.get("capa"):
+            st.image(hq_atual["capa"], width=130, caption="Capa Atual")
+        with st.form("form_edicao_dlg"):
+            novo_titulo = st.text_input("Título:", value=hq_atual["titulo"])
+            nova_edicao = st.text_input("Edição / Volume:", value=hq_atual["edicao"] or "")
+            nova_editora = st.text_input("Editora:", value=hq_atual["editora"] or "")
+            novo_genero = st.text_input("Gênero:", value=hq_atual.get("genero") or "Outro")
+            novo_escritor = st.text_input("Escritor / Roteirista:", value=hq_atual.get("escritor") or "Não informado")
+            novo_ilustrador = st.text_input("Ilustrador / Arte:", value=hq_atual.get("ilustrador") or "Não informado")
+            nova_prateleira = st.text_input("Prateleira:", value=hq_atual["prateleira"] or "")
+            status_atual_index = 1 if hq_atual.get("lido") == "Lido" else 0
+            novo_status_leitura = st.selectbox("Status de Leitura:", options=["Não Lido", "Lido"], index=status_atual_index)
+            nota_atual = int(hq_atual.get("avaliacao") or 0)
+            novo_avaliacao = st.selectbox("Avaliação (1 a 5 estrelas):", options=[0, 1, 2, 3, 4, 5], index=nota_atual, format_func=lambda x: "⚪ Sem Avaliação (0)" if x == 0 else f"{'⭐' * x} ({x} de 5)")
+            nova_resenha = st.text_area("✍️ Resenha / O que achou da HQ:", value=hq_atual.get("resenha") or "", height=100)
+            col_btn1, col_btn2 = st.columns([1, 1])
+            with col_btn1:
+                btn_salvar_edicao = st.form_submit_button("💾 Salvar Alterações", type="primary", use_container_width=True)
+            with col_btn2:
+                btn_cancelar = st.form_submit_button("❌ Fechar", type="secondary", use_container_width=True)
+            if btn_salvar_edicao:
+                if not novo_titulo.strip(): st.error("O título da HQ não pode ficar vazio.")
+                else:
+                    if database.atualizar_hq(int(id_para_editar), novo_titulo, nova_edicao, nova_editora, novo_genero, novo_escritor, novo_ilustrador, nova_prateleira, novo_status_leitura, novo_avaliacao, hq_atual.get("capa") or "", nova_resenha):
+                        st.success(f"HQ #{id_para_editar} atualizada com sucesso!"); st.rerun()
+                    else: st.error("Erro ao salvar alterações no banco de dados.")
+            if btn_cancelar: st.rerun()
+    else:
+        st.info(f"Nenhum quadrinho com o ID #{id_para_editar} foi encontrado.")
+        if st.button("❌ Fechar", key="btn_close_edit_empty", use_container_width=True): st.rerun()
+
+@st.dialog("📷 Cadastrar / Alterar Foto da Capa")
+def dialog_cadastrar_capa():
+    id_para_capa = st.number_input("Informe o ID da HQ:", min_value=1, step=1, key="dlg_input_capa_id")
+    hq_capa = database.obter_hq_por_id(int(id_para_capa))
+    if hq_capa:
+        st.write(f"HQ: **{hq_capa['titulo']}** ({hq_capa.get('edicao') or 'Sem Edição'})")
+        if hq_capa.get("capa"):
+            st.image(hq_capa["capa"], width=140, caption="Capa Atual Cadastrada")
+            if st.button("🗑️ Remover Capa Atual", key="dlg_btn_remove_capa", type="secondary"):
+                database.remover_capa_hq(int(id_para_capa)); st.success("Capa removida!"); st.rerun()
+        st.markdown("---")
+        tab_capa_up, tab_capa_live = st.tabs(["📁 Câmera Nativa / Upload", "📷 Câmera Web ao Vivo"])
+        foto_capa_selecionada = None
+        with tab_capa_up:
+            up_arq = st.file_uploader("Tire uma foto ou selecione a capa:", type=["jpg", "jpeg", "png", "webp"], key="dlg_uploader_capa")
+            if up_arq: foto_capa_selecionada = Image.open(up_arq)
+        with tab_capa_live:
+            cam_arq = st.camera_input("Fotografar capa:", key="dlg_camera_capa")
+            if cam_arq: foto_capa_selecionada = Image.open(cam_arq)
+        if foto_capa_selecionada is not None:
+            st.image(foto_capa_selecionada, width=160, caption="Pré-visualização")
+            col_sc1, col_sc2 = st.columns(2)
+            with col_sc1:
+                if st.button("💾 Salvar Foto da Capa", type="primary", use_container_width=True, key="dlg_btn_salvar_capa"):
+                    capa_processada = processar_imagem_capa(foto_capa_selecionada)
+                    if database.definir_capa(int(id_para_capa), capa_processada): st.success("Capa salva!"); st.rerun()
+            with col_sc2:
+                if st.button("❌ Fechar", key="dlg_btn_cancel_capa", use_container_width=True): st.rerun()
+        elif st.button("❌ Fechar", key="dlg_btn_close_capa_only", use_container_width=True): st.rerun()
+    else:
+        st.info(f"Nenhum quadrinho com o ID #{id_para_capa} encontrado.");
+        if st.button("❌ Fechar", key="dlg_btn_close_capa_empty", use_container_width=True): st.rerun()
+
+@st.dialog("✍️ Resenha / O que achou da HQ")
+def dialog_resenha():
+    id_para_resenha = st.number_input("Informe o ID da HQ:", min_value=1, step=1, key="dlg_input_resenha_id")
+    hq_res = database.obter_hq_por_id(int(id_para_resenha))
+    if hq_res:
+        texto_resenha = st.text_area("Sua Resenha:", value=hq_res.get("resenha") or "", height=130, key="dlg_area_resenha")
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            if st.button("💾 Salvar Resenha", type="primary", use_container_width=True, key="dlg_btn_save_resenha"):
+                database.definir_resenha(int(id_para_resenha), texto_resenha); st.success("Resenha salva!"); st.rerun()
+        with col_r2:
+            if st.button("❌ Fechar", key="dlg_btn_cancel_resenha", use_container_width=True): st.rerun()
+    else:
+        st.info("Nenhum quadrinho com o ID informado encontrado.")
+        if st.button("❌ Fechar", key="dlg_btn_close_res_empty", use_container_width=True): st.rerun()
+
+@st.dialog("⭐ Avaliar HQ")
+def dialog_avaliar_hq():
+    id_para_avaliar = st.number_input("Informe o ID da HQ:", min_value=1, step=1, key="dlg_input_rate_id")
+    hq_rate = database.obter_hq_por_id(int(id_para_avaliar))
+    if hq_rate:
+        nota_atual = int(hq_rate.get("avaliacao") or 0)
+        nova_nota = st.selectbox("Selecione a Nota:", options=[0, 1, 2, 3, 4, 5], index=nota_atual, key="dlg_sel_fast_nota", format_func=lambda x: "⚪ Sem Avaliação (0)" if x == 0 else f"{'⭐' * x} ({x} de 5)")
+        col_av1, col_av2 = st.columns(2)
+        with col_av1:
+            if st.button("💾 Salvar Nota", type="primary", use_container_width=True, key="dlg_btn_save_nota"):
+                database.definir_avaliacao(int(id_para_avaliar), nova_nota); st.success("Avaliação salva!"); st.rerun()
+        with col_av2:
+            if st.button("❌ Fechar", key="dlg_btn_cancel_nota", use_container_width=True): st.rerun()
+    else:
+        st.info("Nenhum quadrinho encontrado.");
+        if st.button("❌ Fechar", key="dlg_btn_close_rate_empty", use_container_width=True): st.rerun()
+
+@st.dialog("📖 Alternar Status de Leitura")
+def dialog_alternar_leitura():
+    id_para_toggle = st.number_input("Informe o ID da HQ:", min_value=1, step=1, key="dlg_input_toggle_id")
+    hq_toggle = database.obter_hq_por_id(int(id_para_toggle))
+    if hq_toggle:
+        novo = database.alternar_status_leitura(int(id_para_toggle))
+        st.success(f"Status alterado para **{novo}**!"); st.rerun()
+    else:
+        st.info("Nenhum quadrinho encontrado.");
+        if st.button("❌ Fechar", key="dlg_btn_close_toggle_empty", use_container_width=True): st.rerun()
+
+@st.dialog("🗑️ Excluir HQ")
+def dialog_excluir_hq():
+    id_para_excluir = st.number_input("Informe o ID da HQ a excluir:", min_value=1, step=1, key="dlg_input_delete_id")
+    if database.obter_hq_por_id(int(id_para_excluir)):
+        if st.button("🗑️ Confirmar Exclusão", type="primary", use_container_width=True, key="dlg_btn_confirm_del"):
+            database.deletar_hq(int(id_para_excluir)); st.success("Excluído!"); st.rerun()
+    else:
+        st.info("HQ não encontrada.");
+        if st.button("❌ Fechar", key="dlg_btn_close_del_empty", use_container_width=True): st.rerun()
 
 # -------------------------------------------------------------
 # SEÇÃO 2: VISUALIZAÇÃO DO INVENTÁRIO COMPLETO
@@ -342,6 +468,10 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                     step=1,
                     format="%d ⭐"
                 ),
+                "resenha": st.column_config.TextColumn(
+                    "Resenha / Opinião",
+                    help="Sua resenha ou opinião pessoal sobre a HQ"
+                ),
                 "criado_em": st.column_config.TextColumn("Data do Cadastro", disabled=True)
             },
             key="tabela_inventario_editavel"
@@ -372,7 +502,7 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                     orig_match = df_hqs[df_hqs["id"] == hq_id_val]
                     if not orig_match.empty:
                         orig = orig_match.iloc[0]
-                        campos = ["titulo", "edicao", "editora", "genero", "escritor", "ilustrador", "prateleira", "lido", "avaliacao", "capa"]
+                        campos = ["titulo", "edicao", "editora", "genero", "escritor", "ilustrador", "prateleira", "lido", "avaliacao", "capa", "resenha"]
                         if any(str(row_editada.get(c, "")) != str(orig.get(c, "")) for c in campos):
                             database.atualizar_hq(
                                 hq_id=hq_id_val,
@@ -385,7 +515,8 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                                 prateleira=str(row_editada["prateleira"] or ""),
                                 lido=str(row_editada["lido"] or "Não Lido"),
                                 avaliacao=int(row_editada.get("avaliacao") or 0),
-                                capa=str(row_editada.get("capa") or "")
+                                capa=str(row_editada.get("capa") or ""),
+                                resenha=str(row_editada.get("resenha") or "")
                             )
                             linhas_atualizadas += 1
 
@@ -405,207 +536,30 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                 st.caption("💡 **Dicas do Grid:** Dê 2 cliques para editar qualquer campo. Para excluir, marque a linha na caixa de seleção e pressione a tecla `Delete` no teclado ou no ícone da lixeira.")
 
         st.markdown("##### 🛠️ Ações Rápidas no Inventário")
-        col_act_edit, col_act_capa, col_act_rate, col_act_toggle, col_act_del = st.columns(5)
+        col_act_edit, col_act_capa, col_act_resenha, col_act_rate, col_act_toggle, col_act_del = st.columns(6)
 
-        # -------------------------------------------------------------
-        # BOTÃO E POPOVER DE EDIÇÃO
-        # -------------------------------------------------------------
         with col_act_edit:
-            with st.popover("✏️ Editar HQ por ID", use_container_width=True):
-                st.markdown("#### Editar Dados da HQ")
-                id_para_editar = st.number_input(
-                    "Informe o ID da HQ que deseja editar:",
-                    min_value=1,
-                    step=1,
-                    key="input_edit_id"
-                )
+            if st.button("✏️ Editar HQ", use_container_width=True, help="Abrir formulário de edição por ID"):
+                dialog_editar_hq()
 
-                hq_atual = database.obter_hq_por_id(int(id_para_editar))
-
-                if hq_atual:
-                    st.caption(f"Editando registro **#{hq_atual['id']}** cadastrado em `{hq_atual['criado_em']}`")
-                    if hq_atual.get("capa"):
-                        st.image(hq_atual["capa"], width=130, caption="Capa Atual")
-
-                    with st.form("form_edicao_hq"):
-                        novo_titulo = st.text_input("Título:", value=hq_atual["titulo"])
-                        nova_edicao = st.text_input("Edição / Volume:", value=hq_atual["edicao"] or "")
-                        nova_editora = st.text_input("Editora:", value=hq_atual["editora"] or "")
-                        novo_genero = st.text_input("Gênero:", value=hq_atual.get("genero") or "Outro")
-                        novo_escritor = st.text_input("Escritor / Roteirista:", value=hq_atual.get("escritor") or "Não informado")
-                        novo_ilustrador = st.text_input("Ilustrador / Arte:", value=hq_atual.get("ilustrador") or "Não informado")
-                        nova_prateleira = st.text_input("Prateleira:", value=hq_atual["prateleira"] or "")
-                        
-                        status_atual_index = 1 if hq_atual.get("lido") == "Lido" else 0
-                        novo_status_leitura = st.selectbox(
-                            "Status de Leitura:",
-                            options=["Não Lido", "Lido"],
-                            index=status_atual_index
-                        )
-
-                        nota_atual = int(hq_atual.get("avaliacao") or 0)
-                        novo_avaliacao = st.selectbox(
-                            "Avaliação (1 a 5 estrelas):",
-                            options=[0, 1, 2, 3, 4, 5],
-                            index=nota_atual,
-                            format_func=lambda x: "⚪ Sem Avaliação (0)" if x == 0 else f"{'⭐' * x} ({x} de 5)"
-                        )
-
-                        btn_salvar_edicao = st.form_submit_button("💾 Salvar Alterações", type="primary", use_container_width=True)
-
-                        if btn_salvar_edicao:
-                            if not novo_titulo.strip():
-                                st.error("O título da HQ não pode ficar vazio.")
-                            else:
-                                if database.atualizar_hq(
-                                    hq_id=int(id_para_editar),
-                                    titulo=novo_titulo,
-                                    edicao=nova_edicao,
-                                    editora=nova_editora,
-                                    genero=novo_genero,
-                                    escritor=novo_escritor,
-                                    ilustrador=novo_ilustrador,
-                                    prateleira=nova_prateleira,
-                                    lido=novo_status_leitura,
-                                    avaliacao=novo_avaliacao,
-                                    capa=hq_atual.get("capa") or ""
-                                ):
-                                    st.success(f"HQ #{id_para_editar} atualizada com sucesso!")
-                                    st.rerun()
-                                else:
-                                    st.error("Erro ao salvar alterações no banco de dados.")
-                else:
-                    st.info(f"Nenhum quadrinho com o ID #{id_para_editar} foi encontrado.")
-
-        # -------------------------------------------------------------
-        # BOTÃO E POPOVER DE CADASTRAR / FOTOGRAFAR CAPA
-        # -------------------------------------------------------------
         with col_act_capa:
-            with st.popover("📷 Cadastrar Capa", use_container_width=True):
-                st.markdown("#### Cadastrar Foto da Capa")
-                id_para_capa = st.number_input(
-                    "Informe o ID da HQ:",
-                    min_value=1,
-                    step=1,
-                    key="input_capa_id"
-                )
-                hq_capa = database.obter_hq_por_id(int(id_para_capa))
-                if hq_capa:
-                    st.write(f"HQ: **{hq_capa['titulo']}** ({hq_capa.get('edicao') or 'Sem Edição'})")
-                    capa_existente = hq_capa.get("capa")
-                    if capa_existente:
-                        st.image(capa_existente, width=140, caption="Capa Atual Cadastrada")
-                        if st.button("🗑️ Remover Capa Atual", key="btn_remove_capa_indiv", type="secondary"):
-                            database.remover_capa_hq(int(id_para_capa))
-                            st.success("Capa removida com sucesso!")
-                            st.rerun()
+            if st.button("📷 Cadastrar Capa", use_container_width=True, help="Fotografar ou enviar capa por ID"):
+                dialog_cadastrar_capa()
 
-                    st.markdown("---")
-                    st.markdown("##### 📸 Fotografar ou Enviar Capa:")
-                    tab_capa_up, tab_capa_live = st.tabs(["📁 Câmera Nativa / Upload", "📷 Câmera Web ao Vivo"])
-                    
-                    foto_capa_selecionada = None
-                    with tab_capa_up:
-                        up_arq = st.file_uploader(
-                            "Tire uma foto ou selecione a capa:",
-                            type=["jpg", "jpeg", "png", "webp"],
-                            key="uploader_capa_single"
-                        )
-                        if up_arq:
-                            foto_capa_selecionada = Image.open(up_arq)
+        with col_act_resenha:
+            if st.button("✍️ Resenha", use_container_width=True, help="Escrever ou ler resenha por ID"):
+                dialog_resenha()
 
-                    with tab_capa_live:
-                        cam_arq = st.camera_input("Fotografar capa:", key="camera_capa_single")
-                        if cam_arq:
-                            foto_capa_selecionada = Image.open(cam_arq)
-
-                    if foto_capa_selecionada is not None:
-                        st.image(foto_capa_selecionada, width=160, caption="Pré-visualização")
-                        if st.button("💾 Salvar Foto da Capa", type="primary", use_container_width=True, key="btn_confirm_salvar_capa"):
-                            capa_processada = processar_imagem_capa(foto_capa_selecionada)
-                            if database.definir_capa(int(id_para_capa), capa_processada):
-                                st.success(f"🎉 Capa da HQ #{id_para_capa} salva com sucesso!")
-                                st.rerun()
-                            else:
-                                st.error("Erro ao salvar foto da capa.")
-                else:
-                    st.info(f"Nenhum quadrinho com o ID #{id_para_capa} foi encontrado.")
-
-        # -------------------------------------------------------------
-        # BOTÃO E POPOVER PARA AVALIAR HQ (1-CLIQUE)
-        # -------------------------------------------------------------
         with col_act_rate:
-            with st.popover("⭐ Avaliar HQ", use_container_width=True):
-                st.markdown("#### Avaliar HQ (1 a 5)")
-                id_para_avaliar = st.number_input(
-                    "Informe o ID da HQ:",
-                    min_value=1,
-                    step=1,
-                    key="input_rate_id"
-                )
-                hq_rate = database.obter_hq_por_id(int(id_para_avaliar))
-                if hq_rate:
-                    st.write(f"HQ: **{hq_rate['titulo']}**")
-                    nota_atual = int(hq_rate.get("avaliacao") or 0)
-                    st.caption(f"Avaliação atual: {'⭐' * nota_atual if nota_atual > 0 else '⚪ Sem avaliação'}")
-                    nova_nota = st.selectbox(
-                        "Selecione a Nota:",
-                        options=[0, 1, 2, 3, 4, 5],
-                        index=nota_atual,
-                        key="sel_fast_nota",
-                        format_func=lambda x: "⚪ Sem Avaliação (0)" if x == 0 else f"{'⭐' * x} ({x} de 5)"
-                    )
-                    if st.button("💾 Salvar Nota", type="primary", use_container_width=True):
-                        database.definir_avaliacao(int(id_para_avaliar), nova_nota)
-                        st.success(f"Avaliação da HQ #{id_para_avaliar} atualizada com sucesso!")
-                        st.rerun()
-                else:
-                    st.info(f"Nenhum quadrinho com o ID #{id_para_avaliar} encontrado.")
+            if st.button("⭐ Avaliar HQ", use_container_width=True, help="Dar nota de 1 a 5 por ID"):
+                dialog_avaliar_hq()
 
-        # -------------------------------------------------------------
-        # BOTÃO E POPOVER PARA ALTERNAR STATUS DE LEITURA (1-CLIQUE)
-        # -------------------------------------------------------------
         with col_act_toggle:
-            with st.popover("📖 Alternar Lido / Não Lido", use_container_width=True):
-                st.markdown("#### Alternar Status de Leitura")
-                id_para_toggle = st.number_input(
-                    "Informe o ID da HQ:",
-                    min_value=1,
-                    step=1,
-                    key="input_toggle_id"
-                )
-                hq_toggle = database.obter_hq_por_id(int(id_para_toggle))
-                if hq_toggle:
-                    status_atual = hq_toggle.get("lido", "Não Lido")
-                    novo_alvo = "Lido" if status_atual == "Não Lido" else "Não Lido"
-                    st.write(f"HQ: **{hq_toggle['titulo']}**")
-                    st.write(f"Status atual: `{status_atual}` ➡️ Mudará para: **`{novo_alvo}`**")
-                    if st.button(f"Marcar como {novo_alvo}", type="primary", use_container_width=True):
-                        novo = database.alternar_status_leitura(int(id_para_toggle))
-                        st.success(f"HQ #{id_para_toggle} marcada como **{novo}**!")
-                        st.rerun()
-                else:
-                    st.info(f"Nenhum quadrinho com ID #{id_para_toggle} encontrado.")
+            if st.button("📖 Lido / Não Lido", use_container_width=True, help="Alternar status de leitura em 1 clique"):
+                dialog_alternar_leitura()
 
-        # -------------------------------------------------------------
-        # BOTÃO E POPOVER DE EXCLUSÃO
-        # -------------------------------------------------------------
         with col_act_del:
-            with st.popover("🗑️ Excluir HQ por ID", use_container_width=True):
-                st.markdown("#### Excluir HQ")
-                id_para_excluir = st.number_input(
-                    "Informe o ID da HQ a excluir:",
-                    min_value=1,
-                    step=1,
-                    key="input_delete_id"
-                )
-                hq_del = database.obter_hq_por_id(int(id_para_excluir))
-                if hq_del:
-                    st.warning(f"Tem certeza que deseja excluir **{hq_del['titulo']}** (#{hq_del['id']})?")
-                    if st.button("Confirmar Exclusão Definitiva", type="secondary", use_container_width=True):
-                        if database.deletar_hq(int(id_para_excluir)):
-                            st.success(f"Item #{id_para_excluir} excluído com sucesso!")
-                else:
-                    st.info(f"Nenhum quadrinho com o ID #{id_para_excluir} encontrado.")
+            if st.button("🗑️ Excluir HQ", use_container_width=True, help="Excluir quadrinho por ID"):
+                dialog_excluir_hq()
     else:
         st.info("Nenhum quadrinho encontrado com os filtros aplicados ou banco de dados ainda vazio.")
