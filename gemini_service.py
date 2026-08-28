@@ -153,7 +153,7 @@ def limpar_e_parsear_json(texto_resposta: str) -> List[Dict[str, Any]]:
 import io
 import time
 
-FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest"]
 
 
 def redimensionar_para_ia(imagem: Any, max_dim: int = 1600) -> Any:
@@ -178,7 +178,7 @@ def redimensionar_para_ia(imagem: Any, max_dim: int = 1600) -> Any:
 def processar_foto_prateleira(
     imagem: Any,
     api_key: Optional[str] = None,
-    modelo: str = "gemini-2.5-flash",
+    modelo: str = "gemini-3.6-flash",
     max_retries: int = 3,
     status_callback: Optional[Any] = None
 ) -> List[Dict[str, Any]]:
@@ -189,7 +189,7 @@ def processar_foto_prateleira(
     Args:
         imagem: Objeto PIL.Image da foto capturada.
         api_key: Chave de API opcional.
-        modelo: Nome do modelo Gemini a ser utilizado (padrão: gemini-2.5-flash).
+        modelo: Nome do modelo Gemini a ser utilizado (padrão: gemini-3.6-flash).
         max_retries: Quantidade máxima de tentativas por modelo em caso de 503.
         status_callback: Função callback para enviar mensagens de status à UI.
         
