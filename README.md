@@ -1,14 +1,14 @@
-# 📚 Catalogador de Coleção de HQs com Streamlit e Gemini 2.5 Flash
+# 📚 Catalogador de Coleção de HQs com Streamlit e Gemini
 
-Aplicativo web em Python para catalogar e gerenciar coleções físicas de quadrinhos (HQs, graphic novels, mangás, encadernados e gibis) utilizando fotos tiradas diretamente pela câmera do celular e visão computacional avançada com o modelo **Gemini 2.5 Flash** (`google-genai`).
+Aplicativo web em Python para catalogar e gerenciar coleções físicas de quadrinhos (HQs, graphic novels, mangás, encadernados e gibis) utilizando fotos tiradas diretamente pela câmera do celular e visão computacional avançada com o modelo **Gemini 2.5 Flash / 3.6 Flash** (`google-genai`).
 
 ---
 
 ## 🛠️ Stack Utilizada
 - **Python 3.10+**
-- **Streamlit** (com suporte a `st.camera_input`)
-- **SQLite** (`hqs_inventario.db`)
-- **Google GenAI SDK** (`gemini-2.5-flash`)
+- **Streamlit** (com suporte a `st.data_editor`, `st.camera_input` e autenticação)
+- **SQLite / Turso Cloud** (`hqs_inventario.db`)
+- **Google GenAI SDK** (`gemini-3.6-flash` / `gemini-2.5-flash`)
 - **Pandas** & **Pillow**
 
 ---
@@ -19,39 +19,44 @@ Aplicativo web em Python para catalogar e gerenciar coleções físicas de quadr
 No terminal (PowerShell ou Command Prompt), navegue até a pasta do projeto e instale os pacotes:
 
 ```bash
-cd "c:\Users\bestl\OneDrive\Google Antigravity\HqCatalog"
+cd "C:\Users\bestl\OneDrive\HqCatalog\HqCatalog"
 pip install -r requirements.txt
 ```
 
-### 2. Configurar a Chave da API do Gemini
-Você pode configurar a chave de duas formas:
-- **Opção A (Recomendada):** Crie um arquivo `.env` na pasta do projeto baseado no `.env.example`:
-  ```env
-  GEMINI_API_KEY=sua_chave_aqui
-  ```
-- **Opção B:** Digitar diretamente no campo de senha na barra lateral do app Streamlit ao abrir.
+### 2. Configurar o Arquivo `.env` (Chave Gemini e Login)
+Crie um arquivo `.env` baseado no `.env.example`:
 
-*(Obtenha uma chave gratuita no [Google AI Studio](https://aistudio.google.com)).*
+```env
+# Chave de API do Gemini (obtenha em https://aistudio.google.com)
+GEMINI_API_KEY=sua_chave_aqui
+
+# Credenciais de Acesso (Login)
+APP_USERNAME=admin
+APP_PASSWORD=sua_senha_segura
+
+# (Opcional) Banco Turso Cloud
+# TURSO_DATABASE_URL=libsql://seu-banco.turso.io
+# TURSO_AUTH_TOKEN=seu_token_aqui
+```
+
+> **Credenciais Padrão (Fallback):** Caso não defina no `.env`, o acesso inicial padrão é `admin` / `admin123`.
 
 ---
 
 ## 📱 Como Executar e Acessar pelo Celular na Rede Local
 
-Para que o celular conectado na mesma rede Wi-Fi consiga acessar o aplicativo e usar a câmera nativa:
+Para que o celular conectado na mesma rede Wi-Fi consiga acessar o aplicativo:
 
 ```bash
 streamlit run app.py --server.address 0.0.0.0 --server.port 8501
 ```
+*(Ou execute o arquivo `iniciar.bat` no Windows).*
 
-### Passo a passo no Smartphone:
-1. Verifique o **IP Local** do seu computador (o próprio Streamlit exibirá no terminal como `Network URL: http://192.168.x.x:8501`).
-2. Abra o navegador do smartphone (Chrome, Safari, etc.) e digite o endereço:
-   ```
-   http://192.168.X.X:8501
-   ```
-3. Defina a **Prateleira Atual** (ex: `Estante Marvel - Prateleira 2`).
-4. Toque no botão de câmera (`st.camera_input`), autorize a permissão de câmera no navegador e tire a foto da prateleira.
-5. Clique em **"Processar & Salvar HQs"** — o modelo extrai títulos, edições e editoras e grava automaticamente no banco SQLite.
+### Passo a passo:
+1. Abra no navegador (computador ou celular) o endereço fornecido no terminal (ex: `http://192.168.X.X:8501`).
+2. Digite seu **Usuário** e **Senha** na tela de login.
+3. Use a câmera para fotografar as prateleiras e catalogar em lote com IA.
+4. Use o botão **`📷 Cadastrar Capa`** para fotografar capas individuais e o **Grid Editável** para gerenciar ou excluir dados em lote.
 
 ---
 
@@ -60,10 +65,12 @@ streamlit run app.py --server.address 0.0.0.0 --server.port 8501
 ```
 HqCatalog/
 │
-├── app.py                # Interface web principal (Streamlit)
-├── database.py           # Operações com SQLite (criação, inserção, filtros, exclusão)
-├── gemini_service.py     # Integração com Google GenAI (gemini-2.5-flash) e parser JSON
+├── app.py                # Interface web principal (Streamlit) com grid editável e ações
+├── auth.py               # Módulo de autenticação e proteção de rotas
+├── database.py           # Operações com SQLite / Turso Cloud (migrações, capas, notas)
+├── gemini_service.py     # Integração com Google GenAI e extração multimodal
+├── test_app.py           # Suíte de testes unitários automatizados
 ├── requirements.txt      # Dependências do projeto
-├── .env.example          # Exemplo de arquivo de configuração da API
+├── .env.example          # Modelo de configuração de variáveis de ambiente
 └── README.md             # Documentação e instruções de uso
 ```

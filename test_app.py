@@ -126,5 +126,88 @@ class TestHqCatalog(unittest.TestCase):
         hq_updated = database.obter_hq_por_id(int(hq_row["id"]), self.test_db)
         self.assertEqual(hq_updated["ilustrador"], "Dave Gibbons & John Higgins")
 
+    def test_rating_functionality(self):
+        # 1. Inserção com avaliação padrão (0) e com nota pré-definida (5)
+        database.salvar_hqs([
+            {"titulo": "HQ Sem Nota", "edicao": "1", "editora": "Panini"},
+            {"titulo": "HQ Nota 5", "edicao": "1", "editora": "Panini", "avaliacao": 5},
+            {"titulo": "HQ Nota 4", "edicao": "2", "editora": "Mythos", "avaliacao": 4}
+        ], "Estante Rating", self.test_db)
+
+        # Checa valor padrão
+        hq_sem_nota = database.obter_hq_por_id(1, self.test_db)
+        self.assertEqual(hq_sem_nota["avaliacao"], 0)
+
+        hq_5 = database.obter_hq_por_id(2, self.test_db)
+        self.assertEqual(hq_5["avaliacao"], 5)
+
+        # 2. Definir avaliação direta
+        success = database.definir_avaliacao(1, 3, self.test_db)
+        self.assertTrue(success)
+        hq_1_atualizado = database.obter_hq_por_id(1, self.test_db)
+        self.assertEqual(hq_1_atualizado["avaliacao"], 3)
+
+        # 3. Clamping de avaliação (ex: nota 10 vira 5, nota negativa vira 0)
+        database.definir_avaliacao(1, 10, self.test_db)
+        self.assertEqual(database.obter_hq_por_id(1, self.test_db)["avaliacao"], 5)
+
+        # 4. Estatísticas de avaliação
+        stats = database.obter_estatisticas(self.test_db)
+        # Itens: HQ 1 (5), HQ 2 (5), HQ 3 (4) -> Média = (5 + 5 + 4) / 3 = 4.666 -> 4.7
+        self.assertEqual(stats["total_avaliados"], 3)
+        self.assertEqual(stats["media_avaliacao"], 4.7)
+
+        # 5. Filtro por avaliação
+        df_nota_4 = database.listar_todas_hqs(avaliacao_filtro=4, db_path=self.test_db)
+        self.assertEqual(len(df_nota_4), 1)
+        row = df_nota_4.iloc[0] if hasattr(df_nota_4, "iloc") else df_nota_4[0]
+        self.assertEqual(row["titulo"], "HQ Nota 4")
+
+    def test_manual_cover_functionality(self):
+        database.salvar_hqs([
+            {"titulo": "Homem-Aranha", "edicao": "1", "editora": "Panini"}
+        ], "Estante Spider", self.test_db)
+
+        # Sem capa inicialmente
+        hq = database.obter_hq_por_id(1, self.test_db)
+        self.assertEqual(hq.get("capa"), "")
+
+        # Cadastrar capa manual
+        fake_b64_img = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBD..."
+        success = database.definir_capa(1, fake_b64_img, self.test_db)
+        self.assertTrue(success)
+
+        hq_com_capa = database.obter_hq_por_id(1, self.test_db)
+        self.assertEqual(hq_com_capa.get("capa"), fake_b64_img)
+
+        # Remover capa
+        removed = database.remover_capa_hq(1, self.test_db)
+        self.assertTrue(removed)
+        hq_sem_capa = database.obter_hq_por_id(1, self.test_db)
+        self.assertEqual(hq_sem_capa.get("capa"), "")
+
+    def test_auth_module(self):
+        import auth
+        # 1. Credenciais padrão de fallback
+        os.environ.pop("APP_USERNAME", None)
+        os.environ.pop("APP_PASSWORD", None)
+        u, p = auth.obter_credenciais_configuradas()
+        self.assertEqual(u, "admin")
+        self.assertEqual(p, "admin123")
+
+        self.assertTrue(auth.verificar_credenciais("admin", "admin123"))
+        self.assertTrue(auth.verificar_credenciais(" ADMIN ", "admin123")) # case insensitive user
+        self.assertFalse(auth.verificar_credenciais("admin", "senha_errada"))
+        self.assertFalse(auth.verificar_credenciais("hacker", "admin123"))
+
+        # 2. Credenciais customizadas via ENV
+        os.environ["APP_USERNAME"] = "colecionador"
+        os.environ["APP_PASSWORD"] = "batman2026"
+        u_cust, p_cust = auth.obter_credenciais_configuradas()
+        self.assertEqual(u_cust, "colecionador")
+        self.assertEqual(p_cust, "batman2026")
+        self.assertTrue(auth.verificar_credenciais("colecionador", "batman2026"))
+        self.assertFalse(auth.verificar_credenciais("admin", "admin123"))
+
 if __name__ == "__main__":
     unittest.main()

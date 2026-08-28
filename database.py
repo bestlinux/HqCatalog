@@ -82,6 +82,8 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
         ilustrador TEXT DEFAULT 'Não informado',
         prateleira TEXT NOT NULL,
         lido TEXT DEFAULT 'Não Lido',
+        avaliacao INTEGER DEFAULT 0,
+        capa TEXT DEFAULT '',
         criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """
@@ -101,6 +103,12 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
                     client.execute("ALTER TABLE hqs ADD COLUMN escritor TEXT DEFAULT 'Não informado'")
                 if "ilustrador" not in cols:
                     client.execute("ALTER TABLE hqs ADD COLUMN ilustrador TEXT DEFAULT 'Não informado'")
+                if "avaliacao" not in cols:
+                    client.execute("ALTER TABLE hqs ADD COLUMN avaliacao INTEGER DEFAULT 0")
+                if "capa" not in cols:
+                    client.execute("ALTER TABLE hqs ADD COLUMN capa TEXT DEFAULT ''")
+                    if "capa_url" in cols:
+                        client.execute("UPDATE hqs SET capa = capa_url WHERE (capa IS NULL OR capa = '') AND capa_url IS NOT NULL")
             except Exception:
                 pass
         finally:
@@ -121,6 +129,12 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
                 cursor.execute("ALTER TABLE hqs ADD COLUMN escritor TEXT DEFAULT 'Não informado'")
             if "ilustrador" not in columns:
                 cursor.execute("ALTER TABLE hqs ADD COLUMN ilustrador TEXT DEFAULT 'Não informado'")
+            if "avaliacao" not in columns:
+                cursor.execute("ALTER TABLE hqs ADD COLUMN avaliacao INTEGER DEFAULT 0")
+            if "capa" not in columns:
+                cursor.execute("ALTER TABLE hqs ADD COLUMN capa TEXT DEFAULT ''")
+                if "capa_url" in columns:
+                    cursor.execute("UPDATE hqs SET capa = capa_url WHERE (capa IS NULL OR capa = '') AND capa_url IS NOT NULL")
 
             conn.commit()
         finally:
@@ -152,8 +166,14 @@ def salvar_hqs(
         ilustrador = (item.get("ilustrador") or "Não informado").strip()
         prateleira_val = prateleira.strip() if prateleira else "Não especificada"
         lido_val = (item.get("lido") or lido_padrao).strip()
+        try:
+            avaliacao_raw = int(item.get("avaliacao") or 0)
+        except (ValueError, TypeError):
+            avaliacao_raw = 0
+        avaliacao_val = max(0, min(5, avaliacao_raw))
+        capa = (item.get("capa") or item.get("capa_url") or "").strip()
 
-        registros.append((titulo, edicao, editora, genero, escritor, ilustrador, prateleira_val, lido_val))
+        registros.append((titulo, edicao, editora, genero, escritor, ilustrador, prateleira_val, lido_val, avaliacao_val, capa))
 
     if not registros:
         return 0
@@ -164,8 +184,8 @@ def salvar_hqs(
             for reg in registros:
                 client.execute(
                     """
-                    INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, capa)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     list(reg)
                 )
@@ -177,8 +197,8 @@ def salvar_hqs(
             cursor = conn.cursor()
             cursor.executemany(
                 """
-                INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, capa)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 registros,
             )
@@ -194,12 +214,13 @@ def listar_todas_hqs(
     prateleira_filtro: Optional[str] = None,
     genero_filtro: Optional[str] = None,
     status_leitura_filtro: Optional[str] = None,
+    avaliacao_filtro: Optional[int] = None,
     db_path: str = DB_DEFAULT_PATH
 ) -> Any:
     """
     Consulta o banco e retorna todas as HQs em formato pandas DataFrame ou lista de dicts.
     """
-    query = "SELECT id, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, criado_em FROM hqs WHERE 1=1"
+    query = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, criado_em FROM hqs WHERE 1=1"
     params = []
 
     if prateleira_filtro and prateleira_filtro != "Todas":
@@ -213,6 +234,10 @@ def listar_todas_hqs(
     if status_leitura_filtro and status_leitura_filtro in ["Lido", "Não Lido"]:
         query += " AND lido = ?"
         params.append(status_leitura_filtro)
+
+    if avaliacao_filtro is not None and avaliacao_filtro != -1:
+        query += " AND avaliacao = ?"
+        params.append(avaliacao_filtro)
 
     if busca and busca.strip():
         termo = f"%{busca.strip()}%"
@@ -299,6 +324,11 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
             total_gen = client.execute("SELECT COUNT(DISTINCT genero) FROM hqs WHERE genero != ''").rows[0][0] or 0
             total_lidos = client.execute("SELECT COUNT(*) FROM hqs WHERE lido = 'Lido'").rows[0][0] or 0
             total_nao_lidos = total_hqs - total_lidos
+            
+            row_aval = client.execute("SELECT AVG(avaliacao), COUNT(*) FROM hqs WHERE avaliacao > 0").rows[0]
+            media_aval = round(float(row_aval[0]), 1) if row_aval[0] is not None else 0.0
+            total_avaliados = row_aval[1] or 0
+
             return {
                 "total_hqs": total_hqs,
                 "total_prateleiras": total_prat,
@@ -306,6 +336,8 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
                 "total_generos": total_gen,
                 "total_lidos": total_lidos,
                 "total_nao_lidos": total_nao_lidos,
+                "media_avaliacao": media_aval,
+                "total_avaliados": total_avaliados,
             }
         finally:
             client.close()
@@ -330,6 +362,11 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
 
             total_nao_lidos = total_hqs - total_lidos
 
+            cursor.execute("SELECT AVG(avaliacao) as media_aval, COUNT(*) as total_aval FROM hqs WHERE avaliacao > 0")
+            row_aval = cursor.fetchone()
+            media_aval = round(float(row_aval["media_aval"]), 1) if row_aval["media_aval"] is not None else 0.0
+            total_avaliados = row_aval["total_aval"] or 0
+
             return {
                 "total_hqs": total_hqs,
                 "total_prateleiras": total_prateleiras,
@@ -337,6 +374,8 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
                 "total_generos": total_generos,
                 "total_lidos": total_lidos,
                 "total_nao_lidos": total_nao_lidos,
+                "media_avaliacao": media_aval,
+                "total_avaliados": total_avaliados,
             }
         finally:
             conn.close()
@@ -364,7 +403,7 @@ def deletar_hq(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> bool:
 
 def obter_hq_por_id(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict[str, Any]]:
     """Busca os dados de uma HQ específica pelo seu ID."""
-    sql = "SELECT id, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, criado_em FROM hqs WHERE id = ?"
+    sql = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, criado_em FROM hqs WHERE id = ?"
     if is_using_turso():
         client = get_turso_client()
         try:
@@ -397,15 +436,34 @@ def atualizar_hq(
     escritor: str = "Não informado",
     ilustrador: str = "Não informado",
     lido: str = "Não Lido",
+    avaliacao: int = 0,
+    capa: str = "",
     db_path: str = DB_DEFAULT_PATH
 ) -> bool:
     """Atualiza os campos de um registro de HQ existente."""
+    try:
+        val_avaliacao = max(0, min(5, int(avaliacao or 0)))
+    except (ValueError, TypeError):
+        val_avaliacao = 0
+
     sql = """
     UPDATE hqs
-    SET titulo = ?, edicao = ?, editora = ?, genero = ?, escritor = ?, ilustrador = ?, prateleira = ?, lido = ?
+    SET titulo = ?, edicao = ?, editora = ?, genero = ?, escritor = ?, ilustrador = ?, prateleira = ?, lido = ?, avaliacao = ?, capa = ?
     WHERE id = ?
     """
-    params = [titulo.strip(), edicao.strip(), editora.strip(), genero.strip(), escritor.strip(), ilustrador.strip(), prateleira.strip(), lido.strip(), hq_id]
+    params = [
+        titulo.strip(),
+        edicao.strip(),
+        editora.strip(),
+        genero.strip(),
+        escritor.strip(),
+        ilustrador.strip(),
+        prateleira.strip(),
+        lido.strip(),
+        val_avaliacao,
+        capa.strip(),
+        hq_id
+    ]
 
     if is_using_turso():
         client = get_turso_client()
@@ -419,6 +477,59 @@ def atualizar_hq(
         try:
             cursor = conn.cursor()
             cursor.execute(sql, tuple(params))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+
+def definir_capa(hq_id: int, capa: str, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """Salva diretamente a imagem/foto da capa de uma HQ."""
+    sql = "UPDATE hqs SET capa = ? WHERE id = ?"
+    url_clean = (capa or "").strip()
+    if is_using_turso():
+        client = get_turso_client()
+        try:
+            res = client.execute(sql, [url_clean, hq_id])
+            return res.rows_affected > 0
+        finally:
+            client.close()
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (url_clean, hq_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+
+def remover_capa_hq(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """Remove a foto da capa de uma HQ cadastrada."""
+    return definir_capa(hq_id, "", db_path)
+
+
+def definir_avaliacao(hq_id: int, avaliacao: int, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """Atualiza diretamente a nota/avaliação de uma HQ (1 a 5, ou 0 para sem avaliação)."""
+    try:
+        val_avaliacao = max(0, min(5, int(avaliacao or 0)))
+    except (ValueError, TypeError):
+        val_avaliacao = 0
+
+    sql = "UPDATE hqs SET avaliacao = ? WHERE id = ?"
+    if is_using_turso():
+        client = get_turso_client()
+        try:
+            res = client.execute(sql, [val_avaliacao, hq_id])
+            return res.rows_affected > 0
+        finally:
+            client.close()
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (val_avaliacao, hq_id))
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -442,6 +553,8 @@ def alternar_status_leitura(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optio
         ilustrador=hq.get("ilustrador", "Não informado"),
         prateleira=hq["prateleira"],
         lido=novo_status,
+        avaliacao=int(hq.get("avaliacao") or 0),
+        capa=hq.get("capa") or "",
         db_path=db_path
     )
     return novo_status
