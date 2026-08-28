@@ -69,6 +69,12 @@ with st.sidebar:
         help="gemini-3.6-flash é o modelo mais recente e rápido recomendado pelo Google."
     )
 
+    # Indicador de Banco de Dados
+    if database.is_using_turso():
+        st.success("☁️ **Banco: Turso Cloud (Permanente)**", icon="🗄️")
+    else:
+        st.info("💾 **Banco: SQLite Local**", icon="📁")
+
     st.markdown("---")
     
     # Métricas gerais do inventário
