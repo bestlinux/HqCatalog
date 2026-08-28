@@ -1,0 +1,11 @@
+.gcloudignore
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+test_app.py
+test_*.db
+deploy.zip
