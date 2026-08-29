@@ -32,6 +32,7 @@ Extraia as seguintes informações para cada item:
 4. "genero": Gênero literário/temático principal da obra (ex: "Super-heróis", "Terror", "Aventura", "Ficção Científica", "Fantasia", "Drama", "Mangá / Shonen", "Mangá / Seinen", "Suspense / Policial", "Humor", "Infantil", "Histórico", "Biografia", ou "Outro").
 5. "escritor": Nome do(s) roteirista(s) ou escritor(es) principal(is) da obra (ex: "Alan Moore", "Neil Gaiman", "Frank Miller", "Stan Lee", "Akira Toriyama", "Mauricio de Sousa", ou "Não informado" se não identificar).
 6. "ilustrador": Nome do(s) desenhista(s), ilustrador(es) ou artista(s) principal(is) da obra (ex: "Dave Gibbons", "Jim Lee", "Todd McFarlane", "Alex Ross", "Katsuhiro Otomo", "Kentaro Miura", ou "Não informado" se não identificar).
+7. "resumo": Um resumo conciso e envolvente da premissa ou enredo principal desta história/edição (em português, de 2 a 4 frases, descrevendo o contexto e a trama central da HQ).
 
 Retorne ESTRITAMENTE um array JSON contendo os objetos identificados.
 Exemplo de formato esperado:
@@ -42,7 +43,8 @@ Exemplo de formato esperado:
     "editora": "Panini",
     "genero": "Super-heróis",
     "escritor": "Frank Miller",
-    "ilustrador": "David Mazzucchelli"
+    "ilustrador": "David Mazzucchelli",
+    "resumo": "Karen Page vende a identidade secreta do Demolidor por uma dose de heroína. A informação chega ao Rei do Crime, que sistematicamente destrói a vida pessoal, financeira e psicológica de Matt Murdock até levá-lo ao limite."
   },
   {
     "titulo": "Watchmen",
@@ -50,7 +52,8 @@ Exemplo de formato esperado:
     "editora": "Panini",
     "genero": "Super-heróis",
     "escritor": "Alan Moore",
-    "ilustrador": "Dave Gibbons"
+    "ilustrador": "Dave Gibbons",
+    "resumo": "Em uma realidade alternativa nos anos 1980 em meio à Guerra Fria, o assassinato do vigilante Comediante desencadeia uma investigação liderada por Rorschach, revelando uma conspiração global que questiona a própria moralidade humana."
   },
   {
     "titulo": "Akira",
@@ -58,7 +61,8 @@ Exemplo de formato esperado:
     "editora": "JBC",
     "genero": "Ficção Científica",
     "escritor": "Katsuhiro Otomo",
-    "ilustrador": "Katsuhiro Otomo"
+    "ilustrador": "Katsuhiro Otomo",
+    "resumo": "Na pós-apocalíptica Neo-Tóquio, gangues de motoqueiros colidem com experimentos militares psíquicos enquanto o poder destrutivo de Akira ameaça emergir novamente e devastar o que resta da civilização."
   }
 ]
 
@@ -110,7 +114,8 @@ def limpar_e_parsear_json(texto_resposta: str) -> List[Dict[str, Any]]:
                         "editora": str(item.get("editora", "")).strip(),
                         "genero": str(item.get("genero", "")).strip() or "Outro",
                         "escritor": str(item.get("escritor", "")).strip() or "Não informado",
-                        "ilustrador": str(item.get("ilustrador", "")).strip() or "Não informado"
+                        "ilustrador": str(item.get("ilustrador", "")).strip() or "Não informado",
+                        "resumo": str(item.get("resumo", "")).strip()
                     })
             return itens_higienizados
         elif isinstance(dados, dict):
@@ -123,7 +128,8 @@ def limpar_e_parsear_json(texto_resposta: str) -> List[Dict[str, Any]]:
                         "editora": str(item.get("editora", "")).strip(),
                         "genero": str(item.get("genero", "")).strip() or "Outro",
                         "escritor": str(item.get("escritor", "")).strip() or "Não informado",
-                        "ilustrador": str(item.get("ilustrador", "")).strip() or "Não informado"
+                        "ilustrador": str(item.get("ilustrador", "")).strip() or "Não informado",
+                        "resumo": str(item.get("resumo", "")).strip()
                     } for item in dados["hqs"] if isinstance(item, dict)
                 ]
             elif "quadrinhos" in dados and isinstance(dados["quadrinhos"], list):
@@ -134,7 +140,8 @@ def limpar_e_parsear_json(texto_resposta: str) -> List[Dict[str, Any]]:
                         "editora": str(item.get("editora", "")).strip(),
                         "genero": str(item.get("genero", "")).strip() or "Outro",
                         "escritor": str(item.get("escritor", "")).strip() or "Não informado",
-                        "ilustrador": str(item.get("ilustrador", "")).strip() or "Não informado"
+                        "ilustrador": str(item.get("ilustrador", "")).strip() or "Não informado",
+                        "resumo": str(item.get("resumo", "")).strip()
                     } for item in dados["quadrinhos"] if isinstance(item, dict)
                 ]
             return [{
@@ -143,7 +150,8 @@ def limpar_e_parsear_json(texto_resposta: str) -> List[Dict[str, Any]]:
                 "editora": str(dados.get("editora", "")).strip(),
                 "genero": str(dados.get("genero", "")).strip() or "Outro",
                 "escritor": str(dados.get("escritor", "")).strip() or "Não informado",
-                "ilustrador": str(dados.get("ilustrador", "")).strip() or "Não informado"
+                "ilustrador": str(dados.get("ilustrador", "")).strip() or "Não informado",
+                "resumo": str(dados.get("resumo", "")).strip()
             }]
         return []
     except json.JSONDecodeError as e:
@@ -152,6 +160,7 @@ def limpar_e_parsear_json(texto_resposta: str) -> List[Dict[str, Any]]:
 
 import io
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest"]
 
@@ -185,16 +194,6 @@ def processar_foto_prateleira(
     """
     Envia a imagem da prateleira ou capa para o modelo Gemini e retorna a lista de HQs identificadas.
     Inclui redimensionamento prévio, retry com backoff e fallback de modelo.
-    
-    Args:
-        imagem: Objeto PIL.Image da foto capturada.
-        api_key: Chave de API opcional.
-        modelo: Nome do modelo Gemini a ser utilizado (padrão: gemini-3.6-flash).
-        max_retries: Quantidade máxima de tentativas por modelo em caso de 503.
-        status_callback: Função callback para enviar mensagens de status à UI.
-        
-    Returns:
-        Lista de dicionários [{'titulo': ..., 'edicao': ..., 'editora': ...}]
     """
     client = get_gemini_client(api_key)
 
@@ -206,7 +205,7 @@ def processar_foto_prateleira(
         temperature=0.1,  # Baixa temperatura para máxima precisão e velocidade
     )
 
-    # Lista ordenada de modelos para tentar (começa pelo escolhido, seguido pelos fallbacks)
+    # Lista ordenada de modelos canônicos para tentar
     modelos_para_tentar = [modelo]
     for fb in FALLBACK_MODELS:
         if fb not in modelos_para_tentar:
@@ -234,6 +233,7 @@ def processar_foto_prateleira(
             except Exception as ex:
                 erro_str = str(ex)
                 ultimo_erro = ex
+                print(f"[Aviso Gemini Vision mod={mod} tentativa={tentativa}]: {ex}")
                 
                 # Identifica se é erro de sobrecarga temporária da API (503 UNAVAILABLE ou 429 RATE_LIMIT)
                 eh_sobrecarga = (
@@ -252,10 +252,314 @@ def processar_foto_prateleira(
                         )
                     time.sleep(tempo_espera)
                 else:
-                    # Se for outro tipo de erro (ex: 404 de modelo não encontrado), pula logo para o próximo modelo
                     break
 
-    # Se todas as tentativas e modelos falharem, lança o último erro
     raise RuntimeError(
         f"Não foi possível processar a imagem após várias tentativas devido à sobrecarga temporária da API do Google: {ultimo_erro}"
     )
+
+
+PROMPT_SISTEMA_CHATBOT = """Você é o Assistente Virtual e Curador Especialista do catálogo pessoal de Histórias em Quadrinhos (HQs, mangás, graphic novels e encadernados) do usuário.
+
+Seu objetivo é:
+1. Responder dúvidas e fazer recomendações personalizadas com base EXCLUSIVAMENTE nas HQs cadastradas no catálogo do usuário fornecido abaixo.
+2. Analisar profundamente os RESUMOS das histórias, títulos, gêneros, roteiristas, ilustradores, editoras, status de leitura e avaliações:
+   - Se o usuário pedir recomendações por tema (ex: "temas históricos no Brasil", "algo sombrio ou de suspense", "ficção científica espacial", "super-heróis com reviravolta"):
+     - Faça uma varredura minuciosa nos RESUMOS das histórias e gêneros das HQs da coleção.
+     - Liste e recomende as HQs correspondentes, destacando claramente:
+       * **Título e Edição**
+       * 📍 **Prateleira:** onde ela está localizada na estante
+       * 📖 **Status:** Lido / Não Lido
+       * ⭐ **Avaliação:** Nota dada pelo usuário (se houver)
+       * 📝 **Por que ler:** Uma breve explicação de como o resumo/trama dessa HQ atende ao que ele pediu.
+3. Se NENHUMA HQ do catálogo tiver relação com o tema pedido pelo usuário:
+   - Informe educadamente: "Nenhum título com esse tema foi encontrado no seu catálogo de HQs no momento."
+   - Caso faça sentido, sugira brevemente outros temas ou obras interessantes presentes na coleção dele.
+4. Mantenha um tom amigável, prestativo e de entusiasta de quadrinhos, utilizando formatação Markdown limpa e agradável."""
+
+
+def _invocar_gemini_chatbot(client, mod, prompt):
+    try:
+        response = client.models.generate_content(
+            model=mod,
+            contents=prompt
+        )
+        if response and response.text:
+            return response.text.strip()
+    except Exception as e:
+        print(f"[Aviso Gemini Chatbot mod={mod}]: {e}")
+    return None
+
+
+def consultar_chatbot_colecao(
+    pergunta: str,
+    catalogo_hqs: List[Dict[str, Any]],
+    historico_mensagens: Optional[List[Dict[str, str]]] = None,
+    api_key: Optional[str] = None,
+    modelo: str = "gemini-3.6-flash"
+) -> str:
+    """
+    Processa a pergunta do usuário utilizando o catálogo completo de HQs e seus resumos como contexto.
+    """
+    if not catalogo_hqs:
+        return "Seu catálogo de HQs ainda está vazio! Cadastre algumas edições por foto para que eu possa analisar os resumos e recomendar histórias."
+
+    client = get_gemini_client(api_key)
+
+    # Formata a base de HQs em texto estruturado para a IA
+    linhas_catalogo = []
+    for hq in catalogo_hqs:
+        id_hq = hq.get("id") or "?"
+        tit = hq.get("titulo") or "Sem título"
+        ed = hq.get("edicao") or ""
+        edit = hq.get("editora") or "Não informada"
+        gen = hq.get("genero") or "Outro"
+        esc = hq.get("escritor") or "Não informado"
+        ilu = hq.get("ilustrador") or "Não informado"
+        prat = hq.get("prateleira") or "Não especificada"
+        lido = hq.get("lido") or "Não Lido"
+        aval = int(hq.get("avaliacao") or 0)
+        resumo = (hq.get("resumo") or "").strip() or "Resumo não informado."
+        resenha = (hq.get("resenha") or "").strip()
+
+        bloco = (
+            f"- [ID #{id_hq}] \"{tit}\" ({ed}) | Editora: {edit} | Gênero: {gen} | Roteiro: {esc} | Arte: {ilu} | "
+            f"Prateleira: {prat} | Status: {lido} | Avaliação: {aval} estrela(s)\n"
+            f"  Sinopse/Resumo: {resumo}"
+        )
+        if resenha:
+            bloco += f"\n  Opinião do Leitor: {resenha}"
+        linhas_catalogo.append(bloco)
+
+    contexto_catalogo = "\n\n".join(linhas_catalogo)
+
+    prompt_final = f"""{PROMPT_SISTEMA_CHATBOT}
+
+---
+### CATÁLOGO ATUAL DO USUÁRIO ({len(catalogo_hqs)} HQs cadastradas):
+{contexto_catalogo}
+---
+"""
+    if historico_mensagens:
+        prompt_final += "\n### Histórico recente da conversa:\n"
+        for msg in historico_mensagens[-6:]:
+            autor = "Usuário" if msg.get("role") == "user" else "Assistente"
+            prompt_final += f"{autor}: {msg.get('content', '')}\n"
+
+    prompt_final += f"\nUsuário: {pergunta}\nAssistente:"
+
+    modelos_tentativa = [modelo]
+    for fb in ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest"]:
+        if fb not in modelos_tentativa:
+            modelos_tentativa.append(fb)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        for mod in modelos_tentativa[:3]:
+            future = executor.submit(_invocar_gemini_chatbot, client, mod, prompt_final)
+            try:
+                res = future.result(timeout=10.0)
+                if res:
+                    return res
+            except TimeoutError:
+                print(f"[Timeout no modelo {mod}]")
+                continue
+            except Exception as e:
+                print(f"[Erro no modelo {mod}]: {e}")
+                continue
+
+    return "Desculpe, ocorreu uma instabilidade temporária ao consultar a IA. Por favor, tente novamente em instantes."
+
+
+# -------------------------------------------------------------
+# PESQUISA E COTAÇÃO DE PREÇOS EM LOJAS COM GOOGLE SEARCH GROUNDING
+# -------------------------------------------------------------
+PROMPT_PESQUISA_PRECOS = """Você é um assistente especialista em cotação de HQs, Mangás, Graphic Novels e Edições Especiais no mercado brasileiro.
+O usuário quer cotar/pesquisar os preços médios e disponibilidade da edição: "{termo}".
+
+LOJAS ALVO DA COTAÇÃO:
+1. Amazon (Amazon Brasil)
+2. MagazineLuiza (Magalu)
+3. MercadoLivre
+4. Mundos Infinitos
+5. Comix Book Shop
+
+REGRAS:
+- Retorne EXCLUSIVAMENTE um objeto JSON válido (sem textos ou markdown fora do JSON).
+- Identifique a edição exata (Título, Volume/Edição, Editora).
+- Para cada uma das 5 lojas:
+  * "loja": nome exato ("Amazon", "MagazineLuiza", "MercadoLivre", "Mundos Infinitos", "Comix Book Shop")
+  * "preco_str": preço médio/estimado de mercado em reais no formato "200,00" ou "140,00" se a loja costuma comercializar a edição, ou exatamente "Titulo não encontrado" caso seja um item raro/esgotado/indisponível na loja.
+  * "preco_num": número float correspondente (ex: 140.0) ou 0.0 se não encontrado.
+  * "status": "Encontrado" ou "Titulo não encontrado"
+- "melhor_loja": a loja com o menor preco_num maior que zero (ou "" se nenhuma tiver).
+- "melhor_preco": menor valor float encontrado (ou 0.0 se nenhuma tiver).
+
+FORMATO JSON OBRIGATÓRIO:
+{
+    "titulo": "Nome Completo da HQ",
+    "edicao": "Volume ou Edição",
+    "editora": "Editora",
+    "lojas": [
+        {"loja": "Amazon", "preco_str": "200,00", "preco_num": 200.0, "status": "Encontrado"},
+        {"loja": "MagazineLuiza", "preco_str": "140,00", "preco_num": 140.0, "status": "Encontrado"},
+        {"loja": "MercadoLivre", "preco_str": "Titulo não encontrado", "preco_num": 0.0, "status": "Titulo não encontrado"},
+        {"loja": "Mundos Infinitos", "preco_str": "180,00", "preco_num": 180.0, "status": "Encontrado"},
+        {"loja": "Comix Book Shop", "preco_str": "Titulo não encontrado", "preco_num": 0.0, "status": "Titulo não encontrado"}
+    ],
+    "melhor_loja": "MagazineLuiza",
+    "melhor_preco": 140.0
+}
+"""
+
+import urllib.parse
+
+def gerar_link_loja(loja: str, termo: str, link_sugerido: str = "") -> str:
+    """Gera um link funcional e direto de busca para a loja especificada."""
+    if link_sugerido and (link_sugerido.startswith("http://") or link_sugerido.startswith("https://")):
+        return link_sugerido
+
+    termo_enc = urllib.parse.quote(termo.strip())
+    loja_low = loja.lower()
+
+    if "amazon" in loja_low:
+        return f"https://www.amazon.com.br/s?k={termo_enc}"
+    elif "magazine" in loja_low or "magalu" in loja_low:
+        return f"https://www.magazineluiza.com.br/busca/{termo_enc}/"
+    elif "mercado" in loja_low:
+        return f"https://lista.mercadolivre.com.br/{termo_enc}"
+    elif "infinito" in loja_low:
+        return f"https://mundosinfinitos.com.br/catalogsearch/result/?q={termo_enc}"
+    elif "comix" in loja_low:
+        return f"https://www.comix.com.br/catalogsearch/result/?q={termo_enc}"
+    return ""
+
+
+def _invocar_gemini_precos(client, modelo_alvo, prompt, config):
+    try:
+        resp = client.models.generate_content(
+            model=modelo_alvo,
+            contents=prompt,
+            config=config
+        )
+        if resp and resp.text:
+            parsed = limpar_e_parsear_json(resp.text)
+            if isinstance(parsed, dict) and "lojas" in parsed:
+                return parsed
+            elif isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
+                return parsed[0]
+    except Exception:
+        pass
+    return None
+
+
+def pesquisar_precos_hq(
+    termo_busca: str,
+    api_key: Optional[str] = None,
+    modelo: str = "gemini-3.6-flash"
+) -> Dict[str, Any]:
+    """
+    Pesquisa preços de uma HQ específica nas lojas de forma rápida, com timeout e sem travamento.
+    """
+    client = get_gemini_client(api_key)
+    prompt = PROMPT_PESQUISA_PRECOS.replace("{termo}", termo_busca.strip())
+
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.1
+    )
+
+    resultado = None
+
+    # Modelos canônicos rápidos e válidos
+    modelos_para_tentar = [modelo]
+    for fb in ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest"]:
+        if fb not in modelos_para_tentar:
+            modelos_para_tentar.append(fb)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        for mod in modelos_para_tentar[:2]:
+            future = executor.submit(_invocar_gemini_precos, client, mod, prompt, config)
+            try:
+                # Timeout estrito de 4.0 segundos por tentativa
+                res = future.result(timeout=4.0)
+                if res:
+                    resultado = res
+                    break
+            except TimeoutError:
+                continue
+            except Exception:
+                continue
+
+    if not resultado or not isinstance(resultado, dict):
+        resultado = {
+            "titulo": termo_busca.strip(),
+            "edicao": "",
+            "editora": "",
+            "lojas": [
+                {"loja": "Amazon", "preco_str": "Titulo não encontrado", "preco_num": 0.0, "status": "Titulo não encontrado"},
+                {"loja": "MagazineLuiza", "preco_str": "Titulo não encontrado", "preco_num": 0.0, "status": "Titulo não encontrado"},
+                {"loja": "MercadoLivre", "preco_str": "Titulo não encontrado", "preco_num": 0.0, "status": "Titulo não encontrado"},
+                {"loja": "Mundos Infinitos", "preco_str": "Titulo não encontrado", "preco_num": 0.0, "status": "Titulo não encontrado"},
+                {"loja": "Comix Book Shop", "preco_str": "Titulo não encontrado", "preco_num": 0.0, "status": "Titulo não encontrado"}
+            ],
+            "melhor_loja": "",
+            "melhor_preco": 0.0,
+            "link_melhor_oferta": ""
+        }
+
+    # Formata links e status
+    termo_hq = f"{resultado.get('titulo', '')} {resultado.get('edicao', '')}".strip() or termo_busca.strip()
+    lojas_padrao = ["Amazon", "MagazineLuiza", "MercadoLivre", "Mundos Infinitos", "Comix Book Shop"]
+    lojas_resultado = resultado.get("lojas", [])
+    lojas_finais = []
+
+    for nome_padrao in lojas_padrao:
+        item = next((x for x in lojas_resultado if x.get("loja", "").lower() == nome_padrao.lower() or nome_padrao.lower() in x.get("loja", "").lower()), None)
+        if not item:
+            item = {
+                "loja": nome_padrao,
+                "preco_str": "Titulo não encontrado",
+                "preco_num": 0.0,
+                "status": "Titulo não encontrado"
+            }
+
+        preco_raw = str(item.get("preco_str", "")).strip()
+        if "não encontrado" in preco_raw.lower() or float(item.get("preco_num") or 0.0) <= 0:
+            item["status"] = "Titulo não encontrado"
+            item["preco_str"] = "Titulo não encontrado"
+            item["preco_num"] = 0.0
+            item["link"] = gerar_link_loja(nome_padrao, termo_hq)
+        else:
+            item["status"] = "Encontrado"
+            item["link"] = gerar_link_loja(nome_padrao, termo_hq)
+
+        lojas_finais.append(item)
+
+    resultado["lojas"] = lojas_finais
+
+    lojas_validas = [lj for lj in lojas_finais if lj.get("status") == "Encontrado" and float(lj.get("preco_num") or 0.0) > 0]
+    if lojas_validas:
+        melhor = min(lojas_validas, key=lambda x: float(x.get("preco_num")))
+        resultado["melhor_loja"] = melhor.get("loja", "")
+        resultado["melhor_preco"] = float(melhor.get("preco_num"))
+        resultado["link_melhor_oferta"] = melhor.get("link", "")
+    else:
+        resultado["melhor_loja"] = ""
+        resultado["melhor_preco"] = 0.0
+        resultado["link_melhor_oferta"] = ""
+
+    return resultado
+
+
+def eh_intencao_pesquisa_preco(texto: str) -> bool:
+    """Verifica se a mensagem do usuário é um pedido de busca de preço/cotação de HQ."""
+    txt = texto.strip().lower()
+    gatilhos = [
+        "pesquis", "pesquise", "pesquisar", "busca", "busque", "preço", "preco",
+        "quanto custa", "valor de", "cotação", "cotacao", "comprar", "oferta",
+        "mundos infinitos", "comix", "amazon", "magalu", "mercadolivre"
+    ]
+    return any(g in txt for g in gatilhos)
+
+
+

@@ -52,6 +52,8 @@ def is_using_turso() -> bool:
     return bool(url and token and libsql_client is not None)
 
 
+import time
+
 def get_turso_client():
     """Retorna um cliente síncrono do Turso."""
     url, token = get_turso_credentials()
@@ -60,6 +62,34 @@ def get_turso_client():
     # Converte libsql:// para https:// se necessário para compatibilidade HTTP
     clean_url = url.replace("libsql://", "https://")
     return libsql_client.create_client_sync(url=clean_url, auth_token=token)
+
+
+def executar_turso_query(sql: str, params: Optional[List[Any]] = None, max_retries: int = 3) -> Any:
+    """
+    Executa uma consulta no Turso Cloud com retentativa automática e backoff para falhas transitórias de rede
+    (ex: WinError 121, timeouts, instabilidades temporárias de conexão com aiohttp).
+    """
+    clean_params = params if params is not None else []
+    ultimo_erro = None
+
+    for tentativa in range(1, max_retries + 1):
+        client = None
+        try:
+            client = get_turso_client()
+            res = client.execute(sql, clean_params)
+            return res
+        except Exception as ex:
+            ultimo_erro = ex
+            if tentativa < max_retries:
+                time.sleep(0.3 * tentativa)
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+
+    raise ultimo_erro
 
 
 def get_sqlite_connection(db_path: str = DB_DEFAULT_PATH) -> sqlite3.Connection:
@@ -85,42 +115,59 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
         avaliacao INTEGER DEFAULT 0,
         capa TEXT DEFAULT '',
         resenha TEXT DEFAULT '',
+        resumo TEXT DEFAULT '',
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """
+    create_table_desejos_sql = """
+    CREATE TABLE IF NOT EXISTS lista_desejos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        titulo TEXT NOT NULL,
+        edicao TEXT DEFAULT '',
+        editora TEXT DEFAULT '',
+        melhor_preco REAL DEFAULT 0.0,
+        melhor_loja TEXT DEFAULT '',
+        link_oferta TEXT DEFAULT '',
+        observacoes TEXT DEFAULT '',
         criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """
     if is_using_turso():
-        client = get_turso_client()
         try:
-            client.execute(create_table_sql)
+            executar_turso_query(create_table_sql)
+            executar_turso_query(create_table_desejos_sql)
             # Migrações seguras no Turso
             try:
-                res = client.execute("PRAGMA table_info(hqs)")
+                res = executar_turso_query("PRAGMA table_info(hqs)")
                 cols = [r[1] for r in res.rows]
                 if "lido" not in cols:
-                    client.execute("ALTER TABLE hqs ADD COLUMN lido TEXT DEFAULT 'Não Lido'")
+                    executar_turso_query("ALTER TABLE hqs ADD COLUMN lido TEXT DEFAULT 'Não Lido'")
                 if "genero" not in cols:
-                    client.execute("ALTER TABLE hqs ADD COLUMN genero TEXT DEFAULT 'Outro'")
+                    executar_turso_query("ALTER TABLE hqs ADD COLUMN genero TEXT DEFAULT 'Outro'")
                 if "escritor" not in cols:
-                    client.execute("ALTER TABLE hqs ADD COLUMN escritor TEXT DEFAULT 'Não informado'")
+                    executar_turso_query("ALTER TABLE hqs ADD COLUMN escritor TEXT DEFAULT 'Não informado'")
                 if "ilustrador" not in cols:
-                    client.execute("ALTER TABLE hqs ADD COLUMN ilustrador TEXT DEFAULT 'Não informado'")
+                    executar_turso_query("ALTER TABLE hqs ADD COLUMN ilustrador TEXT DEFAULT 'Não informado'")
                 if "avaliacao" not in cols:
-                    client.execute("ALTER TABLE hqs ADD COLUMN avaliacao INTEGER DEFAULT 0")
+                    executar_turso_query("ALTER TABLE hqs ADD COLUMN avaliacao INTEGER DEFAULT 0")
                 if "capa" not in cols:
-                    client.execute("ALTER TABLE hqs ADD COLUMN capa TEXT DEFAULT ''")
+                    executar_turso_query("ALTER TABLE hqs ADD COLUMN capa TEXT DEFAULT ''")
                     if "capa_url" in cols:
-                        client.execute("UPDATE hqs SET capa = capa_url WHERE (capa IS NULL OR capa = '') AND capa_url IS NOT NULL")
+                        executar_turso_query("UPDATE hqs SET capa = capa_url WHERE (capa IS NULL OR capa = '') AND capa_url IS NOT NULL")
                 if "resenha" not in cols:
-                    client.execute("ALTER TABLE hqs ADD COLUMN resenha TEXT DEFAULT ''")
+                    executar_turso_query("ALTER TABLE hqs ADD COLUMN resenha TEXT DEFAULT ''")
+                if "resumo" not in cols:
+                    executar_turso_query("ALTER TABLE hqs ADD COLUMN resumo TEXT DEFAULT ''")
             except Exception:
                 pass
-        finally:
-            client.close()
+        except Exception as e:
+            print(f"Aviso ao inicializar Turso: {e}")
     else:
         conn = get_sqlite_connection(db_path)
         try:
             cursor = conn.cursor()
             cursor.execute(create_table_sql)
+            cursor.execute(create_table_desejos_sql)
             cursor.execute("PRAGMA table_info(hqs)")
             columns = [row["name"] for row in cursor.fetchall()]
             
@@ -140,8 +187,57 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
                     cursor.execute("UPDATE hqs SET capa = capa_url WHERE (capa IS NULL OR capa = '') AND capa_url IS NOT NULL")
             if "resenha" not in columns:
                 cursor.execute("ALTER TABLE hqs ADD COLUMN resenha TEXT DEFAULT ''")
+            if "resumo" not in columns:
+                cursor.execute("ALTER TABLE hqs ADD COLUMN resumo TEXT DEFAULT ''")
 
             conn.commit()
+        finally:
+            conn.close()
+
+
+def verificar_hq_duplicada(
+    titulo: str,
+    edicao: str = "",
+    editora: str = "",
+    db_path: str = DB_DEFAULT_PATH
+) -> Optional[Dict[str, Any]]:
+    """
+    Verifica se já existe uma HQ cadastrada com o mesmo Título, Edição/Número e Editora (ignora maiúsculas/minúsculas).
+    """
+    tit_clean = (titulo or "").strip().lower()
+    ed_clean = (edicao or "").strip().lower()
+    edit_clean = (editora or "").strip().lower()
+
+    if not tit_clean:
+        return None
+
+    sql = """
+    SELECT id, titulo, edicao, editora, prateleira, criado_em
+    FROM hqs
+    WHERE LOWER(TRIM(titulo)) = ?
+      AND LOWER(TRIM(COALESCE(edicao, ''))) = ?
+      AND LOWER(TRIM(COALESCE(editora, ''))) = ?
+    LIMIT 1
+    """
+    params = [tit_clean, ed_clean, edit_clean]
+
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql, params)
+            if res.rows:
+                return dict(zip(res.columns, res.rows[0]))
+            return None
+        except Exception:
+            return None
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(params))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
         finally:
             conn.close()
 
@@ -150,15 +246,24 @@ def salvar_hqs(
     itens: List[Dict[str, Any]],
     prateleira: str,
     db_path: str = DB_DEFAULT_PATH,
-    lido_padrao: str = "Não Lido"
-) -> int:
+    lido_padrao: str = "Não Lido",
+    ignorar_duplicadas: bool = True,
+    retornar_detalhes: bool = False
+) -> Any:
     """
-    Insere uma lista de quadrinhos identificados no banco de dados associados à prateleira e autores.
+    Insere uma lista de quadrinhos identificados no banco de dados.
+    Por padrão, ignora edições duplicadas (mesmo Título, Edição/Número e Editora).
     """
     if not itens:
+        if retornar_detalhes:
+            return {"salvos": 0, "duplicados": 0, "itens_salvos": [], "itens_duplicados": []}
         return 0
 
-    registros = []
+    registros_para_inserir = []
+    itens_salvos = []
+    itens_duplicados = []
+    chaves_lote_atual = set()
+
     for item in itens:
         titulo = (item.get("titulo") or "").strip()
         if not titulo:
@@ -178,41 +283,85 @@ def salvar_hqs(
         avaliacao_val = max(0, min(5, avaliacao_raw))
         capa = (item.get("capa") or item.get("capa_url") or "").strip()
         resenha = (item.get("resenha") or "").strip()
+        resumo = (item.get("resumo") or "").strip()
 
-        registros.append((titulo, edicao, editora, genero, escritor, ilustrador, prateleira_val, lido_val, avaliacao_val, capa, resenha))
+        chave_unica = (titulo.lower(), edicao.lower(), editora.lower())
 
-    if not registros:
-        return 0
+        if ignorar_duplicadas:
+            # 1. Verifica duplicidade no mesmo lote da foto
+            if chave_unica in chaves_lote_atual:
+                itens_duplicados.append({
+                    **item,
+                    "motivo_duplicata": f"Duplicada na mesma foto: '{titulo}' ({edicao})"
+                })
+                continue
 
-    if is_using_turso():
-        client = get_turso_client()
-        try:
-            for reg in registros:
-                client.execute(
+            # 2. Verifica duplicidade no banco de dados
+            hq_existente = verificar_hq_duplicada(titulo, edicao, editora, db_path)
+            if hq_existente:
+                itens_duplicados.append({
+                    **item,
+                    "id_existente": hq_existente["id"],
+                    "prateleira_existente": hq_existente["prateleira"],
+                    "motivo_duplicata": f"Já cadastrada no ID #{hq_existente['id']} (Prateleira: '{hq_existente['prateleira']}')"
+                })
+                continue
+
+        chaves_lote_atual.add(chave_unica)
+        item_preparado = {
+            "titulo": titulo,
+            "edicao": edicao,
+            "editora": editora,
+            "genero": genero,
+            "escritor": escritor,
+            "ilustrador": ilustrador,
+            "prateleira": prateleira_val,
+            "lido": lido_val,
+            "avaliacao": avaliacao_val,
+            "capa": capa,
+            "resenha": resenha,
+            "resumo": resumo
+        }
+        itens_salvos.append(item_preparado)
+        registros_para_inserir.append((
+            titulo, edicao, editora, genero, escritor, ilustrador,
+            prateleira_val, lido_val, avaliacao_val, capa, resenha, resumo
+        ))
+
+    if registros_para_inserir:
+        if is_using_turso():
+            for reg in registros_para_inserir:
+                executar_turso_query(
                     """
-                    INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, capa, resenha)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, capa, resenha, resumo)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     list(reg)
                 )
-        finally:
-            client.close()
-    else:
-        conn = get_sqlite_connection(db_path)
-        try:
-            cursor = conn.cursor()
-            cursor.executemany(
-                """
-                INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, capa, resenha)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                registros,
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        else:
+            conn = get_sqlite_connection(db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.executemany(
+                    """
+                    INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, capa, resenha, resumo)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    registros_para_inserir,
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
-    return len(registros)
+    if retornar_detalhes:
+        return {
+            "salvos": len(itens_salvos),
+            "duplicados": len(itens_duplicados),
+            "itens_salvos": itens_salvos,
+            "itens_duplicados": itens_duplicados
+        }
+
+    return len(itens_salvos)
 
 
 def listar_todas_hqs(
@@ -221,12 +370,13 @@ def listar_todas_hqs(
     genero_filtro: Optional[str] = None,
     status_leitura_filtro: Optional[str] = None,
     avaliacao_filtro: Optional[int] = None,
+    ordem_por: str = "titulo_asc",
     db_path: str = DB_DEFAULT_PATH
 ) -> Any:
     """
     Consulta o banco e retorna todas as HQs em formato pandas DataFrame ou lista de dicts.
     """
-    query = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resenha, criado_em FROM hqs WHERE 1=1"
+    query = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em FROM hqs WHERE 1=1"
     params = []
 
     if prateleira_filtro and prateleira_filtro != "Todas":
@@ -247,21 +397,31 @@ def listar_todas_hqs(
 
     if busca and busca.strip():
         termo = f"%{busca.strip()}%"
-        query += " AND (titulo LIKE ? OR editora LIKE ? OR edicao LIKE ? OR genero LIKE ? OR escritor LIKE ? OR ilustrador LIKE ? OR resenha LIKE ?)"
-        params.extend([termo, termo, termo, termo, termo, termo, termo])
+        query += " AND (titulo LIKE ? OR editora LIKE ? OR edicao LIKE ? OR genero LIKE ? OR escritor LIKE ? OR ilustrador LIKE ? OR resumo LIKE ? OR resenha LIKE ?)"
+        params.extend([termo, termo, termo, termo, termo, termo, termo, termo])
 
-    query += " ORDER BY id DESC"
+    # Ordenação dos registros
+    mapa_ordenacao = {
+        "titulo_asc": " ORDER BY LOWER(TRIM(titulo)) ASC, id ASC",
+        "titulo_desc": " ORDER BY LOWER(TRIM(titulo)) DESC, id ASC",
+        "id_desc": " ORDER BY id DESC",
+        "id_asc": " ORDER BY id ASC",
+        "avaliacao_desc": " ORDER BY avaliacao DESC, LOWER(TRIM(titulo)) ASC",
+        "editora_asc": " ORDER BY LOWER(TRIM(editora)) ASC, LOWER(TRIM(titulo)) ASC",
+        "prateleira_asc": " ORDER BY LOWER(TRIM(prateleira)) ASC, LOWER(TRIM(titulo)) ASC"
+    }
+    query += mapa_ordenacao.get(ordem_por, " ORDER BY LOWER(TRIM(titulo)) ASC, id ASC")
 
     if is_using_turso():
-        client = get_turso_client()
         try:
-            res = client.execute(query, params)
+            res = executar_turso_query(query, params)
             rows = [dict(zip(res.columns, r)) for r in res.rows]
             if pd is not None:
                 return pd.DataFrame(rows)
             return rows
-        finally:
-            client.close()
+        except Exception as ex:
+            print(f"Aviso Turso listar_todas_hqs: {ex}")
+            return pd.DataFrame() if pd is not None else []
     else:
         conn = get_sqlite_connection(db_path)
         try:
@@ -281,12 +441,12 @@ def obter_prateleiras(db_path: str = DB_DEFAULT_PATH) -> List[str]:
     """Retorna uma lista única de prateleiras cadastradas."""
     sql = "SELECT DISTINCT prateleira FROM hqs WHERE prateleira IS NOT NULL AND prateleira != '' ORDER BY prateleira ASC"
     if is_using_turso():
-        client = get_turso_client()
         try:
-            res = client.execute(sql)
+            res = executar_turso_query(sql)
             return [r[0] for r in res.rows if r[0]]
-        finally:
-            client.close()
+        except Exception as ex:
+            print(f"Aviso Turso obter_prateleiras: {ex}")
+            return []
     else:
         conn = get_sqlite_connection(db_path)
         try:
@@ -302,12 +462,12 @@ def obter_generos(db_path: str = DB_DEFAULT_PATH) -> List[str]:
     """Retorna uma lista única de gêneros cadastrados."""
     sql = "SELECT DISTINCT genero FROM hqs WHERE genero IS NOT NULL AND genero != '' ORDER BY genero ASC"
     if is_using_turso():
-        client = get_turso_client()
         try:
-            res = client.execute(sql)
+            res = executar_turso_query(sql)
             return [r[0] for r in res.rows if r[0]]
-        finally:
-            client.close()
+        except Exception as ex:
+            print(f"Aviso Turso obter_generos: {ex}")
+            return []
     else:
         conn = get_sqlite_connection(db_path)
         try:
@@ -320,69 +480,61 @@ def obter_generos(db_path: str = DB_DEFAULT_PATH) -> List[str]:
 
 
 def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
-    """Retorna métricas gerais da coleção."""
+    """Retorna métricas gerais da coleção em uma única consulta ultra-otimizada."""
+    sql = """
+    SELECT 
+        COUNT(*) as total_hqs,
+        COUNT(DISTINCT CASE WHEN prateleira IS NOT NULL AND prateleira != '' THEN prateleira END) as total_prat,
+        COUNT(DISTINCT CASE WHEN editora IS NOT NULL AND editora != '' THEN editora END) as total_edit,
+        COUNT(DISTINCT CASE WHEN genero IS NOT NULL AND genero != '' THEN genero END) as total_gen,
+        SUM(CASE WHEN lido = 'Lido' THEN 1 ELSE 0 END) as total_lidos,
+        AVG(CASE WHEN avaliacao > 0 THEN avaliacao ELSE NULL END) as media_aval,
+        COUNT(CASE WHEN avaliacao > 0 THEN 1 ELSE NULL END) as total_avaliados
+    FROM hqs
+    """
     if is_using_turso():
-        client = get_turso_client()
         try:
-            total_hqs = client.execute("SELECT COUNT(*) FROM hqs").rows[0][0] or 0
-            total_prat = client.execute("SELECT COUNT(DISTINCT prateleira) FROM hqs WHERE prateleira != ''").rows[0][0] or 0
-            total_edit = client.execute("SELECT COUNT(DISTINCT editora) FROM hqs WHERE editora != ''").rows[0][0] or 0
-            total_gen = client.execute("SELECT COUNT(DISTINCT genero) FROM hqs WHERE genero != ''").rows[0][0] or 0
-            total_lidos = client.execute("SELECT COUNT(*) FROM hqs WHERE lido = 'Lido'").rows[0][0] or 0
-            total_nao_lidos = total_hqs - total_lidos
-            
-            row_aval = client.execute("SELECT AVG(avaliacao), COUNT(*) FROM hqs WHERE avaliacao > 0").rows[0]
-            media_aval = round(float(row_aval[0]), 1) if row_aval[0] is not None else 0.0
-            total_avaliados = row_aval[1] or 0
-
-            return {
-                "total_hqs": total_hqs,
-                "total_prateleiras": total_prat,
-                "total_editoras": total_edit,
-                "total_generos": total_gen,
-                "total_lidos": total_lidos,
-                "total_nao_lidos": total_nao_lidos,
-                "media_avaliacao": media_aval,
-                "total_avaliados": total_avaliados,
-            }
-        finally:
-            client.close()
+            res = executar_turso_query(sql)
+            if res.rows:
+                r = res.rows[0]
+                tot_hqs = r[0] or 0
+                tot_lidos = r[4] or 0
+                med_aval = round(float(r[5]), 1) if r[5] is not None else 0.0
+                return {
+                    "total_hqs": tot_hqs,
+                    "total_prateleiras": r[1] or 0,
+                    "total_editoras": r[2] or 0,
+                    "total_generos": r[3] or 0,
+                    "total_lidos": tot_lidos,
+                    "total_nao_lidos": tot_hqs - tot_lidos,
+                    "media_avaliacao": med_aval,
+                    "total_avaliados": r[6] or 0,
+                }
+            return {"total_hqs": 0, "total_prateleiras": 0, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
+        except Exception as ex:
+            print(f"Aviso Turso obter_estatisticas: {ex}")
+            return {"total_hqs": 0, "total_prateleiras": 0, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
     else:
         conn = get_sqlite_connection(db_path)
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) as total FROM hqs")
-            total_hqs = cursor.fetchone()["total"]
-
-            cursor.execute("SELECT COUNT(DISTINCT prateleira) as total_prat FROM hqs")
-            total_prateleiras = cursor.fetchone()["total_prat"]
-
-            cursor.execute("SELECT COUNT(DISTINCT editora) as total_edit FROM hqs WHERE editora != '' AND editora IS NOT NULL")
-            total_editoras = cursor.fetchone()["total_edit"]
-
-            cursor.execute("SELECT COUNT(DISTINCT genero) as total_gen FROM hqs WHERE genero != '' AND genero IS NOT NULL")
-            total_generos = cursor.fetchone()["total_gen"]
-
-            cursor.execute("SELECT COUNT(*) as total_lidos FROM hqs WHERE lido = 'Lido'")
-            total_lidos = cursor.fetchone()["total_lidos"]
-
-            total_nao_lidos = total_hqs - total_lidos
-
-            cursor.execute("SELECT AVG(avaliacao) as media_aval, COUNT(*) as total_aval FROM hqs WHERE avaliacao > 0")
-            row_aval = cursor.fetchone()
-            media_aval = round(float(row_aval["media_aval"]), 1) if row_aval["media_aval"] is not None else 0.0
-            total_avaliados = row_aval["total_aval"] or 0
-
-            return {
-                "total_hqs": total_hqs,
-                "total_prateleiras": total_prateleiras,
-                "total_editoras": total_editoras,
-                "total_generos": total_generos,
-                "total_lidos": total_lidos,
-                "total_nao_lidos": total_nao_lidos,
-                "media_avaliacao": media_aval,
-                "total_avaliados": total_avaliados,
-            }
+            cursor.execute(sql)
+            row = cursor.fetchone()
+            if row:
+                tot_hqs = row["total_hqs"] or 0
+                tot_lidos = row["total_lidos"] or 0
+                med_aval = round(float(row["media_aval"]), 1) if row["media_aval"] is not None else 0.0
+                return {
+                    "total_hqs": tot_hqs,
+                    "total_prateleiras": row["total_prat"] or 0,
+                    "total_editoras": row["total_edit"] or 0,
+                    "total_generos": row["total_gen"] or 0,
+                    "total_lidos": tot_lidos,
+                    "total_nao_lidos": tot_hqs - tot_lidos,
+                    "media_avaliacao": med_aval,
+                    "total_avaliados": row["total_avaliados"] or 0,
+                }
+            return {"total_hqs": 0, "total_prateleiras": 0, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
         finally:
             conn.close()
 
@@ -390,12 +542,11 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
 def deletar_hq(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> bool:
     """Exclui um registro específico por ID."""
     if is_using_turso():
-        client = get_turso_client()
         try:
-            res = client.execute("DELETE FROM hqs WHERE id = ?", [hq_id])
+            res = executar_turso_query("DELETE FROM hqs WHERE id = ?", [hq_id])
             return res.rows_affected > 0
-        finally:
-            client.close()
+        except Exception:
+            return False
     else:
         conn = get_sqlite_connection(db_path)
         try:
@@ -407,18 +558,73 @@ def deletar_hq(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> bool:
             conn.close()
 
 
+def deletar_hqs_em_massa(hq_ids: List[int], db_path: str = DB_DEFAULT_PATH) -> int:
+    """Exclui múltiplos registros de HQs em lote por ID."""
+    if not hq_ids:
+        return 0
+
+    placeholders = ", ".join(["?"] * len(hq_ids))
+    sql = f"DELETE FROM hqs WHERE id IN ({placeholders})"
+    params = [int(i) for i in hq_ids]
+
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql, params)
+            return res.rows_affected if hasattr(res, "rows_affected") else len(hq_ids)
+        except Exception as ex:
+            print(f"Erro Turso deletar_hqs_em_massa: {ex}")
+            return 0
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(params))
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+
+def atualizar_status_leitura_em_massa(hq_ids: List[int], novo_status: str, db_path: str = DB_DEFAULT_PATH) -> int:
+    """Atualiza o status de leitura ('Lido' ou 'Não Lido') de múltiplos registros em lote."""
+    if not hq_ids:
+        return 0
+
+    status_limpo = "Lido" if str(novo_status).strip().lower() == "lido" else "Não Lido"
+    placeholders = ", ".join(["?"] * len(hq_ids))
+    sql = f"UPDATE hqs SET lido = ? WHERE id IN ({placeholders})"
+    params = [status_limpo] + [int(i) for i in hq_ids]
+
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql, params)
+            return res.rows_affected if hasattr(res, "rows_affected") else len(hq_ids)
+        except Exception as ex:
+            print(f"Erro Turso atualizar_status_leitura_em_massa: {ex}")
+            return 0
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(params))
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+
+
 def obter_hq_por_id(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict[str, Any]]:
     """Busca os dados de uma HQ específica pelo seu ID."""
-    sql = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resenha, criado_em FROM hqs WHERE id = ?"
+    sql = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em FROM hqs WHERE id = ?"
     if is_using_turso():
-        client = get_turso_client()
         try:
-            res = client.execute(sql, [hq_id])
+            res = executar_turso_query(sql, [hq_id])
             if res.rows:
                 return dict(zip(res.columns, res.rows[0]))
             return None
-        finally:
-            client.close()
+        except Exception:
+            return None
     else:
         conn = get_sqlite_connection(db_path)
         try:
@@ -445,6 +651,7 @@ def atualizar_hq(
     avaliacao: int = 0,
     capa: str = "",
     resenha: str = "",
+    resumo: str = "",
     db_path: str = DB_DEFAULT_PATH
 ) -> bool:
     """Atualiza os campos de um registro de HQ existente."""
@@ -455,7 +662,7 @@ def atualizar_hq(
 
     sql = """
     UPDATE hqs
-    SET titulo = ?, edicao = ?, editora = ?, genero = ?, escritor = ?, ilustrador = ?, prateleira = ?, lido = ?, avaliacao = ?, capa = ?, resenha = ?
+    SET titulo = ?, edicao = ?, editora = ?, genero = ?, escritor = ?, ilustrador = ?, prateleira = ?, lido = ?, avaliacao = ?, capa = ?, resenha = ?, resumo = ?
     WHERE id = ?
     """
     params = [
@@ -470,16 +677,16 @@ def atualizar_hq(
         val_avaliacao,
         capa.strip(),
         resenha.strip(),
+        resumo.strip(),
         hq_id
     ]
 
     if is_using_turso():
-        client = get_turso_client()
         try:
-            res = client.execute(sql, params)
+            res = executar_turso_query(sql, params)
             return res.rows_affected > 0
-        finally:
-            client.close()
+        except Exception:
+            return False
     else:
         conn = get_sqlite_connection(db_path)
         try:
@@ -496,12 +703,11 @@ def definir_capa(hq_id: int, capa: str, db_path: str = DB_DEFAULT_PATH) -> bool:
     sql = "UPDATE hqs SET capa = ? WHERE id = ?"
     url_clean = (capa or "").strip()
     if is_using_turso():
-        client = get_turso_client()
         try:
-            res = client.execute(sql, [url_clean, hq_id])
+            res = executar_turso_query(sql, [url_clean, hq_id])
             return res.rows_affected > 0
-        finally:
-            client.close()
+        except Exception:
+            return False
     else:
         conn = get_sqlite_connection(db_path)
         try:
@@ -527,12 +733,11 @@ def definir_avaliacao(hq_id: int, avaliacao: int, db_path: str = DB_DEFAULT_PATH
 
     sql = "UPDATE hqs SET avaliacao = ? WHERE id = ?"
     if is_using_turso():
-        client = get_turso_client()
         try:
-            res = client.execute(sql, [val_avaliacao, hq_id])
+            res = executar_turso_query(sql, [val_avaliacao, hq_id])
             return res.rows_affected > 0
-        finally:
-            client.close()
+        except Exception:
+            return False
     else:
         conn = get_sqlite_connection(db_path)
         try:
@@ -549,12 +754,11 @@ def definir_resenha(hq_id: int, resenha: str, db_path: str = DB_DEFAULT_PATH) ->
     sql = "UPDATE hqs SET resenha = ? WHERE id = ?"
     resenha_clean = (resenha or "").strip()
     if is_using_turso():
-        client = get_turso_client()
         try:
-            res = client.execute(sql, [resenha_clean, hq_id])
+            res = executar_turso_query(sql, [resenha_clean, hq_id])
             return res.rows_affected > 0
-        finally:
-            client.close()
+        except Exception:
+            return False
     else:
         conn = get_sqlite_connection(db_path)
         try:
@@ -564,6 +768,28 @@ def definir_resenha(hq_id: int, resenha: str, db_path: str = DB_DEFAULT_PATH) ->
             return cursor.rowcount > 0
         finally:
             conn.close()
+
+
+def definir_resumo(hq_id: int, resumo: str, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """Atualiza diretamente o resumo/sinopse da história de uma HQ."""
+    sql = "UPDATE hqs SET resumo = ? WHERE id = ?"
+    resumo_clean = (resumo or "").strip()
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql, [resumo_clean, hq_id])
+            return res.rows_affected > 0
+        except Exception:
+            return False
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (resumo_clean, hq_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
 
 
 def alternar_status_leitura(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[str]:
@@ -586,6 +812,206 @@ def alternar_status_leitura(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optio
         avaliacao=int(hq.get("avaliacao") or 0),
         capa=hq.get("capa") or "",
         resenha=hq.get("resenha") or "",
+        resumo=hq.get("resumo") or "",
         db_path=db_path
     )
     return novo_status
+
+
+def obter_contexto_hqs_para_chat(db_path: str = DB_DEFAULT_PATH) -> List[Dict[str, Any]]:
+    """Retorna todas as HQs do banco em formato de lista de dicionários para alimentar o chatbot."""
+    df_ou_lista = listar_todas_hqs(db_path=db_path)
+    if pd is not None and isinstance(df_ou_lista, pd.DataFrame):
+        return df_ou_lista.to_dict(orient="records")
+    elif isinstance(df_ou_lista, list):
+        return df_ou_lista
+    return []
+
+
+# -------------------------------------------------------------
+# FUNÇÕES DA LISTA DE DESEJOS (WISHLIST)
+# -------------------------------------------------------------
+def adicionar_item_lista_desejos(
+    titulo: str,
+    edicao: str = "",
+    editora: str = "",
+    melhor_preco: float = 0.0,
+    melhor_loja: str = "",
+    link_oferta: str = "",
+    observacoes: str = "",
+    db_path: str = DB_DEFAULT_PATH
+) -> int:
+    """Insere um novo título na Lista de Desejos."""
+    tit_clean = (titulo or "").strip()
+    if not tit_clean:
+        return 0
+
+    ed_clean = (edicao or "").strip()
+    edit_clean = (editora or "").strip()
+    loja_clean = (melhor_loja or "").strip()
+    link_clean = (link_oferta or "").strip()
+    obs_clean = (observacoes or "").strip()
+    try:
+        preco_val = float(melhor_preco or 0.0)
+    except (ValueError, TypeError):
+        preco_val = 0.0
+
+    sql = """
+    INSERT INTO lista_desejos (titulo, edicao, editora, melhor_preco, melhor_loja, link_oferta, observacoes)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """
+    params = [tit_clean, ed_clean, edit_clean, preco_val, loja_clean, link_clean, obs_clean]
+
+    if is_using_turso():
+        try:
+            executar_turso_query(sql, params)
+            res_id = executar_turso_query("SELECT last_insert_rowid()").rows[0][0]
+            return int(res_id) if res_id else 1
+        except Exception as e:
+            print(f"Erro ao adicionar na lista de desejos (Turso): {e}")
+            return 0
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(params))
+            conn.commit()
+            return cursor.lastrowid or 0
+        finally:
+            conn.close()
+
+
+def listar_lista_desejos(db_path: str = DB_DEFAULT_PATH) -> Any:
+    """Retorna todos os itens da Lista de Desejos."""
+    sql = "SELECT id, titulo, edicao, editora, melhor_preco, melhor_loja, link_oferta, observacoes, criado_em FROM lista_desejos ORDER BY id DESC"
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql)
+            rows = [dict(zip(res.columns, r)) for r in res.rows]
+            if pd is not None:
+                return pd.DataFrame(rows)
+            return rows
+        except Exception:
+            return pd.DataFrame() if pd is not None else []
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            if pd is not None:
+                return pd.read_sql_query(sql, conn)
+            else:
+                cursor = conn.cursor()
+                cursor.execute(sql)
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+
+def deletar_item_lista_desejos(item_id: int, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """Remove um item da Lista de Desejos."""
+    sql = "DELETE FROM lista_desejos WHERE id = ?"
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql, [item_id])
+            return res.rows_affected > 0
+        except Exception:
+            return False
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (item_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+
+def obter_item_lista_desejos(item_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict[str, Any]]:
+    """Obtém um item específico da Lista de Desejos por ID."""
+    sql = "SELECT id, titulo, edicao, editora, melhor_preco, melhor_loja, link_oferta, observacoes, criado_em FROM lista_desejos WHERE id = ?"
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql, [item_id])
+            if res.rows:
+                return dict(zip(res.columns, res.rows[0]))
+            return None
+        except Exception:
+            return None
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (item_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+
+def atualizar_item_lista_desejos(
+    item_id: int,
+    titulo: Optional[str] = None,
+    edicao: Optional[str] = None,
+    editora: Optional[str] = None,
+    melhor_preco: Optional[float] = None,
+    melhor_loja: Optional[str] = None,
+    link_oferta: Optional[str] = None,
+    observacoes: Optional[str] = None,
+    db_path: str = DB_DEFAULT_PATH
+) -> bool:
+    """Atualiza os campos de um item da Lista de Desejos."""
+    campos = []
+    valores = []
+
+    if titulo is not None:
+        campos.append("titulo = ?")
+        valores.append(str(titulo).strip())
+    if edicao is not None:
+        campos.append("edicao = ?")
+        valores.append(str(edicao).strip())
+    if editora is not None:
+        campos.append("editora = ?")
+        valores.append(str(editora).strip())
+    if melhor_preco is not None:
+        try:
+            preco_num = float(melhor_preco)
+        except (ValueError, TypeError):
+            preco_num = 0.0
+        campos.append("melhor_preco = ?")
+        valores.append(preco_num)
+    if melhor_loja is not None:
+        campos.append("melhor_loja = ?")
+        valores.append(str(melhor_loja).strip())
+    if link_oferta is not None:
+        campos.append("link_oferta = ?")
+        valores.append(str(link_oferta).strip())
+    if observacoes is not None:
+        campos.append("observacoes = ?")
+        valores.append(str(observacoes).strip())
+
+    if not campos:
+        return False
+
+    valores.append(item_id)
+    sql = f"UPDATE lista_desejos SET {', '.join(campos)} WHERE id = ?"
+
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql, valores)
+            return res.rows_affected > 0
+        except Exception as e:
+            print(f"Erro ao atualizar lista de desejos (Turso): {e}")
+            return False
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(valores))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+
+
