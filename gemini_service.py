@@ -162,7 +162,7 @@ import io
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
-FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3-flash-preview"]
 
 
 def redimensionar_para_ia(imagem: Any, max_dim: int = 1600) -> Any:
@@ -278,17 +278,10 @@ Seu objetivo é:
 4. Mantenha um tom amigável, prestativo e de entusiasta de quadrinhos, utilizando formatação Markdown limpa e agradável."""
 
 
-def _invocar_gemini_chatbot(client, mod, prompt):
-    try:
-        response = client.models.generate_content(
-            model=mod,
-            contents=prompt
-        )
-        if response and response.text:
-            return response.text.strip()
-    except Exception as e:
-        print(f"[Aviso Gemini Chatbot mod={mod}]: {e}")
-    return None
+def _eh_erro_sobrecarga(erro_str: str) -> bool:
+    """Verifica se o erro retornado pela API indica sobrecarga temporária ou rate limit."""
+    err_low = erro_str.lower()
+    return any(termo in err_low for termo in ["503", "unavailable", "high demand", "429", "resource_exhausted", "quota", "overloaded"])
 
 
 def consultar_chatbot_colecao(
@@ -296,47 +289,56 @@ def consultar_chatbot_colecao(
     catalogo_hqs: List[Dict[str, Any]],
     historico_mensagens: Optional[List[Dict[str, str]]] = None,
     api_key: Optional[str] = None,
-    modelo: str = "gemini-3.6-flash"
+    modelo: str = "gemini-3.1-flash-lite",
+    max_retries_por_modelo: int = 2
 ) -> str:
     """
     Processa a pergunta do usuário utilizando o catálogo completo de HQs e seus resumos como contexto.
+    Possui sistema robusto de retry com backoff e fallback automático entre modelos Gemini de última geração.
     """
     if not catalogo_hqs:
         return "Seu catálogo de HQs ainda está vazio! Cadastre algumas edições por foto para que eu possa analisar os resumos e recomendar histórias."
 
     client = get_gemini_client(api_key)
 
-    # Formata a base de HQs em texto estruturado para a IA
+    # Formata a base de HQs de forma enxuta, densa e rápida para a IA processar sem sobrecarga
     linhas_catalogo = []
     for hq in catalogo_hqs:
         id_hq = hq.get("id") or "?"
-        tit = hq.get("titulo") or "Sem título"
-        ed = hq.get("edicao") or ""
-        edit = hq.get("editora") or "Não informada"
-        gen = hq.get("genero") or "Outro"
-        esc = hq.get("escritor") or "Não informado"
-        ilu = hq.get("ilustrador") or "Não informado"
-        prat = hq.get("prateleira") or "Não especificada"
-        lido = hq.get("lido") or "Não Lido"
+        tit = (hq.get("titulo") or "Sem título").strip()
+        ed = (hq.get("edicao") or "").strip()
+        edit = (hq.get("editora") or "Não informada").strip()
+        gen = (hq.get("genero") or "Outro").strip()
+        esc = (hq.get("escritor") or "Não informado").strip()
+        ilu = (hq.get("ilustrador") or "Não informado").strip()
+        prat = (hq.get("prateleira") or "Não especificada").strip()
+        lido = (hq.get("lido") or "Não Lido").strip()
         aval = int(hq.get("avaliacao") or 0)
         resumo = (hq.get("resumo") or "").strip() or "Resumo não informado."
         resenha = (hq.get("resenha") or "").strip()
 
+        # Otimiza o tamanho do resumo para evitar payload desnecessário mantendo a premissa
+        if len(resumo) > 240:
+            resumo = resumo[:237] + "..."
+
+        ed_str = f" ({ed})" if ed else ""
         bloco = (
-            f"- [ID #{id_hq}] \"{tit}\" ({ed}) | Editora: {edit} | Gênero: {gen} | Roteiro: {esc} | Arte: {ilu} | "
-            f"Prateleira: {prat} | Status: {lido} | Avaliação: {aval} estrela(s)\n"
-            f"  Sinopse/Resumo: {resumo}"
+            f"- [#{id_hq}] \"{tit}\"{ed_str} | Ed: {edit} | Gên: {gen} | Roteiro: {esc} | Arte: {ilu} | "
+            f"Local: {prat} | Status: {lido} | {aval}⭐\n"
+            f"  Sinopse: {resumo}"
         )
         if resenha:
+            if len(resenha) > 150:
+                resenha = resenha[:147] + "..."
             bloco += f"\n  Opinião do Leitor: {resenha}"
         linhas_catalogo.append(bloco)
 
-    contexto_catalogo = "\n\n".join(linhas_catalogo)
+    contexto_catalogo = "\n".join(linhas_catalogo)
 
     prompt_final = f"""{PROMPT_SISTEMA_CHATBOT}
 
 ---
-### CATÁLOGO ATUAL DO USUÁRIO ({len(catalogo_hqs)} HQs cadastradas):
+### CATÁLOGO DO USUÁRIO ({len(catalogo_hqs)} HQs cadastradas):
 {contexto_catalogo}
 ---
 """
@@ -348,24 +350,38 @@ def consultar_chatbot_colecao(
 
     prompt_final += f"\nUsuário: {pergunta}\nAssistente:"
 
+    # Lista ordenada de modelos recomendados e ativos
     modelos_tentativa = [modelo]
-    for fb in ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest"]:
+    modelos_disponiveis = [
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3-flash-preview"
+    ]
+    for fb in modelos_disponiveis:
         if fb not in modelos_tentativa:
             modelos_tentativa.append(fb)
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        for mod in modelos_tentativa[:3]:
-            future = executor.submit(_invocar_gemini_chatbot, client, mod, prompt_final)
+    for mod in modelos_tentativa:
+        for tentativa in range(1, max_retries_por_modelo + 1):
             try:
-                res = future.result(timeout=10.0)
-                if res:
-                    return res
-            except TimeoutError:
-                print(f"[Timeout no modelo {mod}]")
-                continue
-            except Exception as e:
-                print(f"[Erro no modelo {mod}]: {e}")
-                continue
+                response = client.models.generate_content(
+                    model=mod,
+                    contents=prompt_final
+                )
+                if response and response.text:
+                    return response.text.strip()
+            except Exception as ex:
+                erro_str = str(ex)
+                print(f"[Aviso Gemini Chatbot mod={mod} tentativa={tentativa}]: {ex}")
+
+                if _eh_erro_sobrecarga(erro_str) and tentativa < max_retries_por_modelo:
+                    tempo_espera = 1.0 * tentativa
+                    time.sleep(tempo_espera)
+                else:
+                    # Passa para o próximo modelo da lista
+                    break
 
     return "Desculpe, ocorreu uma instabilidade temporária ao consultar a IA. Por favor, tente novamente em instantes."
 
@@ -472,23 +488,18 @@ def pesquisar_precos_hq(
 
     # Modelos canônicos rápidos e válidos
     modelos_para_tentar = [modelo]
-    for fb in ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest"]:
+    for fb in ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]:
         if fb not in modelos_para_tentar:
             modelos_para_tentar.append(fb)
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        for mod in modelos_para_tentar[:2]:
-            future = executor.submit(_invocar_gemini_precos, client, mod, prompt, config)
-            try:
-                # Timeout estrito de 4.0 segundos por tentativa
-                res = future.result(timeout=4.0)
-                if res:
-                    resultado = res
-                    break
-            except TimeoutError:
-                continue
-            except Exception:
-                continue
+    for mod in modelos_para_tentar:
+        for tentativa in range(1, 3):
+            resultado = _invocar_gemini_precos(client, mod, prompt, config)
+            if resultado:
+                break
+            time.sleep(1.0 * tentativa)
+        if resultado:
+            break
 
     if not resultado or not isinstance(resultado, dict):
         resultado = {

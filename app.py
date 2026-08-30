@@ -109,9 +109,9 @@ with st.sidebar:
     # Seletor de Modelo Gemini
     modelo_selecionado = st.selectbox(
         "Modelo do Gemini:",
-        options=["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest"],
+        options=["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3-flash-preview"],
         index=0,
-        help="gemini-3.6-flash é o modelo oficial mais recente e rápido recomendado pelo Google."
+        help="gemini-3.1-flash-lite e gemini-3.5-flash são os modelos oficiais mais rápidos, estáveis e recomendados para catalogação e curadoria."
     )
 
     # Indicador de Banco de Dados
