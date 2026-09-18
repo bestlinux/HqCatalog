@@ -345,7 +345,16 @@ class TestHqCatalog(unittest.TestCase):
         self.assertTrue(gemini_service.eh_intencao_pesquisa_preco("Preço na Comix ou Mundos Infinitos"))
         self.assertFalse(gemini_service.eh_intencao_pesquisa_preco("Quero ler algo de terror"))
 
-        # 2. Testar geração de links das 5 lojas
+        # 2. Testar filtro de Livros e Revistas (desconsiderar vestuário, brinquedos, canecas, etc.)
+        self.assertTrue(gemini_service.eh_livro_ou_revista({"title": "Watchmen Edição Definitiva"}))
+        self.assertTrue(gemini_service.eh_livro_ou_revista({"title": "Sandman - Volume 1 (Panini)"}))
+        self.assertTrue(gemini_service.eh_livro_ou_revista({"title": "Akira Mangá Volume 6"}))
+        self.assertFalse(gemini_service.eh_livro_ou_revista({"title": "Camiseta Batman Cavaleiro das Trevas GG"}))
+        self.assertFalse(gemini_service.eh_livro_ou_revista({"title": "Boneco Action Figure Watchmen Rorschach 15cm"}))
+        self.assertFalse(gemini_service.eh_livro_ou_revista({"title": "Caneca de Cerâmica Homem-Aranha"}))
+        self.assertFalse(gemini_service.eh_livro_ou_revista({"title": "Pop Funko Flash 10cm"}))
+
+        # 3. Testar geração de links das 5 lojas
         link_amz = gemini_service.gerar_link_loja("Amazon", "Flash Omnibus")
         link_magalu = gemini_service.gerar_link_loja("MagazineLuiza", "Flash Omnibus")
         link_ml = gemini_service.gerar_link_loja("MercadoLivre", "Flash Omnibus")
@@ -468,7 +477,101 @@ class TestHqCatalog(unittest.TestCase):
         self.assertIsNotNone(outra)
         self.assertNotEqual(outra["id"], id_atual)
 
+    def test_buscar_hqs_por_titulo_ou_edicao(self):
+        database.salvar_hqs([
+            {"titulo": "Watchmen", "edicao": "Edição Definitiva", "editora": "Panini"},
+            {"titulo": "Watchmen", "edicao": "Edição Standard", "editora": "Panini"},
+            {"titulo": "Batman: Ano Um", "edicao": "Edição Especial", "editora": "Panini"}
+        ], "Estante Teste", self.test_db)
+
+        # 1. Busca exata por título e edição
+        res_exata = database.buscar_hqs_por_titulo_ou_edicao("Watchmen", "Edição Definitiva", self.test_db)
+        self.assertEqual(len(res_exata), 1)
+        self.assertEqual(res_exata[0]["edicao"], "Edição Definitiva")
+
+        # 2. Busca por título (deve retornar as 2 de Watchmen)
+        res_tit = database.buscar_hqs_por_titulo_ou_edicao("Watchmen", db_path=self.test_db)
+        self.assertEqual(len(res_tit), 2)
+
+        # 3. Busca parcial por termo
+        res_parcial = database.buscar_hqs_por_titulo_ou_edicao("Ano Um", db_path=self.test_db)
+        self.assertEqual(len(res_parcial), 1)
+        self.assertEqual(res_parcial[0]["titulo"], "Batman: Ano Um")
+
+        # 4. Busca inexistente
+        res_inex = database.buscar_hqs_por_titulo_ou_edicao("Título Inexistente", db_path=self.test_db)
+        self.assertEqual(len(res_inex), 0)
+
+    def test_crud_parser_dict(self):
+        sample_json_block = """```json
+{
+  "acao": "adicionar",
+  "explicacao": "Adicionando Watchmen",
+  "dados": {
+    "titulo": "Watchmen",
+    "edicao": "Edição Definitiva",
+    "preco_pago": 120.0
+  }
+}
+```"""
+        parsed = gemini_service.limpar_e_parsear_json_dict(sample_json_block)
+        self.assertEqual(parsed.get("acao"), "adicionar")
+        self.assertEqual(parsed.get("dados", {}).get("titulo"), "Watchmen")
+        self.assertEqual(parsed.get("dados", {}).get("preco_pago"), 120.0)
+
+    def test_audio_transcription_empty(self):
+        # Testar que áudio vazio retorna string vazia sem erro
+        self.assertEqual(gemini_service.transcrever_audio_resenha(b""), "")
+
+    def test_prateleiras_detalhadas_e_renomear(self):
+        # 1. Inserir HQs em 2 prateleiras diferentes
+        database.salvar_hqs([
+            {"titulo": "Watchmen", "lido": "Lido", "avaliacao": 5},
+            {"titulo": "Sandman", "lido": "Não Lido", "avaliacao": 4}
+        ], "Estante Marvel", self.test_db)
+
+        database.salvar_hqs([
+            {"titulo": "Akira", "lido": "Lido", "avaliacao": 5}
+        ], "Estante Mangás", self.test_db)
+
+        # 2. Listar prateleiras detalhadas
+        detalhes = database.listar_prateleiras_detalhadas(self.test_db)
+        self.assertEqual(len(detalhes), 2)
+        
+        prat_marvel = next((p for p in detalhes if p["prateleira"] == "Estante Marvel"), None)
+        self.assertIsNotNone(prat_marvel)
+        self.assertEqual(prat_marvel["total_hqs"], 2)
+        self.assertEqual(prat_marvel["total_lidos"], 1)
+        self.assertEqual(prat_marvel["total_nao_lidos"], 1)
+
+        # 3. Renomear prateleira
+        qtd_alterada = database.renomear_prateleira("Estante Marvel", "Estante DC & Vertigo", self.test_db)
+        self.assertEqual(qtd_alterada, 2)
+
+        # 4. Verificar se o novo nome foi aplicado às HQs
+        detalhes_novos = database.listar_prateleiras_detalhadas(self.test_db)
+        nomes = [p["prateleira"] for p in detalhes_novos]
+        self.assertIn("Estante DC & Vertigo", nomes)
+        # 5. Cadastrar nova prateleira vazia (sem HQs)
+        sucesso_cadastro = database.cadastrar_prateleira("Estante 3 - Quadrinhos Europeus", self.test_db)
+        self.assertTrue(sucesso_cadastro)
+
+        # 6. Verificar se a nova prateleira vazia aparece na listagem detalhada e em obter_prateleiras
+        detalhes_com_vazia = database.listar_prateleiras_detalhadas(self.test_db)
+        nomes_com_vazia = [p["prateleira"] for p in detalhes_com_vazia]
+        self.assertIn("Estante 3 - Quadrinhos Europeus", nomes_com_vazia)
+
+        prat_vazia = next((p for p in detalhes_com_vazia if p["prateleira"] == "Estante 3 - Quadrinhos Europeus"), None)
+        self.assertIsNotNone(prat_vazia)
+        self.assertEqual(prat_vazia["total_hqs"], 0)
+
+        lista_prats = database.obter_prateleiras(self.test_db)
+        self.assertIn("Estante 3 - Quadrinhos Europeus", lista_prats)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
 
 

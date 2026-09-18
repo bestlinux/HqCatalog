@@ -132,10 +132,28 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
         criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """
+    create_table_prateleiras_sql = """
+    CREATE TABLE IF NOT EXISTS prateleiras (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT UNIQUE NOT NULL,
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """
+    seed_prateleiras_sql = """
+    INSERT OR IGNORE INTO prateleiras (nome)
+    SELECT DISTINCT TRIM(prateleira)
+    FROM hqs
+    WHERE prateleira IS NOT NULL AND TRIM(prateleira) != '' AND TRIM(prateleira) != 'Não especificada' AND TRIM(prateleira) != 'Estante 1 - Prateleira 1';
+    """
     if is_using_turso():
         try:
             executar_turso_query(create_table_sql)
             executar_turso_query(create_table_desejos_sql)
+            executar_turso_query(create_table_prateleiras_sql)
+            try:
+                executar_turso_query(seed_prateleiras_sql)
+            except Exception:
+                pass
             # Migrações seguras no Turso
             try:
                 res = executar_turso_query("PRAGMA table_info(hqs)")
@@ -168,6 +186,11 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
             cursor = conn.cursor()
             cursor.execute(create_table_sql)
             cursor.execute(create_table_desejos_sql)
+            cursor.execute(create_table_prateleiras_sql)
+            try:
+                cursor.execute(seed_prateleiras_sql)
+            except Exception:
+                pass
             cursor.execute("PRAGMA table_info(hqs)")
             columns = [row["name"] for row in cursor.fetchall()]
             
@@ -238,6 +261,95 @@ def verificar_hq_duplicada(
             if row:
                 return dict(row)
             return None
+        finally:
+            conn.close()
+
+
+def buscar_hqs_por_titulo_ou_edicao(
+    termo: str,
+    edicao: Optional[str] = None,
+    db_path: str = DB_DEFAULT_PATH
+) -> List[Dict[str, Any]]:
+    """
+    Busca HQs no banco de dados por título (correspondência exata ou parcial) e opcionalmente por edição.
+    Retorna uma lista de dicionários com os registros encontrados.
+    """
+    tit_clean = (termo or "").strip()
+    if not tit_clean:
+        return []
+
+    ed_clean = (edicao or "").strip()
+
+    # 1. Tentativa de correspondência exata de título (+ edição se fornecida)
+    if ed_clean:
+        sql_exata = """
+        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+        FROM hqs
+        WHERE LOWER(TRIM(titulo)) = LOWER(?)
+          AND LOWER(TRIM(COALESCE(edicao, ''))) = LOWER(?)
+        ORDER BY id DESC
+        """
+        params_exata = [tit_clean, ed_clean]
+    else:
+        sql_exata = """
+        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+        FROM hqs
+        WHERE LOWER(TRIM(titulo)) = LOWER(?)
+        ORDER BY id DESC
+        """
+        params_exata = [tit_clean]
+
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql_exata, params_exata)
+            if res.rows:
+                return [dict(zip(res.columns, r)) for r in res.rows]
+        except Exception:
+            pass
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql_exata, tuple(params_exata))
+            rows = cursor.fetchall()
+            if rows:
+                return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    # 2. Se não encontrou correspondência exata, busca parcial com LIKE
+    termo_like = f"%{tit_clean}%"
+    if ed_clean:
+        sql_like = """
+        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+        FROM hqs
+        WHERE LOWER(titulo) LIKE LOWER(?)
+          AND LOWER(COALESCE(edicao, '')) LIKE LOWER(?)
+        ORDER BY id DESC
+        """
+        params_like = [termo_like, f"%{ed_clean}%"]
+    else:
+        sql_like = """
+        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+        FROM hqs
+        WHERE LOWER(titulo) LIKE LOWER(?)
+        ORDER BY id DESC
+        """
+        params_like = [termo_like]
+
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql_like, params_like)
+            return [dict(zip(res.columns, r)) for r in res.rows] if res.rows else []
+        except Exception:
+            return []
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql_like, tuple(params_like))
+            rows = cursor.fetchall()
+            return [dict(r) for r in rows] if rows else []
         finally:
             conn.close()
 
@@ -329,6 +441,11 @@ def salvar_hqs(
         ))
 
     if registros_para_inserir:
+        if prateleira and prateleira.strip() and prateleira.strip() != "Não especificada":
+            try:
+                cadastrar_prateleira(prateleira.strip(), db_path)
+            except Exception:
+                pass
         if is_using_turso():
             for reg in registros_para_inserir:
                 executar_turso_query(
@@ -437,9 +554,42 @@ def listar_todas_hqs(
             conn.close()
 
 
+def cadastrar_prateleira(nome: str, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """Cadastra uma nova prateleira no banco de dados."""
+    nome_limpo = str(nome or "").strip()
+    if not nome_limpo:
+        return False
+
+    if is_using_turso():
+        try:
+            executar_turso_query("INSERT OR IGNORE INTO prateleiras (nome) VALUES (?)", [nome_limpo])
+            return True
+        except Exception as e:
+            print(f"Erro Turso cadastrar_prateleira: {e}")
+            return False
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR IGNORE INTO prateleiras (nome) VALUES (?)", (nome_limpo,))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Erro SQLite cadastrar_prateleira: {e}")
+            return False
+        finally:
+            conn.close()
+
+
 def obter_prateleiras(db_path: str = DB_DEFAULT_PATH) -> List[str]:
-    """Retorna uma lista única de prateleiras cadastradas."""
-    sql = "SELECT DISTINCT prateleira FROM hqs WHERE prateleira IS NOT NULL AND prateleira != '' ORDER BY prateleira ASC"
+    """Retorna uma lista única de todas as prateleiras cadastradas."""
+    sql = """
+    SELECT DISTINCT nome FROM (
+        SELECT nome FROM prateleiras
+        UNION
+        SELECT DISTINCT prateleira as nome FROM hqs WHERE prateleira IS NOT NULL AND prateleira != ''
+    ) ORDER BY LOWER(nome) ASC
+    """
     if is_using_turso():
         try:
             res = executar_turso_query(sql)
@@ -453,7 +603,106 @@ def obter_prateleiras(db_path: str = DB_DEFAULT_PATH) -> List[str]:
             cursor = conn.cursor()
             cursor.execute(sql)
             rows = cursor.fetchall()
-            return [row["prateleira"] for row in rows]
+            return [row["nome"] for row in rows]
+        finally:
+            conn.close()
+
+
+def listar_prateleiras_detalhadas(db_path: str = DB_DEFAULT_PATH) -> List[Dict[str, Any]]:
+    """
+    Retorna a lista de todas as prateleiras com a quantidade de HQs, lidos e média de avaliação.
+    Inclui prateleiras criadas mesmo sem HQs cadastradas.
+    """
+    sql = """
+    SELECT nome_prateleira, total_hqs, total_lidos, total_nao_lidos, media_avaliacao FROM (
+        SELECT 
+            p.nome as nome_prateleira,
+            COUNT(h.id) as total_hqs,
+            SUM(CASE WHEN h.lido = 'Lido' THEN 1 ELSE 0 END) as total_lidos,
+            SUM(CASE WHEN h.id IS NOT NULL AND (h.lido != 'Lido' OR h.lido IS NULL) THEN 1 ELSE 0 END) as total_nao_lidos,
+            AVG(CASE WHEN h.avaliacao > 0 THEN h.avaliacao ELSE NULL END) as media_avaliacao
+        FROM prateleiras p
+        LEFT JOIN hqs h ON TRIM(h.prateleira) = TRIM(p.nome)
+        GROUP BY p.nome
+        UNION
+        SELECT 
+            COALESCE(NULLIF(TRIM(prateleira), ''), 'Não especificada') as nome_prateleira,
+            COUNT(*) as total_hqs,
+            SUM(CASE WHEN lido = 'Lido' THEN 1 ELSE 0 END) as total_lidos,
+            SUM(CASE WHEN lido != 'Lido' OR lido IS NULL THEN 1 ELSE 0 END) as total_nao_lidos,
+            AVG(CASE WHEN avaliacao > 0 THEN avaliacao ELSE NULL END) as media_avaliacao
+        FROM hqs
+        WHERE TRIM(COALESCE(prateleira, '')) NOT IN (SELECT TRIM(nome) FROM prateleiras)
+          AND TRIM(COALESCE(prateleira, '')) != ''
+        GROUP BY COALESCE(NULLIF(TRIM(prateleira), ''), 'Não especificada')
+    ) ORDER BY LOWER(nome_prateleira) ASC
+    """
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql)
+            itens = []
+            for r in res.rows:
+                med = round(float(r[4]), 1) if r[4] is not None else 0.0
+                itens.append({
+                    "prateleira": r[0],
+                    "total_hqs": r[1] or 0,
+                    "total_lidos": r[2] or 0,
+                    "total_nao_lidos": r[3] or 0,
+                    "media_avaliacao": med
+                })
+            return itens
+        except Exception as ex:
+            print(f"Aviso Turso listar_prateleiras_detalhadas: {ex}")
+            return []
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            itens = []
+            for r in rows:
+                med = round(float(r["media_avaliacao"]), 1) if r["media_avaliacao"] is not None else 0.0
+                itens.append({
+                    "prateleira": r["nome_prateleira"],
+                    "total_hqs": r["total_hqs"] or 0,
+                    "total_lidos": r["total_lidos"] or 0,
+                    "total_nao_lidos": r["total_nao_lidos"] or 0,
+                    "media_avaliacao": med
+                })
+            return itens
+        finally:
+            conn.close()
+
+
+def renomear_prateleira(nome_antigo: str, nome_novo: str, db_path: str = DB_DEFAULT_PATH) -> int:
+    """
+    Renomeia uma prateleira, atualizando a tabela de prateleiras e todas as HQs associadas.
+    Retorna a quantidade de HQs atualizadas.
+    """
+    antigo = nome_antigo.strip()
+    novo = nome_novo.strip()
+    if not antigo or not novo:
+        return 0
+
+    if is_using_turso():
+        try:
+            executar_turso_query("INSERT OR IGNORE INTO prateleiras (nome) VALUES (?)", [novo])
+            executar_turso_query("DELETE FROM prateleiras WHERE TRIM(nome) = ? OR nome = ?", [antigo, antigo])
+            res = executar_turso_query("UPDATE hqs SET prateleira = ? WHERE TRIM(prateleira) = ? OR prateleira = ?", [novo, antigo, antigo])
+            return res.rows_affected
+        except Exception as ex:
+            print(f"Erro Turso renomear_prateleira: {ex}")
+            return 0
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR IGNORE INTO prateleiras (nome) VALUES (?)", (novo,))
+            cursor.execute("DELETE FROM prateleiras WHERE TRIM(nome) = ? OR nome = ?", (antigo, antigo))
+            cursor.execute("UPDATE hqs SET prateleira = ? WHERE TRIM(prateleira) = ? OR prateleira = ?", (novo, antigo, antigo))
+            conn.commit()
+            return cursor.rowcount
         finally:
             conn.close()
 
@@ -481,10 +730,9 @@ def obter_generos(db_path: str = DB_DEFAULT_PATH) -> List[str]:
 
 def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
     """Retorna métricas gerais da coleção em uma única consulta ultra-otimizada."""
-    sql = """
+    sql_stats = """
     SELECT 
         COUNT(*) as total_hqs,
-        COUNT(DISTINCT CASE WHEN prateleira IS NOT NULL AND prateleira != '' THEN prateleira END) as total_prat,
         COUNT(DISTINCT CASE WHEN editora IS NOT NULL AND editora != '' THEN editora END) as total_edit,
         COUNT(DISTINCT CASE WHEN genero IS NOT NULL AND genero != '' THEN genero END) as total_gen,
         SUM(CASE WHEN lido = 'Lido' THEN 1 ELSE 0 END) as total_lidos,
@@ -492,25 +740,34 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
         COUNT(CASE WHEN avaliacao > 0 THEN 1 ELSE NULL END) as total_avaliados
     FROM hqs
     """
+    sql_prats = """
+    SELECT COUNT(DISTINCT nome) as total_prat FROM (
+        SELECT nome FROM prateleiras
+        UNION
+        SELECT DISTINCT prateleira as nome FROM hqs WHERE prateleira IS NOT NULL AND prateleira != ''
+    )
+    """
     if is_using_turso():
         try:
-            res = executar_turso_query(sql)
+            res = executar_turso_query(sql_stats)
+            res_p = executar_turso_query(sql_prats)
+            total_prats = res_p.rows[0][0] if res_p.rows and res_p.rows[0][0] is not None else 0
             if res.rows:
                 r = res.rows[0]
                 tot_hqs = r[0] or 0
-                tot_lidos = r[4] or 0
-                med_aval = round(float(r[5]), 1) if r[5] is not None else 0.0
+                tot_lidos = r[3] or 0
+                med_aval = round(float(r[4]), 1) if r[4] is not None else 0.0
                 return {
                     "total_hqs": tot_hqs,
-                    "total_prateleiras": r[1] or 0,
-                    "total_editoras": r[2] or 0,
-                    "total_generos": r[3] or 0,
+                    "total_prateleiras": total_prats,
+                    "total_editoras": r[1] or 0,
+                    "total_generos": r[2] or 0,
                     "total_lidos": tot_lidos,
                     "total_nao_lidos": tot_hqs - tot_lidos,
                     "media_avaliacao": med_aval,
-                    "total_avaliados": r[6] or 0,
+                    "total_avaliados": r[5] or 0,
                 }
-            return {"total_hqs": 0, "total_prateleiras": 0, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
+            return {"total_hqs": 0, "total_prateleiras": total_prats, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
         except Exception as ex:
             print(f"Aviso Turso obter_estatisticas: {ex}")
             return {"total_hqs": 0, "total_prateleiras": 0, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
@@ -518,15 +775,18 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
         conn = get_sqlite_connection(db_path)
         try:
             cursor = conn.cursor()
-            cursor.execute(sql)
+            cursor.execute(sql_stats)
             row = cursor.fetchone()
+            cursor.execute(sql_prats)
+            row_p = cursor.fetchone()
+            total_prats = row_p["total_prat"] if row_p and row_p["total_prat"] is not None else 0
             if row:
                 tot_hqs = row["total_hqs"] or 0
                 tot_lidos = row["total_lidos"] or 0
                 med_aval = round(float(row["media_aval"]), 1) if row["media_aval"] is not None else 0.0
                 return {
                     "total_hqs": tot_hqs,
-                    "total_prateleiras": row["total_prat"] or 0,
+                    "total_prateleiras": total_prats,
                     "total_editoras": row["total_edit"] or 0,
                     "total_generos": row["total_gen"] or 0,
                     "total_lidos": tot_lidos,
@@ -534,7 +794,7 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
                     "media_avaliacao": med_aval,
                     "total_avaliados": row["total_avaliados"] or 0,
                 }
-            return {"total_hqs": 0, "total_prateleiras": 0, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
+            return {"total_hqs": 0, "total_prateleiras": total_prats, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
         finally:
             conn.close()
 
