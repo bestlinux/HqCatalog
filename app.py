@@ -1134,41 +1134,81 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
         # 2. Se houver HQs selecionadas no CheckBox, exibe a barra de Ações em Massa
         if ids_selecionados:
             qtd_sel = len(ids_selecionados)
-            st.info(f"🎯 **{qtd_sel} HQ(s) selecionada(s) no CheckBox:** Escolha uma ação em massa abaixo:")
-            col_blk_lido, col_blk_nlido, col_blk_del, col_blk_clear = st.columns([1.5, 1.5, 1.5, 1])
-            with col_blk_lido:
-                if st.button("📖 Marcar como 'Lido'", type="primary", use_container_width=True, key="btn_bulk_set_lido"):
-                    qtd_alt = database.atualizar_status_leitura_em_massa(ids_selecionados, "Lido")
-                    st.success(f"🎉 **{qtd_alt} HQ(s)** marcada(s) como **Lido** com sucesso!")
-                    st.rerun()
-            with col_blk_nlido:
-                if st.button("📕 Marcar como 'Não Lido'", type="secondary", use_container_width=True, key="btn_bulk_set_nao_lido"):
-                    qtd_alt = database.atualizar_status_leitura_em_massa(ids_selecionados, "Não Lido")
-                    st.success(f"🎉 **{qtd_alt} HQ(s)** marcada(s) como **Não Lido** com sucesso!")
-                    st.rerun()
-            with col_blk_del:
-                if st.button("🗑️ Excluir Selecionadas", type="secondary", use_container_width=True, key="btn_bulk_ask_del"):
-                    st.session_state["confirmar_exclusao_massa_ids"] = ids_selecionados
-                    st.rerun()
-            with col_blk_clear:
-                if st.button("❌ Desmarcar", use_container_width=True, key="btn_bulk_uncheck"):
-                    st.session_state["confirmar_exclusao_massa_ids"] = None
-                    st.rerun()
+            with st.container(border=True):
+                st.info(f"🎯 **{qtd_sel} HQ(s) selecionada(s) no CheckBox:** Escolha uma ação em lote:")
+                col_blk_lido, col_blk_nlido, col_blk_del, col_blk_clear = st.columns([1.5, 1.5, 1.5, 1])
+                with col_blk_lido:
+                    if st.button("📖 Marcar como 'Lido'", type="primary", use_container_width=True, key="btn_bulk_set_lido"):
+                        qtd_alt = database.atualizar_status_leitura_em_massa(ids_selecionados, "Lido")
+                        st.success(f"🎉 **{qtd_alt} HQ(s)** marcada(s) como **Lido** com sucesso!")
+                        st.rerun()
+                with col_blk_nlido:
+                    if st.button("📕 Marcar como 'Não Lido'", type="secondary", use_container_width=True, key="btn_bulk_set_nao_lido"):
+                        qtd_alt = database.atualizar_status_leitura_em_massa(ids_selecionados, "Não Lido")
+                        st.success(f"🎉 **{qtd_alt} HQ(s)** marcada(s) como **Não Lido** com sucesso!")
+                        st.rerun()
+                with col_blk_del:
+                    if st.button("🗑️ Excluir Selecionadas", type="secondary", use_container_width=True, key="btn_bulk_ask_del"):
+                        st.session_state["confirmar_exclusao_massa_ids"] = ids_selecionados
+                        st.rerun()
+                with col_blk_clear:
+                    if st.button("❌ Desmarcar", use_container_width=True, key="btn_bulk_uncheck"):
+                        st.session_state["confirmar_exclusao_massa_ids"] = None
+                        st.rerun()
 
-            if st.session_state.get("confirmar_exclusao_massa_ids"):
-                ids_del_list = st.session_state["confirmar_exclusao_massa_ids"]
-                st.warning(f"⚠️ **Atenção:** Deseja realmente excluir permanentemente as **{len(ids_del_list)} HQ(s)** selecionadas do banco de dados?")
-                col_cf_y, col_cf_n = st.columns(2)
-                with col_cf_y:
-                    if st.button("⚠️ Sim, Confirmar Exclusão em Massa", type="primary", use_container_width=True, key="btn_confirm_bulk_del_act"):
-                        qtd_removidas = database.deletar_hqs_em_massa(ids_del_list)
-                        st.session_state["confirmar_exclusao_massa_ids"] = None
-                        st.success(f"🗑️ **{qtd_removidas} HQ(s)** excluída(s) com sucesso!")
-                        st.rerun()
-                with col_cf_n:
-                    if st.button("Cancelar", use_container_width=True, key="btn_cancel_bulk_del_act"):
-                        st.session_state["confirmar_exclusao_massa_ids"] = None
-                        st.rerun()
+                st.markdown("---")
+                # Alteração de Prateleira em Massa
+                lista_prats_massa = [p for p in database.obter_prateleiras() if p and p != "Estante 1 - Prateleira 1"]
+                opcoes_massa_prat = ["-- Selecione a prateleira de destino --"] + list(lista_prats_massa) + ["➕ Outra / Digitar nova prateleira..."]
+
+                col_m_txt, col_m_sel, col_m_btn = st.columns([1.5, 2.5, 1.5])
+                with col_m_txt:
+                    st.write("📍 **Alterar Prateleira em Massa:**")
+                with col_m_sel:
+                    prat_massa_sel = st.selectbox(
+                        "Prateleira de destino:",
+                        options=opcoes_massa_prat,
+                        key="sel_bulk_prat_dest",
+                        label_visibility="collapsed"
+                    )
+                    prat_massa_digitada = ""
+                    if prat_massa_sel == "➕ Outra / Digitar nova prateleira...":
+                        prat_massa_digitada = st.text_input(
+                            "Digite o nome da nova prateleira:",
+                            placeholder="Ex: Estante 3 - Quadrinhos Europeus",
+                            key="input_bulk_prat_new",
+                            label_visibility="collapsed"
+                        )
+                with col_m_btn:
+                    if st.button("📍 Mover para Prateleira", type="primary", use_container_width=True, key="btn_bulk_apply_prat"):
+                        if prat_massa_sel == "➕ Outra / Digitar nova prateleira...":
+                            nova_prat_final = prat_massa_digitada.strip()
+                        elif prat_massa_sel != "-- Selecione a prateleira de destino --":
+                            nova_prat_final = prat_massa_sel.strip()
+                        else:
+                            nova_prat_final = ""
+
+                        if not nova_prat_final:
+                            st.error("Selecione ou digite uma prateleira de destino válida.")
+                        else:
+                            qtd_movidas = database.atualizar_prateleira_em_massa(ids_selecionados, nova_prat_final)
+                            st.success(f"🎉 **{qtd_movidas} HQ(s)** alterada(s) para a prateleira **'{nova_prat_final}'** com sucesso!")
+                            st.rerun()
+
+                if st.session_state.get("confirmar_exclusao_massa_ids"):
+                    ids_del_list = st.session_state["confirmar_exclusao_massa_ids"]
+                    st.warning(f"⚠️ **Atenção:** Deseja realmente excluir permanentemente as **{len(ids_del_list)} HQ(s)** selecionadas do banco de dados?")
+                    col_cf_y, col_cf_n = st.columns(2)
+                    with col_cf_y:
+                        if st.button("⚠️ Sim, Confirmar Exclusão em Massa", type="primary", use_container_width=True, key="btn_confirm_bulk_del_act"):
+                            qtd_removidas = database.deletar_hqs_em_massa(ids_del_list)
+                            st.session_state["confirmar_exclusao_massa_ids"] = None
+                            st.success(f"🗑️ **{qtd_removidas} HQ(s)** excluída(s) com sucesso!")
+                            st.rerun()
+                    with col_cf_n:
+                        if st.button("Cancelar", use_container_width=True, key="btn_cancel_bulk_del_act"):
+                            st.session_state["confirmar_exclusao_massa_ids"] = None
+                            st.rerun()
 
         # Detecção de alterações ou exclusões diretas nas células do grid (ignorando 'selecionar')
         df_editado_sem_sel = df_editado.drop(columns=["selecionar"], errors="ignore")

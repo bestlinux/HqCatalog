@@ -568,6 +568,25 @@ class TestHqCatalog(unittest.TestCase):
         lista_prats = database.obter_prateleiras(self.test_db)
         self.assertIn("Estante 3 - Quadrinhos Europeus", lista_prats)
 
+    def test_atualizar_prateleira_em_massa(self):
+        # Inserir HQs para teste
+        database.salvar_hqs([
+            {"titulo": "Batman Ano Um"},
+            {"titulo": "Demolidor A Queda de Murdock"}
+        ], "Estante Antiga", self.test_db)
+
+        todas = database.listar_todas_hqs(db_path=self.test_db)
+        ids = todas["id"].tolist()
+
+        # Atualizar em massa
+        qtd = database.atualizar_prateleira_em_massa(ids, "Estante Nova", self.test_db)
+        self.assertEqual(qtd, len(ids))
+
+        # Verificar se todas foram movidas
+        atualizadas = database.listar_todas_hqs(db_path=self.test_db)
+        for prat in atualizadas["prateleira"]:
+            self.assertEqual(prat, "Estante Nova")
+
 
 if __name__ == "__main__":
     unittest.main()

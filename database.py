@@ -873,6 +873,40 @@ def atualizar_status_leitura_em_massa(hq_ids: List[int], novo_status: str, db_pa
             conn.close()
 
 
+def atualizar_prateleira_em_massa(hq_ids: List[int], nova_prateleira: str, db_path: str = DB_DEFAULT_PATH) -> int:
+    """Atualiza a prateleira de múltiplos registros de HQs em lote."""
+    if not hq_ids:
+        return 0
+
+    prat_limpa = str(nova_prateleira or "").strip()
+    if not prat_limpa:
+        return 0
+
+    # Garante que a nova prateleira esteja registrada
+    cadastrar_prateleira(prat_limpa, db_path)
+
+    placeholders = ", ".join(["?"] * len(hq_ids))
+    sql = f"UPDATE hqs SET prateleira = ? WHERE id IN ({placeholders})"
+    params = [prat_limpa] + [int(i) for i in hq_ids]
+
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql, params)
+            return res.rows_affected if hasattr(res, "rows_affected") else len(hq_ids)
+        except Exception as ex:
+            print(f"Erro Turso atualizar_prateleira_em_massa: {ex}")
+            return 0
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(params))
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+
 
 def obter_hq_por_id(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict[str, Any]]:
     """Busca os dados de uma HQ específica pelo seu ID."""
