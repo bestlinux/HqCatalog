@@ -6,6 +6,7 @@ import io
 import base64
 import os
 from datetime import datetime
+from typing import Optional, Any
 import streamlit as st
 import pandas as pd
 from PIL import Image
@@ -24,6 +25,8 @@ importlib.reload(database)
 importlib.reload(gemini_service)
 importlib.reload(auth)
 
+DEFAULT_NO_COVER_PATH = r"C:\Users\bestl\OneDrive\HqCatalog\HqCatalog\No_Image_Available.jpg"
+
 def processar_imagem_capa(imagem: Image.Image, max_dim: int = 700, quality: int = 85) -> str:
     """Redimensiona e converte uma foto PIL em uma string base64 compacta (JPEG)."""
     img = imagem.convert("RGB")
@@ -32,6 +35,27 @@ def processar_imagem_capa(imagem: Image.Image, max_dim: int = 700, quality: int 
     img.save(buffer, format="JPEG", quality=quality, optimize=True)
     b64_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
     return f"data:image/jpeg;base64,{b64_str}"
+
+def obter_imagem_capa(capa_val: Optional[str]) -> Any:
+    """Retorna a URL, base64 ou imagem PIL da capa, com fallback para No_Image_Available.jpg."""
+    capa_str = (capa_val or "").strip()
+    if capa_str:
+        return capa_str
+    
+    if os.path.exists(DEFAULT_NO_COVER_PATH):
+        try:
+            return Image.open(DEFAULT_NO_COVER_PATH)
+        except Exception:
+            return DEFAULT_NO_COVER_PATH
+            
+    caminho_rel = os.path.join(os.path.dirname(os.path.abspath(__file__)), "No_Image_Available.jpg")
+    if os.path.exists(caminho_rel):
+        try:
+            return Image.open(caminho_rel)
+        except Exception:
+            return caminho_rel
+            
+    return DEFAULT_NO_COVER_PATH
 
 # Configuração da página do Streamlit
 st.set_page_config(
@@ -168,6 +192,93 @@ st.markdown(
 )
 
 st.markdown("---")
+
+# -------------------------------------------------------------
+# DESTAQUE: EDIÇÃO DO DIA
+# -------------------------------------------------------------
+st.markdown("### 🌟 Edição do Dia")
+
+# Gerenciamento da Edição do Dia na sessão
+data_hoje = datetime.now().strftime("%Y-%m-%d")
+if st.session_state.get("data_edicao_do_dia") != data_hoje:
+    st.session_state["data_edicao_do_dia"] = data_hoje
+    st.session_state["edicao_do_dia_id"] = None
+
+hq_dia = None
+if st.session_state.get("edicao_do_dia_id"):
+    hq_dia = database.obter_hq_por_id(int(st.session_state["edicao_do_dia_id"]))
+
+if not hq_dia:
+    hq_dia = database.obter_hq_aleatoria()
+    if hq_dia:
+        st.session_state["edicao_do_dia_id"] = hq_dia["id"]
+
+if hq_dia:
+    with st.container(border=True):
+        col_capa, col_detalhes = st.columns([1.1, 3.2], gap="medium")
+        
+        with col_capa:
+            img_capa = obter_imagem_capa(hq_dia.get("capa"))
+            tem_capa = bool(hq_dia.get("capa") and str(hq_dia["capa"]).strip())
+            legenda_capa = "Foto da Capa" if tem_capa else "Capa Padrão (Não cadastrada)"
+            st.image(img_capa, caption=legenda_capa, use_container_width=True)
+            
+            if not tem_capa:
+                if st.button("📷 Cadastrar Capa", key="btn_add_capa_dia", use_container_width=True, help="Tire uma foto ou envie a capa desta edição"):
+                    dialog_cadastrar_capa(int(hq_dia["id"]))
+                    
+        with col_detalhes:
+            st.subheader(f"📖 {hq_dia['titulo']}")
+            
+            meta_itens = []
+            if hq_dia.get("edicao"):
+                meta_itens.append(f"🔖 **Edição/Vol:** {hq_dia['edicao']}")
+            if hq_dia.get("editora"):
+                meta_itens.append(f"🏢 **Editora:** {hq_dia['editora']}")
+            if hq_dia.get("genero"):
+                meta_itens.append(f"🏷️ **Gênero:** {hq_dia['genero']}")
+            if hq_dia.get("escritor") and hq_dia["escritor"] != "Não informado":
+                meta_itens.append(f"✍️ **Roteiro:** {hq_dia['escritor']}")
+            if hq_dia.get("prateleira"):
+                meta_itens.append(f"📍 **Prateleira:** `{hq_dia['prateleira']}`")
+                
+            if meta_itens:
+                st.markdown(" • ".join(meta_itens))
+                
+            status_leitura = hq_dia.get("lido", "Não Lido")
+            aval = int(hq_dia.get("avaliacao") or 0)
+            aval_texto = ("⭐" * aval + f" ({aval}/5)") if aval > 0 else "⚪ Sem avaliação"
+            st.caption(f"Status: **{status_leitura}** | Avaliação: **{aval_texto}**")
+            
+            st.markdown("---")
+            
+            st.markdown("#### 📝 Resumo")
+            resumo_texto = (hq_dia.get("resumo") or "").strip()
+            if resumo_texto:
+                st.markdown(f"> {resumo_texto}")
+            else:
+                st.info("ℹ️ *Esta edição ainda não possui um resumo cadastrado. Você pode adicioná-lo editando a HQ pelo formulário ou tabela.*")
+                
+            st.markdown("")
+            
+            col_b1, col_b2, col_b3 = st.columns([1.5, 1.5, 2])
+            with col_b1:
+                if st.button("🎲 Sortear Outra", key="btn_sortear_outra_dia", use_container_width=True, help="Sortear aleatoriamente outro quadrinho da sua coleção"):
+                    outra_hq = database.obter_hq_aleatoria(excluir_id=int(hq_dia["id"]))
+                    if outra_hq:
+                        st.session_state["edicao_do_dia_id"] = outra_hq["id"]
+                        st.rerun()
+            with col_b2:
+                if st.button("✏️ Editar HQ", key="btn_editar_hq_dia", use_container_width=True, help="Editar informações desta HQ"):
+                    dialog_editar_hq(int(hq_dia["id"]))
+            with col_b3:
+                pass
+else:
+    with st.container(border=True):
+        st.info("📚 **Nenhuma edição cadastrada no momento.** Tire fotos da sua prateleira ou adicione títulos para ver a **Edição do Dia** em destaque aqui!", icon="✨")
+
+st.markdown("---")
+
 
 
 # -------------------------------------------------------------
@@ -314,8 +425,9 @@ st.markdown("---")
 # MODAIS (DIALOGS) DE AÇÕES RÁPIDAS
 # -------------------------------------------------------------
 @st.dialog("✏️ Editar HQ")
-def dialog_editar_hq():
-    id_para_editar = st.number_input("Informe o ID da HQ que deseja editar:", min_value=1, step=1, key="dlg_input_edit_id")
+def dialog_editar_hq(id_padrao: Optional[int] = None):
+    val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
+    id_para_editar = st.number_input("Informe o ID da HQ que deseja editar:", min_value=1, step=1, value=val_id, key=f"dlg_input_edit_id_{id_padrao or 'padrao'}")
     hq_atual = database.obter_hq_por_id(int(id_para_editar))
     if hq_atual:
         st.caption(f"Editando registro **#{hq_atual['id']}** cadastrado em `{hq_atual['criado_em']}`")
@@ -366,8 +478,9 @@ def dialog_editar_hq():
         if st.button("❌ Fechar", key="btn_close_edit_empty", use_container_width=True): st.rerun()
 
 @st.dialog("📷 Cadastrar / Alterar Foto da Capa")
-def dialog_cadastrar_capa():
-    id_para_capa = st.number_input("Informe o ID da HQ:", min_value=1, step=1, key="dlg_input_capa_id")
+def dialog_cadastrar_capa(id_padrao: Optional[int] = None):
+    val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
+    id_para_capa = st.number_input("Informe o ID da HQ:", min_value=1, step=1, value=val_id, key=f"dlg_input_capa_id_{id_padrao or 'padrao'}")
     hq_capa = database.obter_hq_por_id(int(id_para_capa))
     if hq_capa:
         st.write(f"HQ: **{hq_capa['titulo']}** ({hq_capa.get('edicao') or 'Sem Edição'})")

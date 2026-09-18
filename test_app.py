@@ -444,6 +444,31 @@ class TestHqCatalog(unittest.TestCase):
         ids_restantes = [r["id"] for _, r in df_restante.iterrows()]
         self.assertEqual(ids_restantes, [1, 4])
 
+    def test_obter_hq_aleatoria(self):
+        # 1. Banco vazio deve retornar None
+        self.assertIsNone(database.obter_hq_aleatoria(db_path=self.test_db))
+
+        # 2. Inserir HQs com dados completos
+        database.salvar_hqs([
+            {"titulo": "Watchmen", "resumo": "Uma obra-prima da desconstrução de heróis.", "capa": "https://exemplo.com/watchmen.jpg"},
+            {"titulo": "V de Vingança", "resumo": "Distopia em uma Inglaterra futurista fascista.", "capa": ""},
+            {"titulo": "Sandman", "resumo": "O Senhor dos Sonhos é capturado por um mago mortal.", "capa": ""}
+        ], "Estante Vertigo", self.test_db)
+
+        # 3. Deve retornar um registro válido
+        sorteada = database.obter_hq_aleatoria(db_path=self.test_db)
+        self.assertIsNotNone(sorteada)
+        self.assertIn(sorteada["titulo"], ["Watchmen", "V de Vingança", "Sandman"])
+        self.assertIn("resumo", sorteada)
+        self.assertIn("capa", sorteada)
+
+        # 4. Excluir o ID atual deve retornar uma HQ diferente se houver mais de uma
+        id_atual = sorteada["id"]
+        outra = database.obter_hq_aleatoria(excluir_id=id_atual, db_path=self.test_db)
+        self.assertIsNotNone(outra)
+        self.assertNotEqual(outra["id"], id_atual)
+
 if __name__ == "__main__":
     unittest.main()
+
 

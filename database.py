@@ -638,6 +638,66 @@ def obter_hq_por_id(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict
             conn.close()
 
 
+def obter_hq_aleatoria(excluir_id: Optional[int] = None, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict[str, Any]]:
+    """
+    Busca uma HQ cadastrada aleatoriamente no banco de dados.
+    Permite opcionalmente excluir um ID específico para evitar repetições consecutivas.
+    """
+    if excluir_id is not None:
+        sql = """
+        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+        FROM hqs
+        WHERE id != ?
+        ORDER BY RANDOM()
+        LIMIT 1
+        """
+        params = [excluir_id]
+    else:
+        sql = """
+        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+        FROM hqs
+        ORDER BY RANDOM()
+        LIMIT 1
+        """
+        params = []
+
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql, params)
+            if res.rows:
+                return dict(zip(res.columns, res.rows[0]))
+            if excluir_id is not None:
+                return obter_hq_aleatoria(excluir_id=None, db_path=db_path)
+            return None
+        except Exception as ex:
+            print(f"Aviso Turso obter_hq_aleatoria: {ex}")
+            return None
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(params))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            if excluir_id is not None:
+                cursor.execute(
+                    """
+                    SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+                    FROM hqs
+                    ORDER BY RANDOM()
+                    LIMIT 1
+                    """
+                )
+                row_fallback = cursor.fetchone()
+                if row_fallback:
+                    return dict(row_fallback)
+            return None
+        finally:
+            conn.close()
+
+
+
 def atualizar_hq(
     hq_id: int,
     titulo: str,
