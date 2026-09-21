@@ -587,6 +587,28 @@ class TestHqCatalog(unittest.TestCase):
         for prat in atualizadas["prateleira"]:
             self.assertEqual(prat, "Estante Nova")
 
+    def test_salvar_hqs_com_aliases(self):
+        # Testa chamada com aliases 'hqs' e 'prateleira_padrao' usados no CRUD assistido
+        res = database.salvar_hqs(
+            hqs=[{
+                "titulo": "Guerra Civil",
+                "edicao": "Edição Especial",
+                "editora": "Panini",
+                "prateleira": "Estante 2 - Marvel"
+            }],
+            prateleira_padrao="Estante 2 - Marvel",
+            ignorar_duplicadas=False,
+            retornar_detalhes=True,
+            db_path=self.test_db
+        )
+        self.assertEqual(res["salvos"], 1)
+        self.assertEqual(len(res["itens_salvos"]), 1)
+        self.assertEqual(res["itens_salvos"][0]["prateleira"], "Estante 2 - Marvel")
+
+        # Verifica se a nova prateleira foi cadastrada automaticamente
+        prateleiras = database.obter_prateleiras(self.test_db)
+        self.assertIn("Estante 2 - Marvel", prateleiras)
+
 
 if __name__ == "__main__":
     unittest.main()

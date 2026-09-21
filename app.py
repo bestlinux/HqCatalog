@@ -1520,7 +1520,7 @@ with st.expander("🛠️ Operações de CRUD assistidas", expanded=True):
 
                         # Inserção da HQ
                         resultado_salvar = database.salvar_hqs(
-                            hqs=[{
+                            itens=[{
                                 "titulo": titulo,
                                 "edicao": edicao,
                                 "editora": editora,
@@ -1533,7 +1533,7 @@ with st.expander("🛠️ Operações de CRUD assistidas", expanded=True):
                                 "resumo": resumo,
                                 "resenha": resenha
                             }],
-                            prateleira_padrao=prateleira_item,
+                            prateleira=prateleira_item,
                             ignorar_duplicadas=False,
                             retornar_detalhes=True
                         )

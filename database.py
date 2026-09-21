@@ -355,17 +355,27 @@ def buscar_hqs_por_titulo_ou_edicao(
 
 
 def salvar_hqs(
-    itens: List[Dict[str, Any]],
-    prateleira: str,
+    itens: Optional[List[Dict[str, Any]]] = None,
+    prateleira: Optional[str] = None,
     db_path: str = DB_DEFAULT_PATH,
     lido_padrao: str = "Não Lido",
     ignorar_duplicadas: bool = True,
-    retornar_detalhes: bool = False
+    retornar_detalhes: bool = False,
+    **kwargs
 ) -> Any:
     """
     Insere uma lista de quadrinhos identificados no banco de dados.
     Por padrão, ignora edições duplicadas (mesmo Título, Edição/Número e Editora).
+    Aceita 'hqs' como alias de 'itens' e 'prateleira_padrao' como alias de 'prateleira'.
     """
+    if itens is None and "hqs" in kwargs:
+        itens = kwargs.pop("hqs")
+    if prateleira is None and "prateleira_padrao" in kwargs:
+        prateleira = kwargs.pop("prateleira_padrao")
+
+    itens = itens or []
+    prateleira = prateleira or ""
+
     if not itens:
         if retornar_detalhes:
             return {"salvos": 0, "duplicados": 0, "itens_salvos": [], "itens_duplicados": []}
@@ -386,7 +396,7 @@ def salvar_hqs(
         genero = (item.get("genero") or "Outro").strip()
         escritor = (item.get("escritor") or "Não informado").strip()
         ilustrador = (item.get("ilustrador") or "Não informado").strip()
-        prateleira_val = prateleira.strip() if prateleira else "Não especificada"
+        prateleira_val = (item.get("prateleira") or prateleira or "Não especificada").strip()
         lido_val = (item.get("lido") or lido_padrao).strip()
         try:
             avaliacao_raw = int(item.get("avaliacao") or 0)
@@ -441,9 +451,16 @@ def salvar_hqs(
         ))
 
     if registros_para_inserir:
+        prateleiras_unicas = set()
         if prateleira and prateleira.strip() and prateleira.strip() != "Não especificada":
+            prateleiras_unicas.add(prateleira.strip())
+        for it in itens_salvos:
+            p_it = (it.get("prateleira") or "").strip()
+            if p_it and p_it != "Não especificada":
+                prateleiras_unicas.add(p_it)
+        for p_cad in prateleiras_unicas:
             try:
-                cadastrar_prateleira(prateleira.strip(), db_path)
+                cadastrar_prateleira(p_cad, db_path)
             except Exception:
                 pass
         if is_using_turso():
