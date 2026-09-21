@@ -481,7 +481,7 @@ def transcrever_audio_resenha(
 # -------------------------------------------------------------
 # PESQUISA DE PREÇOS COM SERPAPI (GOOGLE SHOPPING)
 # -------------------------------------------------------------
-DEFAULT_SERPAPI_KEY = os.getenv("SERPAPI_API_KEY", "c045b0ae7aef739d1e161e071022b13583ca72bad2822ce35581b53dfb508bb6")
+DEFAULT_SERPAPI_KEY = os.getenv("SERPAPI_API_KEY", "")
 
 TERMOS_EXCLUSAO_NAO_LIVRO = [
     "boneco", "boneca", "action figure", "action figures", "estátua", "estatua", "figura de ação",
@@ -556,7 +556,12 @@ def pesquisar_precos_serpapi(
     except ImportError:
         raise ImportError("O pacote 'serpapi' não está instalado. Instale-o com 'pip install serpapi'.")
 
-    chave_api = api_key or DEFAULT_SERPAPI_KEY
+    chave_api = api_key or DEFAULT_SERPAPI_KEY or os.getenv("SERPAPI_API_KEY", "")
+    if not chave_api:
+        raise ValueError(
+            "Chave da SerpApi não configurada. Defina a variável SERPAPI_API_KEY no arquivo .env."
+        )
+
     termo = termo_busca.strip()
     if not termo:
         return {

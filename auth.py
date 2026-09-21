@@ -91,9 +91,6 @@ def render_login_screen() -> None:
                 else:
                     st.error("❌ Usuário ou senha incorretos.")
 
-        st.caption("💡 *As credenciais de acesso podem ser configuradas no arquivo `.env` via `APP_USERNAME` e `APP_PASSWORD`.*")
-
-
 def verificar_autenticacao() -> bool:
     """
     Controla o fluxo de autenticação.

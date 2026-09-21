@@ -25,7 +25,7 @@ importlib.reload(database)
 importlib.reload(gemini_service)
 importlib.reload(auth)
 
-DEFAULT_NO_COVER_PATH = r"C:\Users\bestl\OneDrive\HqCatalog\HqCatalog\No_Image_Available.jpg"
+DEFAULT_NO_COVER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "No_Image_Available.jpg")
 
 def processar_imagem_capa(imagem: Image.Image, max_dim: int = 700, quality: int = 85) -> str:
     """Redimensiona e converte uma foto PIL em uma string base64 compacta (JPEG)."""

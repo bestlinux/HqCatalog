@@ -19,7 +19,7 @@ Aplicativo web em Python para catalogar e gerenciar coleções físicas de quadr
 No terminal (PowerShell ou Command Prompt), navegue até a pasta do projeto e instale os pacotes:
 
 ```bash
-cd "C:\Users\bestl\OneDrive\HqCatalog\HqCatalog"
+cd HqCatalog
 pip install -r requirements.txt
 ```
 
