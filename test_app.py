@@ -294,6 +294,64 @@ class TestHqCatalog(unittest.TestCase):
         self.assertEqual(res5["salvos"], 2)
         self.assertEqual(res5["duplicados"], 2)
 
+        # 6. Caso do usuário: "Made in Abyss" com "Vol. 1", "Vol. 2", "Vol. 3"
+        # e tentativa posterior de cadastrar "1", "2", "3"
+        res_mia1 = database.salvar_hqs([
+            {"titulo": "Made in Abyss", "edicao": "Vol. 1", "editora": "NewPOP"},
+            {"titulo": "Made in Abyss", "edicao": "Vol. 2", "editora": "NewPOP"},
+            {"titulo": "Made in Abyss", "edicao": "Vol. 3", "editora": "NewPOP"},
+        ], "Estante Mangás", self.test_db, retornar_detalhes=True)
+        self.assertEqual(res_mia1["salvos"], 3)
+        self.assertEqual(res_mia1["duplicados"], 0)
+
+        # Segunda tentativa com edições "1", "2", "3" - DEVEM ser todas ignoradas como duplicatas
+        res_mia2 = database.salvar_hqs([
+            {"titulo": "Made in Abyss", "edicao": "1", "editora": "NewPOP"},
+            {"titulo": "Made in Abyss", "edicao": "2", "editora": "NewPOP"},
+            {"titulo": "Made in Abyss", "edicao": "3", "editora": "NewPOP"},
+        ], "Estante Mangás", self.test_db, retornar_detalhes=True)
+        self.assertEqual(res_mia2["salvos"], 0)
+        self.assertEqual(res_mia2["duplicados"], 3)
+
+        # Terceira tentativa com variações adicionais: "#1", "Volume 02", "v. 3" e uma nova "Vol. 4"
+        res_mia3 = database.salvar_hqs([
+            {"titulo": "Made in Abyss", "edicao": "#1", "editora": "NewPOP"},
+            {"titulo": "Made in Abyss", "edicao": "Volume 02", "editora": "NewPOP"},
+            {"titulo": "Made in Abyss", "edicao": "v. 3", "editora": "NewPOP"},
+            {"titulo": "Made in Abyss", "edicao": "4", "editora": "NewPOP"},  # Nova
+        ], "Estante Mangás", self.test_db, retornar_detalhes=True)
+        self.assertEqual(res_mia3["salvos"], 1)
+        self.assertEqual(res_mia3["duplicados"], 3)
+
+    def test_edition_normalization_helper(self):
+        # Testa as equivalências de edições numéricas
+        self.assertEqual(database.normalizar_edicao("Vol. 1"), "1")
+        self.assertEqual(database.normalizar_edicao("Vol 1"), "1")
+        self.assertEqual(database.normalizar_edicao("Volume 1"), "1")
+        self.assertEqual(database.normalizar_edicao("Volume 01"), "1")
+        self.assertEqual(database.normalizar_edicao("v. 1"), "1")
+        self.assertEqual(database.normalizar_edicao("v1"), "1")
+        self.assertEqual(database.normalizar_edicao("1"), "1")
+        self.assertEqual(database.normalizar_edicao("01"), "1")
+        self.assertEqual(database.normalizar_edicao("#1"), "1")
+        self.assertEqual(database.normalizar_edicao("Nº 1"), "1")
+        self.assertEqual(database.normalizar_edicao("Edição 1"), "1")
+        self.assertEqual(database.normalizar_edicao("Ed. 1"), "1")
+        self.assertEqual(database.normalizar_edicao("Parte 1"), "1")
+        self.assertEqual(database.normalizar_edicao("Livro 1"), "1")
+
+        # Testa números maiores
+        self.assertEqual(database.normalizar_edicao("Vol. 104"), "104")
+        self.assertEqual(database.normalizar_edicao("#104"), "104")
+
+        # Testa edições especiais / únicas
+        self.assertEqual(database.normalizar_edicao("Volume Único"), "volume_unico")
+        self.assertEqual(database.normalizar_edicao("Única"), "volume_unico")
+        self.assertEqual(database.normalizar_edicao("One-Shot"), "volume_unico")
+        self.assertEqual(database.normalizar_edicao("Edição Especial"), "edicao especial")
+        self.assertEqual(database.normalizar_edicao("Edição Definitiva Vol. 1"), "edicao definitiva 1")
+        self.assertEqual(database.normalizar_edicao("Edicao Definitiva - 1"), "edicao definitiva 1")
+
     def test_chatbot_helpers(self):
         # 1. Contexto vazio
         contexto_vazio = database.obter_contexto_hqs_para_chat(self.test_db)
@@ -498,7 +556,15 @@ class TestHqCatalog(unittest.TestCase):
         self.assertEqual(len(res_parcial), 1)
         self.assertEqual(res_parcial[0]["titulo"], "Batman: Ano Um")
 
-        # 4. Busca inexistente
+        # 4. Busca por edição equivalente (cadastrada como "Vol. 1", buscada como "1")
+        database.salvar_hqs([
+            {"titulo": "Berserk", "edicao": "Vol. 1", "editora": "Panini"}
+        ], "Estante Teste", self.test_db)
+        res_equiv = database.buscar_hqs_por_titulo_ou_edicao("Berserk", "1", self.test_db)
+        self.assertEqual(len(res_equiv), 1)
+        self.assertEqual(res_equiv[0]["edicao"], "Vol. 1")
+
+        # 5. Busca inexistente
         res_inex = database.buscar_hqs_por_titulo_ou_edicao("Título Inexistente", db_path=self.test_db)
         self.assertEqual(len(res_inex), 0)
 
