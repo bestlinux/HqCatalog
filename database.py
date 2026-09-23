@@ -242,24 +242,24 @@ def normalizar_edicao(edicao: Optional[str]) -> str:
     - "Vol. 1", "Vol 1", "Volume 1", "v. 1", "v1", "1", "01", "#1", "Nº 1", "Edição 1", "Ed. 1" -> "1"
     - "Vol. 2", "2", "Volume 2", "#2" -> "2"
     - "Edição Especial", "Edicao Especial" -> "edicao especial"
-    - "Volume Único", "Única", "Edição Única", "One-Shot" -> "volume_unico"
+    - "", "Volume Único", "Única", "Edição Única", "One-Shot", "Vazia" -> "volume_unico"
     """
     if edicao is None:
-        return ""
+        return "volume_unico"
     
     s = str(edicao).strip()
     if not s:
-        return ""
+        return "volume_unico"
     
     # Remove acentos e converte para minúsculas
     s_ascii = unicodedata.normalize("NFKD", s).encode("ASCII", "ignore").decode("ASCII").lower().strip()
     if not s_ascii:
-        return ""
+        return "volume_unico"
 
-    # Sinônimos de volume único / edição única
+    # Sinônimos de volume único / edição única / sem edição
     s_clean = re.sub(r"[^\w\s]", " ", s_ascii)
     s_clean = re.sub(r"\s+", " ", s_clean).strip()
-    if s_clean in ("volume unico", "edicao unica", "unica", "unico", "one shot", "oneshot", "single volume"):
+    if s_clean in ("", "volume unico", "edicao unica", "unica", "unico", "one shot", "oneshot", "single volume", "sem edicao", "nao informada", "nao informado", "desconhecida", "vazia", "none", "null"):
         return "volume_unico"
 
     # Caso 1: Apenas número com ou sem prefixo comum (ex: "Vol. 1", "Vol 1", "1", "#1", "Volume 01", "v. 1", "v1", "Nº 1", "Ed. 1", "Parte 1", "Livro 1")
@@ -355,6 +355,62 @@ def editoras_sao_compativeis(editora1: Optional[str], editora2: Optional[str]) -
     return False
 
 
+def normalizar_titulo_e_edicao(titulo: Optional[str], edicao: Optional[str]) -> tuple[str, str]:
+    """
+    Normaliza conjuntamente o título e a edição, extraindo e padronizando volumes que estejam
+    no título ou no campo de edição.
+    Exemplos:
+    - ("Paraíso: O Vampiro que Ri 2", "") -> ("paraiso o vampiro que ri", "2")
+    - ("Paraíso: O Vampiro que Ri", "2") -> ("paraiso o vampiro que ri", "2")
+    - ("Paraíso: O Vampiro que Ri", "Vol. 2") -> ("paraiso o vampiro que ri", "2")
+    - ("Meu Amigo Kim Jong-un", "") -> ("meu amigo kim jong un", "volume_unico")
+    - ("Ouroboros", "Volume Único") -> ("ouroboros", "volume_unico")
+    - ("Ouroboros", "") -> ("ouroboros", "volume_unico")
+    - ("Sandman - Edição Definitiva Vol. 1", "") -> ("sandman edicao definitiva", "1")
+    """
+    tit_str = str(titulo or "").strip()
+    ed_str = str(edicao or "").strip()
+
+    tit_norm = normalizar_texto(tit_str)
+    ed_norm = normalizar_edicao(ed_str)
+
+    titulos_numericos_conhecidos = {"1984", "2001", "300", "100", "20th", "21st"}
+
+    if tit_norm in titulos_numericos_conhecidos:
+        return tit_norm, ed_norm
+
+    # Se a edição já tem número explícito ou texto específico (que não seja volume_unico)
+    if ed_norm and ed_norm != "volume_unico":
+        padrao_sufixo_ed = re.search(r"^(.*?)\s+(?:vol|volume|v|ed|edicao|#|no)?\s*" + re.escape(ed_norm) + r"$", tit_norm)
+        if padrao_sufixo_ed:
+            base = padrao_sufixo_ed.group(1).strip()
+            if len(base) > 2 and base not in titulos_numericos_conhecidos:
+                tit_norm = base
+
+    # Se a edição é volume_unico / vazia, tenta extrair volume explícito ou número no final do título
+    elif ed_norm == "volume_unico":
+        padrao_vol = re.search(
+            r"^(.*?)\s+(?:vol(?:ume)?|v|ed(?:i(?:c(?:a|ao)?)?)?|#|n[oº°]?|tomo|livro|parte)\s*(\d+(?:[\.,]\d+)?)$",
+            tit_norm
+        )
+        padrao_num = re.search(r"^(.*?)\s+(\d{1,3})$", tit_norm)
+
+        if padrao_vol:
+            base = padrao_vol.group(1).strip()
+            num = padrao_vol.group(2).strip()
+            if base and base not in titulos_numericos_conhecidos:
+                tit_norm = base
+                ed_norm = normalizar_edicao(num)
+        elif padrao_num:
+            base = padrao_num.group(1).strip()
+            num = padrao_num.group(2).strip()
+            if base and len(base) > 2 and base not in titulos_numericos_conhecidos:
+                tit_norm = base
+                ed_norm = normalizar_edicao(num)
+
+    return tit_norm, ed_norm
+
+
 def verificar_hq_duplicada(
     titulo: str,
     edicao: str = "",
@@ -363,14 +419,13 @@ def verificar_hq_duplicada(
 ) -> Optional[Dict[str, Any]]:
     """
     Verifica se já existe uma HQ cadastrada com o mesmo Título, Edição/Número e Editora.
-    Reconhece variações de grafia na edição (ex: 'Vol. 1', '1', '#1', 'Volume 1' são identificados como duplicados).
+    Reconhece variações de grafia na edição e desmembra volumes do título.
     """
     tit_clean = (titulo or "").strip()
     if not tit_clean:
         return None
 
-    tit_norm = normalizar_texto(tit_clean)
-    ed_norm = normalizar_edicao(edicao)
+    tit_norm, ed_norm = normalizar_titulo_e_edicao(tit_clean, edicao)
 
     # 1. Busca candidatos pelo título no banco de dados
     sql = """
@@ -408,7 +463,7 @@ def verificar_hq_duplicada(
                 res = executar_turso_query(sql_todos, [])
                 if res.rows:
                     todos = [dict(zip(res.columns, r)) for r in res.rows]
-                    candidatos = [c for c in todos if normalizar_texto(c.get("titulo")) == tit_norm]
+                    candidatos = [c for c in todos if normalizar_titulo_e_edicao(c.get("titulo"), c.get("edicao"))[0] == tit_norm]
             except Exception:
                 candidatos = []
         else:
@@ -418,19 +473,26 @@ def verificar_hq_duplicada(
                 cursor.execute(sql_todos)
                 rows = cursor.fetchall()
                 if rows:
-                    candidatos = [dict(r) for r in rows if normalizar_texto(r["titulo"]) == tit_norm]
+                    candidatos = [dict(r) for r in rows if normalizar_titulo_e_edicao(r["titulo"], r["edicao"])[0] == tit_norm]
             finally:
                 conn.close()
 
-    # 2. Avalia duplicidade com base na edição normalizada e editora compatível
+    # 2. Avalia duplicidade com base no título e edição normalizados
+    candidato_mesmo_titulo_edicao = None
+
     for cand in candidatos:
-        cand_tit_norm = normalizar_texto(cand.get("titulo"))
-        cand_ed_norm = normalizar_edicao(cand.get("edicao"))
+        cand_tit_norm, cand_ed_norm = normalizar_titulo_e_edicao(cand.get("titulo"), cand.get("edicao"))
         cand_editora = cand.get("editora")
 
         if cand_tit_norm == tit_norm and cand_ed_norm == ed_norm:
             if editoras_sao_compativeis(cand_editora, editora):
                 return cand
+            if candidato_mesmo_titulo_edicao is None:
+                candidato_mesmo_titulo_edicao = cand
+
+    # Se encontrou registro com mesmo título e edição (mesmo que a IA tenha alucinado a editora)
+    if candidato_mesmo_titulo_edicao is not None:
+        return candidato_mesmo_titulo_edicao
 
     return None
 
@@ -612,15 +674,15 @@ def salvar_hqs(
         resenha = (item.get("resenha") or "").strip()
         resumo = (item.get("resumo") or "").strip()
 
-        tit_norm = normalizar_texto(titulo)
-        ed_norm = normalizar_edicao(edicao)
+        tit_norm, ed_norm = normalizar_titulo_e_edicao(titulo, edicao)
 
         if ignorar_duplicadas:
             # 1. Verifica duplicidade no mesmo lote da foto
             item_duplicado_no_lote = False
             for prev_item in itens_salvos:
-                if (normalizar_texto(prev_item.get("titulo")) == tit_norm and
-                    normalizar_edicao(prev_item.get("edicao")) == ed_norm and
+                prev_tit_norm, prev_ed_norm = normalizar_titulo_e_edicao(prev_item.get("titulo"), prev_item.get("edicao"))
+                if (prev_tit_norm == tit_norm and
+                    prev_ed_norm == ed_norm and
                     editoras_sao_compativeis(prev_item.get("editora"), editora)):
                     itens_duplicados.append({
                         **item,
@@ -636,11 +698,12 @@ def salvar_hqs(
             hq_existente = verificar_hq_duplicada(titulo, edicao, editora, db_path)
             if hq_existente:
                 ed_cadastrada = hq_existente.get("edicao") or "Sem Edição"
+                edit_cadastrada = hq_existente.get("editora") or "Desconhecida"
                 itens_duplicados.append({
                     **item,
                     "id_existente": hq_existente["id"],
                     "prateleira_existente": hq_existente["prateleira"],
-                    "motivo_duplicata": f"Já cadastrada no ID #{hq_existente['id']} (Edição cadastrada: '{ed_cadastrada}', Prateleira: '{hq_existente['prateleira']}')"
+                    "motivo_duplicata": f"Já cadastrada no ID #{hq_existente['id']} (Edição: '{ed_cadastrada}', Editora: '{edit_cadastrada}', Prateleira: '{hq_existente['prateleira']}')"
                 })
                 continue
 

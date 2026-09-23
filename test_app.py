@@ -277,12 +277,12 @@ class TestHqCatalog(unittest.TestCase):
         self.assertEqual(res3["salvos"], 1)
         self.assertEqual(res3["duplicados"], 0)
 
-        # 4. Salvar mesma edição (#1) mas de outra Editora ("Abril") - DEVE ser salvo
+        # 4. Salvar mesma edição com editora alucinada pela IA ("Abril" vs "Panini" já existente) - DEVE ser detectada como duplicata no escaneamento
         res4 = database.salvar_hqs([
             {"titulo": "Homem-Aranha", "edicao": "#1", "editora": "Abril"}
         ], "Estante 2", self.test_db, retornar_detalhes=True)
-        self.assertEqual(res4["salvos"], 1)
-        self.assertEqual(res4["duplicados"], 0)
+        self.assertEqual(res4["salvos"], 0)
+        self.assertEqual(res4["duplicados"], 1)
 
         # 5. Salvar lote misto com duplicadas internas e do banco
         res5 = database.salvar_hqs([
@@ -323,6 +323,20 @@ class TestHqCatalog(unittest.TestCase):
         self.assertEqual(res_mia3["salvos"], 1)
         self.assertEqual(res_mia3["duplicados"], 3)
 
+        # 7. Caso do usuário: "Ouroboros" cadastrado como "Comix Zone" e reenviado com editora alucinada "Pipoca e Namquim"
+        res_ouro1 = database.salvar_hqs([
+            {"titulo": "Ouroboros", "edicao": "Volume Único", "editora": "Comix Zone"}
+        ], "Estante Graphic Novels", self.test_db, retornar_detalhes=True)
+        self.assertEqual(res_ouro1["salvos"], 1)
+        self.assertEqual(res_ouro1["duplicados"], 0)
+
+        # Tentativa com editora alucinada "Pipoca e Namquim" e edição vazia - DEVE ser identificada como duplicata
+        res_ouro2 = database.salvar_hqs([
+            {"titulo": "Ouroboros", "edicao": "", "editora": "Pipoca e Namquim"}
+        ], "Estante Graphic Novels", self.test_db, retornar_detalhes=True)
+        self.assertEqual(res_ouro2["salvos"], 0)
+        self.assertEqual(res_ouro2["duplicados"], 1)
+
     def test_edition_normalization_helper(self):
         # Testa as equivalências de edições numéricas
         self.assertEqual(database.normalizar_edicao("Vol. 1"), "1")
@@ -351,6 +365,57 @@ class TestHqCatalog(unittest.TestCase):
         self.assertEqual(database.normalizar_edicao("Edição Especial"), "edicao especial")
         self.assertEqual(database.normalizar_edicao("Edição Definitiva Vol. 1"), "edicao definitiva 1")
         self.assertEqual(database.normalizar_edicao("Edicao Definitiva - 1"), "edicao definitiva 1")
+
+    def test_complex_spines_and_title_normalization(self):
+        # 1. Caso "Paraíso: O Vampiro que Ri"
+        item_vampiro_1 = gemini_service.higienizar_item_hq({
+            "titulo": "Paraíso: O Vampiro que Ri 2",
+            "edicao": "",
+            "editora": "Pipoca & Nanquim"
+        })
+        self.assertEqual(item_vampiro_1["titulo"], "Paraíso: O Vampiro que Ri")
+        self.assertEqual(item_vampiro_1["edicao"], "2")
+
+        item_vampiro_2 = gemini_service.higienizar_item_hq({
+            "titulo": "Paraíso: O Vampiro que Ri 2",
+            "edicao": "2",
+            "editora": "Pipoca & Nanquim"
+        })
+        self.assertEqual(item_vampiro_2["titulo"], "Paraíso: O Vampiro que Ri")
+        self.assertEqual(item_vampiro_2["edicao"], "2")
+
+        # 2. Caso "Meu Amigo Kim Jong-un"
+        item_kim = gemini_service.higienizar_item_hq({
+            "titulo": "Meu Amigo Kim Jong-un",
+            "edicao": "",
+            "editora": "Pipoca & Nanquim"
+        })
+        self.assertEqual(item_kim["titulo"], "Meu Amigo Kim Jong-un")
+        self.assertEqual(item_kim["edicao"], "")
+
+        # 3. Teste normalizar_titulo_e_edicao
+        tit_norm, ed_norm = database.normalizar_titulo_e_edicao("Paraíso: O Vampiro que Ri 2", "")
+        self.assertEqual(tit_norm, "paraiso o vampiro que ri")
+        self.assertEqual(ed_norm, "2")
+
+        tit_norm2, ed_norm2 = database.normalizar_titulo_e_edicao("Paraíso: O Vampiro que Ri", "Vol. 2")
+        self.assertEqual(tit_norm2, "paraiso o vampiro que ri")
+        self.assertEqual(ed_norm2, "2")
+
+        self.assertEqual(tit_norm, tit_norm2)
+        self.assertEqual(ed_norm, ed_norm2)
+
+        # 4. Teste de duplicata no banco entre as duas formas
+        res1 = database.salvar_hqs([
+            {"titulo": "Paraíso: O Vampiro que Ri", "edicao": "Vol. 2", "editora": "Pipoca & Nanquim"}
+        ], "Estante Mangás", self.test_db, retornar_detalhes=True)
+        self.assertEqual(res1["salvos"], 1)
+
+        res2 = database.salvar_hqs([
+            {"titulo": "Paraíso: O Vampiro que Ri 2", "edicao": "", "editora": "Pipoca & Nanquim"}
+        ], "Estante Mangás", self.test_db, retornar_detalhes=True)
+        self.assertEqual(res2["salvos"], 0)
+        self.assertEqual(res2["duplicados"], 1)
 
     def test_chatbot_helpers(self):
         # 1. Contexto vazio

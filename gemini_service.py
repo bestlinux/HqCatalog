@@ -21,31 +21,56 @@ except ImportError:
     types = None
 
 
-PROMPT_SISTEMA_HQS = """Você é um especialista em catalogação de histórias em quadrinhos (HQs, graphic novels, mangás, encadernados e gibis).
-Analise a imagem da prateleira/estante fornecida com máxima atenção às lombadas e capas visíveis.
+PROMPT_SISTEMA_HQS = """Você é um especialista em catalogação e curadoria profissional de histórias em quadrinhos (HQs, graphic novels, mangás, encadernados, gibis e zines).
+Analise a imagem da prateleira/estante fornecida com MÁXIMA ATENÇÃO às lombadas e capas visíveis.
 
 Identifique CADA HQ individualmente na foto da esquerda para a direita (ou de cima para baixo).
 
-Extraia as seguintes informações para cada item:
-1. "titulo": Nome completo e correto do quadrinho / série / arco (ex: "Batman: O Cavaleiro das Trevas", "Sandman - Edição Definitiva Vol. 1", "Turma da Mônica - Laços", "Berserk").
-2. "edicao": Número da edição ou do volume (ex: "1", "Vol. 2", "Edição Especial", "#104", ou "" caso não haja número explícito).
-3. "editora": Nome da editora responsável pela publicação (ex: "Panini", "Pipoca & Nanquim", "Mythos", "JBC", "Devir", "Marvel", "DC Comics", "Image", "Dark Horse", "Abril", "Veneta", ou "Desconhecida" se não for visível).
-4. "genero": Gênero literário/temático principal da obra (ex: "Super-heróis", "Terror", "Aventura", "Ficção Científica", "Fantasia", "Drama", "Mangá / Shonen", "Mangá / Seinen", "Suspense / Policial", "Humor", "Infantil", "Histórico", "Biografia", ou "Outro").
-5. "escritor": Nome do(s) roteirista(s) ou escritor(es) principal(is) da obra (ex: "Alan Moore", "Neil Gaiman", "Frank Miller", "Stan Lee", "Akira Toriyama", "Mauricio de Sousa", ou "Não informado" se não identificar).
-6. "ilustrador": Nome do(s) desenhista(s), ilustrador(es) ou artista(s) principal(is) da obra (ex: "Dave Gibbons", "Jim Lee", "Todd McFarlane", "Alex Ross", "Katsuhiro Otomo", "Kentaro Miura", ou "Não informado" se não identificar).
-7. "resumo": Um resumo conciso e envolvente da premissa ou enredo principal desta história/edição (em português, de 2 a 4 frases, descrevendo o contexto e a trama central da HQ).
+REGRAS CRÍTICAS PARA IDENTIFICAÇÃO DE LOMBADAS:
+1. LEITURA COMPLETA E INTEGRAL DA LOMBADA:
+   - Lombadas frequentemente dividem o título em múltiplas linhas, com tamanhos de fonte, pesos, cores e orientações diferentes.
+   - NUNCA leia apenas a primeira linha ou a palavra de maior destaque. Leia a lombada de cima a baixo para compor o título COMPLETO.
+   - Exemplo 1: Se a lombada tiver "Meu Amigo" em uma linha e "Kim Jong-un" em outra linha/cor, o título é ESTRITAMENTE "Meu Amigo Kim Jong-un" (NUNCA apenas "Meu Amigo").
+   - Exemplo 2: Se a lombada tiver "Paraíso" em destaque e ": O Vampiro que Ri" em outra linha com número "2", o título é "Paraíso: O Vampiro que Ri" e a edição é "2" (NUNCA apenas "Paraiso").
+   - Exemplo 3: Se houver subtítulo ou nome do arco (ex: "Batman: O Longo Dia das Bruxas", "Sandman: Prelúdios e Noturnos"), inclua o subtítulo completo no campo "titulo".
+
+2. SEPARAÇÃO RIGOROSA DE TÍTULO, EDIÇÃO E AUTOR:
+   - "titulo": Nome completo e canônico da obra (sem truncar). Não coloque o número do volume no final do título se ele pertencer ao campo "edicao".
+   - "edicao": Número da edição ou volume (ex: "1", "2", "Vol. 2", "Edição Especial", "Volume Único", "#104", ou "" caso não haja número explícito).
+   - "editora": Nome da editora responsável (ex: "Comix Zone", "Pipoca & Nanquim", "Panini", "JBC", "NewPOP", "Devir", "Veneta", "Mythos", "Darkside", "Conrad", "Mino", "Nemo", "Marvel", "DC Comics", ou "Desconhecida" se não for visível).
+   - "escritor": Nome do(s) roteirista(s) ou escritor(es) (ex: "Suehiro Maruo", "Keum Suk Gendry-Kim", "Alan Moore", "Frank Miller", "Neil Gaiman", ou "Não informado"). NUNCA misture nomes de autores no campo "titulo".
+   - "ilustrador": Nome do(s) desenhista(s) / ilustrador(es) (ou "Não informado").
+   - "genero": Gênero literário/temático principal (ex: "Mangá / Seinen", "Mangá / Shonen", "Super-heróis", "Terror", "Aventura", "Ficção Científica", "Drama", "Histórico", "Biografia", "Suspense / Policial", "Humor", "Infantil", ou "Outro").
+   - "resumo": Resumo conciso da história/edição (em português, de 2 a 4 frases).
+
+3. PRECISÃO DE EDITORA E ANTI-ALUCINAÇÃO:
+   - Identifique a editora APENAS se o logotipo, selo editorial ou nome estiver de fato visível na lombada (geralmente no topo ou na base da lombada, como "Comix Zone", "Pipoca & Nanquim", "Panini", "JBC", "NewPOP", "Veneta", "Devir", "Darkside", "Mythos", "Conrad", "Nemo", "Mino", "Todavia", "Quadrinhos na Cia", "Zarabatana", "Skript", "Draco", "Trem Fantasma", "Figura", "Risco").
+   - NUNCA assuma ou adivinhe "Pipoca & Nanquim" ou "Panini" por padrão para graphic novels em geral se o logo da editora for outro (ex: logotipo da "Comix Zone" em obras como "Ouroboros" ou "Squeak the Mouse").
+   - Se o logotipo da editora não for identificável com certeza na imagem, use ESTRITAMENTE "Desconhecida".
+
+4. CONHECIMENTO DE CATÁLOGO NACIONAL E INTERNACIONAL:
+   - Utilize seu conhecimento enciclopédico sobre mangás e quadrinhos lançados no Brasil para reconhecer obras canônicas mesmo quando a tipografia da lombada for estilizada, vertical ou com fontes mistas.
 
 Retorne ESTRITAMENTE um array JSON contendo os objetos identificados.
 Exemplo de formato esperado:
 [
   {
-    "titulo": "Demolidor: A Queda de Murdock",
-    "edicao": "Edição de Luxo",
-    "editora": "Panini",
-    "genero": "Super-heróis",
-    "escritor": "Frank Miller",
-    "ilustrador": "David Mazzucchelli",
-    "resumo": "Karen Page vende a identidade secreta do Demolidor por uma dose de heroína. A informação chega ao Rei do Crime, que sistematicamente destrói a vida pessoal, financeira e psicológica de Matt Murdock até levá-lo ao limite."
+    "titulo": "Paraíso: O Vampiro que Ri",
+    "edicao": "2",
+    "editora": "Pipoca & Nanquim",
+    "genero": "Mangá / Seinen",
+    "escritor": "Suehiro Maruo",
+    "ilustrador": "Suehiro Maruo",
+    "resumo": "Continuação da aclamada obra eroguro de Suehiro Maruo, acompanhando as bizarras e macabras peripécias do vampiro em um submundo repleto de bizarrices e humor ácido."
+  },
+  {
+    "titulo": "Meu Amigo Kim Jong-un",
+    "edicao": "Volume Único",
+    "editora": "Pipoca & Nanquim",
+    "genero": "Biografia / Histórico",
+    "escritor": "Keum Suk Gendry-Kim",
+    "ilustrador": "Keum Suk Gendry-Kim",
+    "resumo": "Graphic novel documental autobiográfica que investiga as memórias e percepções da autora ao entrevistar cidadãos comuns sobre o regime norte-coreano e o líder Kim Jong-un."
   },
   {
     "titulo": "Watchmen",
@@ -55,15 +80,6 @@ Exemplo de formato esperado:
     "escritor": "Alan Moore",
     "ilustrador": "Dave Gibbons",
     "resumo": "Em uma realidade alternativa nos anos 1980 em meio à Guerra Fria, o assassinato do vigilante Comediante desencadeia uma investigação liderada por Rorschach, revelando uma conspiração global que questiona a própria moralidade humana."
-  },
-  {
-    "titulo": "Akira",
-    "edicao": "Vol. 3",
-    "editora": "JBC",
-    "genero": "Ficção Científica",
-    "escritor": "Katsuhiro Otomo",
-    "ilustrador": "Katsuhiro Otomo",
-    "resumo": "Na pós-apocalíptica Neo-Tóquio, gangues de motoqueiros colidem com experimentos militares psíquicos enquanto o poder destrutivo de Akira ameaça emergir novamente e devastar o que resta da civilização."
   }
 ]
 
@@ -86,6 +102,61 @@ def get_gemini_client(api_key: Optional[str] = None) -> Any:
     return genai.Client(api_key=key)
 
 
+def higienizar_item_hq(item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Higieniza e desmembra título e edição caso o número do volume tenha vindo anexado ao título.
+    Garante que títulos e edições fiquem canônicos e limpos.
+    """
+    titulo = str(item.get("titulo", "")).strip().strip("\"'“”")
+    edicao = str(item.get("edicao", "")).strip().strip("\"'“”")
+    editora = str(item.get("editora", "")).strip().strip("\"'“”")
+    genero = str(item.get("genero", "")).strip().strip("\"'“”") or "Outro"
+    escritor = str(item.get("escritor", "")).strip().strip("\"'“”") or "Não informado"
+    ilustrador = str(item.get("ilustrador", "")).strip().strip("\"'“”") or "Não informado"
+    resumo = str(item.get("resumo", "")).strip()
+
+    # Padrões de sufixo de volume no final do título
+    # Ex: "Sandman - Edição Definitiva Vol. 1", "Akira Vol. 3", "Batman #10", "Paraíso: O Vampiro que Ri 2"
+    padrao_vol_explicito = re.search(
+        r"^(.*?)(?:\s*[-–—:]\s*|\s+)(?:vol(?:ume)?|v|ed(?:i[cç][aã]o)?|#|n[oº°]|tomo|livro|parte)\.?\s*(\d+(?:[\.,]\d+)?)$",
+        titulo,
+        re.IGNORECASE
+    )
+    padrao_num_final = re.search(r"^(.*?)(?:\s*[-–—:]\s*|\s+)(\d{1,3})$", titulo)
+
+    titulos_numericos_conhecidos = {"1984", "2001", "300", "100", "20th", "21st"}
+
+    if padrao_vol_explicito:
+        base_titulo = padrao_vol_explicito.group(1).strip()
+        num_vol = padrao_vol_explicito.group(2).strip()
+        if base_titulo and base_titulo.lower() not in titulos_numericos_conhecidos:
+            titulo = base_titulo
+            if not edicao:
+                edicao = f"Vol. {num_vol}"
+    elif padrao_num_final:
+        base_titulo = padrao_num_final.group(1).strip()
+        num_vol = padrao_num_final.group(2).strip()
+        if base_titulo and base_titulo.lower() not in titulos_numericos_conhecidos and len(base_titulo) > 2:
+            if not edicao:
+                titulo = base_titulo
+                edicao = num_vol
+            elif edicao == num_vol or edicao.lower() in (f"vol. {num_vol}", f"vol {num_vol}", f"#{num_vol}"):
+                titulo = base_titulo
+
+    # Remove pontuação residual no final do título (ex: "Paraíso: " -> "Paraíso")
+    titulo = re.sub(r"[\s\-–—:]+$", "", titulo).strip()
+
+    return {
+        "titulo": titulo,
+        "edicao": edicao,
+        "editora": editora,
+        "genero": genero,
+        "escritor": escritor,
+        "ilustrador": ilustrador,
+        "resumo": resumo
+    }
+
+
 def limpar_e_parsear_json(texto_resposta: str) -> List[Dict[str, Any]]:
     """
     Remove blocos de formatação markdown (```json ... ```) e faz o parse seguro do JSON.
@@ -105,55 +176,13 @@ def limpar_e_parsear_json(texto_resposta: str) -> List[Dict[str, Any]]:
     try:
         dados = json.loads(texto)
         if isinstance(dados, list):
-            # Garante que cada item tenha as chaves esperadas
-            itens_higienizados = []
-            for item in dados:
-                if isinstance(item, dict):
-                    itens_higienizados.append({
-                        "titulo": str(item.get("titulo", "")).strip(),
-                        "edicao": str(item.get("edicao", "")).strip(),
-                        "editora": str(item.get("editora", "")).strip(),
-                        "genero": str(item.get("genero", "")).strip() or "Outro",
-                        "escritor": str(item.get("escritor", "")).strip() or "Não informado",
-                        "ilustrador": str(item.get("ilustrador", "")).strip() or "Não informado",
-                        "resumo": str(item.get("resumo", "")).strip()
-                    })
-            return itens_higienizados
+            return [higienizar_item_hq(item) for item in dados if isinstance(item, dict)]
         elif isinstance(dados, dict):
-            # Caso a IA retorne um único objeto ou embrulhado em uma chave (ex: {"hqs": [...]})
             if "hqs" in dados and isinstance(dados["hqs"], list):
-                return [
-                    {
-                        "titulo": str(item.get("titulo", "")).strip(),
-                        "edicao": str(item.get("edicao", "")).strip(),
-                        "editora": str(item.get("editora", "")).strip(),
-                        "genero": str(item.get("genero", "")).strip() or "Outro",
-                        "escritor": str(item.get("escritor", "")).strip() or "Não informado",
-                        "ilustrador": str(item.get("ilustrador", "")).strip() or "Não informado",
-                        "resumo": str(item.get("resumo", "")).strip()
-                    } for item in dados["hqs"] if isinstance(item, dict)
-                ]
+                return [higienizar_item_hq(item) for item in dados["hqs"] if isinstance(item, dict)]
             elif "quadrinhos" in dados and isinstance(dados["quadrinhos"], list):
-                return [
-                    {
-                        "titulo": str(item.get("titulo", "")).strip(),
-                        "edicao": str(item.get("edicao", "")).strip(),
-                        "editora": str(item.get("editora", "")).strip(),
-                        "genero": str(item.get("genero", "")).strip() or "Outro",
-                        "escritor": str(item.get("escritor", "")).strip() or "Não informado",
-                        "ilustrador": str(item.get("ilustrador", "")).strip() or "Não informado",
-                        "resumo": str(item.get("resumo", "")).strip()
-                    } for item in dados["quadrinhos"] if isinstance(item, dict)
-                ]
-            return [{
-                "titulo": str(dados.get("titulo", "")).strip(),
-                "edicao": str(dados.get("edicao", "")).strip(),
-                "editora": str(dados.get("editora", "")).strip(),
-                "genero": str(dados.get("genero", "")).strip() or "Outro",
-                "escritor": str(dados.get("escritor", "")).strip() or "Não informado",
-                "ilustrador": str(dados.get("ilustrador", "")).strip() or "Não informado",
-                "resumo": str(dados.get("resumo", "")).strip()
-            }]
+                return [higienizar_item_hq(item) for item in dados["quadrinhos"] if isinstance(item, dict)]
+            return [higienizar_item_hq(dados)]
         return []
     except json.JSONDecodeError as e:
         raise ValueError(f"Falha ao interpretar o JSON retornado pela IA: {e}. Resposta bruta: {texto_resposta[:300]}")
@@ -166,11 +195,11 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3-flash-preview"]
 
 
-def redimensionar_para_ia(imagem: Any, max_dim: int = 1600) -> Any:
+def redimensionar_para_ia(imagem: Any, max_dim: int = 2400) -> Any:
     """
     Otimiza a imagem para envio à IA:
-    Reduz fotos gigantes de celular (12MP-50MP / 15MB) para ~1600px JPEG (~300KB),
-    acelerando o upload e o processamento de 10s para menos de 1 segundo sem perder legibilidade.
+    Mantém altíssima nitidez (até 2400px JPEG quality 90) para preservar pequenos textos,
+    subtítulos e numerações em lombadas finas.
     """
     if Image is None or not isinstance(imagem, Image.Image):
         return imagem
@@ -180,7 +209,7 @@ def redimensionar_para_ia(imagem: Any, max_dim: int = 1600) -> Any:
         img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
 
     buffer = io.BytesIO()
-    img.save(buffer, format="JPEG", quality=85, optimize=True)
+    img.save(buffer, format="JPEG", quality=90, optimize=True)
     buffer.seek(0)
     return Image.open(buffer)
 

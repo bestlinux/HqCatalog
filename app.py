@@ -100,6 +100,12 @@ if "oferta_pendente_desejos" not in st.session_state:
 if "historico_crud_assistido" not in st.session_state:
     st.session_state["historico_crud_assistido"] = []
 
+if "hqs_em_revisao" not in st.session_state:
+    st.session_state["hqs_em_revisao"] = []
+
+if "ultimo_resultado_salvamento" not in st.session_state:
+    st.session_state["ultimo_resultado_salvamento"] = None
+
 if "pagina_atual" not in st.session_state:
     st.session_state["pagina_atual"] = "principal"
 
@@ -923,23 +929,21 @@ with tab_camera:
 
 
 # -------------------------------------------------------------
-# PROCESSAMENTO COM IA & PERSISTÊNCIA AUTOMÁTICA
+# PROCESSAMENTO COM IA & REVISÃO INTERATIVA
 # -------------------------------------------------------------
 if imagem_para_processar is not None:
     st.image(imagem_para_processar, caption="Pré-visualização da Foto Capturada", use_container_width=True)
 
-    col_btn, _ = st.columns([1, 3])
-    with col_btn:
-        botao_analisar = st.button("🚀 Processar & Salvar HQs", type="primary", use_container_width=True)
+    col_btn_proc, _ = st.columns([1.2, 2])
+    with col_btn_proc:
+        botao_analisar = st.button("🔍 1. Identificar HQs na Foto", type="primary", use_container_width=True)
 
     if botao_analisar:
         if not os.getenv("GEMINI_API_KEY"):
             st.error("❌ Chave de API do Gemini não configurada! Insira-a na barra lateral.")
-        elif not prateleira_input.strip() or prateleira_input.strip() == "-- Selecione uma prateleira --":
-            st.error("❌ Por favor, selecione ou informe o nome da Prateleira Atual.")
         else:
             status_placeholder = st.empty()
-            with st.spinner(f"🤖 Analisando lombadas com {modelo_selecionado} e catalogando..."):
+            with st.spinner(f"🤖 Analisando lombadas com {modelo_selecionado}..."):
                 try:
                     def atualizar_status(mensagem: str):
                         status_placeholder.info(mensagem, icon="⏳")
@@ -954,49 +958,112 @@ if imagem_para_processar is not None:
                     status_placeholder.empty()
 
                     if hqs_detectadas:
-                        # Salva automaticamente no banco de dados com prevenção de duplicatas
-                        resultado = database.salvar_hqs(
-                            hqs_detectadas,
-                            prateleira_input.strip(),
-                            ignorar_duplicadas=True,
-                            retornar_detalhes=True
-                        )
-                        total_salvo = resultado["salvos"]
-                        total_duplicados = resultado["duplicados"]
-                        itens_salvos = resultado["itens_salvos"]
-                        itens_duplicados = resultado["itens_duplicados"]
-
-                        st.session_state["ultimos_itens_salvos"] = itens_salvos
-                        
-                        if total_salvo > 0 and total_duplicados > 0:
-                            st.success(
-                                f"🎉 **{total_salvo} HQ(s) nova(s) salva(s) com sucesso** na prateleira `{prateleira_input.strip()}`!"
-                            )
-                            st.info(
-                                f"ℹ️ **{total_duplicados} HQ(s) ignorada(s)** pois já constavam no catálogo (mesmo Título + Edição/Número + Editora)."
-                            )
-                        elif total_salvo > 0:
-                            st.success(
-                                f"🎉 **{total_salvo} HQ(s) identificada(s) e salvas com sucesso** na prateleira `{prateleira_input.strip()}`!"
-                            )
-                        elif total_duplicados > 0:
-                            st.warning(
-                                f"⚠️ Nenhuma nova HQ gravada: todas as **{total_duplicados} HQ(s)** identificadas na foto já estavam cadastradas no catálogo com mesmo Título + Edição/Número + Editora."
-                            )
-
-                        if itens_duplicados:
-                            with st.expander(f"🔍 Ver detalhes das {len(itens_duplicados)} HQ(s) ignoradas por duplicidade"):
-                                for dup in itens_duplicados:
-                                    st.write(f"- ⚠️ **{dup.get('titulo')}** ({dup.get('edicao') or 'Sem Edição'}) - Editora: *{dup.get('editora') or 'Desconhecida'}* — `{dup.get('motivo_duplicata')}`")
+                        st.session_state["hqs_em_revisao"] = hqs_detectadas
+                        st.session_state["ultimo_resultado_salvamento"] = None
+                        st.rerun()
                     else:
                         st.warning("⚠️ Nenhum quadrinho pôde ser identificado nesta foto. Tente aproximar ou melhorar a iluminação.")
                 except Exception as ex:
                     status_placeholder.empty()
                     st.error(f"Erro ao processar imagem: {ex}")
 
+# Exibe a tabela de revisão e edição se houver itens identificados aguardando confirmação
+if st.session_state.get("hqs_em_revisao"):
+    st.markdown("### 📋 2. Revisão e Edição dos Itens Identificados")
+    st.info(
+        "💡 **Edição Manual Habilitada:** Você pode alterar qualquer dado diretamente nas células abaixo (Título, Edição, Editora, Autores, Resumo), adicionar novas linhas ou excluir itens antes de confirmar o salvamento.",
+        icon="✏️"
+    )
+
+    df_revisao = pd.DataFrame(st.session_state["hqs_em_revisao"])
+    colunas_obrigatorias = ["titulo", "edicao", "editora", "genero", "escritor", "ilustrador", "resumo"]
+    for col in colunas_obrigatorias:
+        if col not in df_revisao.columns:
+            df_revisao[col] = ""
+
+    df_revisao = df_revisao[colunas_obrigatorias]
+
+    df_editado = st.data_editor(
+        df_revisao,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "titulo": st.column_config.TextColumn("Título da HQ *", required=True),
+            "edicao": st.column_config.TextColumn("Edição / Volume"),
+            "editora": st.column_config.TextColumn("Editora"),
+            "genero": st.column_config.TextColumn("Gênero"),
+            "escritor": st.column_config.TextColumn("Roteirista / Escritor"),
+            "ilustrador": st.column_config.TextColumn("Desenhista / Arte"),
+            "resumo": st.column_config.TextColumn("Resumo da História")
+        },
+        key="data_editor_revisao_hqs"
+    )
+
+    st.caption(f"📍 Os itens confirmados serão associados à prateleira: **`{prateleira_input.strip() or 'Não especificada'}`**")
+
+    col_salvar, col_descartar, _ = st.columns([1.5, 1.2, 2])
+    with col_salvar:
+        botao_confirmar_salvar = st.button("💾 3. Confirmar & Salvar no Catálogo", type="primary", use_container_width=True)
+    with col_descartar:
+        botao_descartar = st.button("🗑️ Descartar Revisão", use_container_width=True)
+
+    if botao_descartar:
+        st.session_state["hqs_em_revisao"] = []
+        st.rerun()
+
+    if botao_confirmar_salvar:
+        if not prateleira_input.strip() or prateleira_input.strip() == "-- Selecione uma prateleira --":
+            st.error("❌ Por favor, selecione ou informe o nome da Prateleira Atual antes de salvar.")
+        else:
+            itens_para_salvar = []
+            if isinstance(df_editado, pd.DataFrame):
+                registros = df_editado.to_dict(orient="records")
+            else:
+                registros = st.session_state["hqs_em_revisao"]
+
+            for r in registros:
+                tit = str(r.get("titulo") or "").strip()
+                if tit:
+                    itens_para_salvar.append(r)
+
+            if not itens_para_salvar:
+                st.warning("⚠️ Nenhum quadrinho com título preenchido para salvar.")
+            else:
+                resultado = database.salvar_hqs(
+                    itens_para_salvar,
+                    prateleira_input.strip(),
+                    ignorar_duplicadas=True,
+                    retornar_detalhes=True
+                )
+                st.session_state["ultimos_itens_salvos"] = resultado["itens_salvos"]
+                st.session_state["ultimo_resultado_salvamento"] = resultado
+                st.session_state["hqs_em_revisao"] = []
+                st.rerun()
+
+# Exibe o feedback do último salvamento se houver
+if st.session_state.get("ultimo_resultado_salvamento"):
+    resultado_ultimo = st.session_state["ultimo_resultado_salvamento"]
+    total_salvo = resultado_ultimo["salvos"]
+    total_duplicados = resultado_ultimo["duplicados"]
+    itens_duplicados = resultado_ultimo.get("itens_duplicados", [])
+    prat_usada = prateleira_input.strip() if prateleira_input.strip() and prateleira_input.strip() != "-- Selecione uma prateleira --" else "sua coleção"
+
+    if total_salvo > 0 and total_duplicados > 0:
+        st.success(f"🎉 **{total_salvo} HQ(s) nova(s) salva(s) com sucesso** na prateleira `{prat_usada}`!")
+        st.info(f"ℹ️ **{total_duplicados} HQ(s) ignorada(s)** pois já constavam no catálogo com mesmo Título e Edição.")
+    elif total_salvo > 0:
+        st.success(f"🎉 **{total_salvo} HQ(s) salva(s) com sucesso** na prateleira `{prat_usada}`!")
+    elif total_duplicados > 0:
+        st.warning(f"⚠️ Nenhuma nova HQ gravada: todas as **{total_duplicados} HQ(s)** já estavam cadastradas no catálogo.")
+
+    if itens_duplicados:
+        with st.expander(f"🔍 Ver detalhes das {len(itens_duplicados)} HQ(s) ignoradas por duplicidade"):
+            for dup in itens_duplicados:
+                st.write(f"- ⚠️ **{dup.get('titulo')}** ({dup.get('edicao') or 'Sem Edição'}) - Editora: *{dup.get('editora') or 'Desconhecida'}* — `{dup.get('motivo_duplicata')}`")
+
 # Exibe resumo visual imediato dos últimos itens detectados e salvos
-if st.session_state["ultimos_itens_salvos"]:
-    st.markdown("### 📋 Itens Recém-Identificados e Salvos")
+if st.session_state.get("ultimos_itens_salvos"):
+    st.markdown("### 📋 Itens Recém-Salvos no Catálogo")
     st.dataframe(
         st.session_state["ultimos_itens_salvos"],
         use_container_width=True,
