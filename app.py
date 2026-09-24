@@ -287,7 +287,7 @@ def dialog_resenha(id_padrao: Optional[int] = None):
                                         audio_bytes=audio_para_transcrever,
                                         mime_type=mime_audio,
                                         api_key=os.getenv("GEMINI_API_KEY"),
-                                        modelo=modelo_selecionado
+                                        modelo=resolver_modelo("audio")
                                     )
                                     if texto_transcrito:
                                         st.session_state[area_key] = texto_transcrito
@@ -514,10 +514,27 @@ with st.sidebar:
     # Seletor de Modelo Gemini
     modelo_selecionado = st.selectbox(
         "Modelo do Gemini:",
-        options=["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3-flash-preview"],
+        options=[
+            "Automático (Otimizado)",
+            "gemini-3.1-pro-preview",
+            "gemini-pro-latest",
+            "gemini-3.5-flash",
+            "gemini-3.6-flash",
+            "gemini-3.7-flash",
+            "gemini-3.8-flash",
+            "gemini-flash-latest",
+            "gemini-3.1-flash-lite",
+            "gemini-3.5-flash-lite",
+            "gemini-3-flash-preview"
+        ],
         index=0,
-        help="gemini-3.1-flash-lite e gemini-3.5-flash são os modelos oficiais mais rápidos, estáveis e recomendados para catalogação e curadoria."
+        help="Automático: gemini-3.6-flash para Visão/Lombadas e Chat com máxima velocidade e compatibilidade de cota."
     )
+
+    def resolver_modelo(tipo: str) -> str:
+        if modelo_selecionado != "Automático (Otimizado)":
+            return modelo_selecionado
+        return "gemini-3.6-flash"
 
     # Indicador de Banco de Dados
     if database.is_using_turso():
@@ -943,7 +960,7 @@ if imagem_para_processar is not None:
             st.error("❌ Chave de API do Gemini não configurada! Insira-a na barra lateral.")
         else:
             status_placeholder = st.empty()
-            with st.spinner(f"🤖 Analisando lombadas com {modelo_selecionado}..."):
+            with st.spinner(f"🤖 Analisando lombadas com {resolver_modelo('visao')}..."):
                 try:
                     def atualizar_status(mensagem: str):
                         status_placeholder.info(mensagem, icon="⏳")
@@ -952,7 +969,7 @@ if imagem_para_processar is not None:
                     hqs_detectadas = gemini_service.processar_foto_prateleira(
                         imagem=imagem_para_processar,
                         api_key=os.getenv("GEMINI_API_KEY"),
-                        modelo=modelo_selecionado,
+                        modelo=resolver_modelo("visao"),
                         status_callback=atualizar_status
                     )
                     status_placeholder.empty()
@@ -1435,7 +1452,7 @@ with st.expander("💬 Curador Virtual: Assistente & Recomendações da Coleçã
                                 mime_type=mime_curador,
                                 tipo_contexto="curador",
                                 api_key=os.getenv("GEMINI_API_KEY"),
-                                modelo=modelo_selecionado
+                                modelo=resolver_modelo("audio")
                             )
                         except Exception as e:
                             st.error(f"Erro ao transcrever áudio: {e}")
@@ -1454,7 +1471,7 @@ with st.expander("💬 Curador Virtual: Assistente & Recomendações da Coleçã
                 catalogo_hqs=catalogo_atual,
                 historico_mensagens=st.session_state["chat_mensagens_curador"][:-1],
                 api_key=os.getenv("GEMINI_API_KEY"),
-                modelo=modelo_selecionado
+                modelo=resolver_modelo("chat")
             )
 
         st.session_state["chat_mensagens_curador"].append({"role": "assistant", "content": resposta_curador})
@@ -1517,7 +1534,7 @@ with st.expander("🛠️ Operações de CRUD assistidas", expanded=True):
                                 mime_type=mime_crud,
                                 tipo_contexto="crud",
                                 api_key=os.getenv("GEMINI_API_KEY"),
-                                modelo=modelo_selecionado
+                                modelo=resolver_modelo("audio")
                             )
                         except Exception as e:
                             st.error(f"Erro ao transcrever áudio: {e}")
@@ -1538,7 +1555,7 @@ with st.expander("🛠️ Operações de CRUD assistidas", expanded=True):
                         catalogo_hqs=catalogo_completo,
                         prateleira_padrao=prat_padrao,
                         api_key=os.getenv("GEMINI_API_KEY"),
-                        modelo=modelo_selecionado
+                        modelo=resolver_modelo("crud")
                     )
                 except Exception as e:
                     resultado_crud = {
@@ -1807,7 +1824,7 @@ with st.expander("🛒 Radar de Preços em Lojas & Lista de Desejos", expanded=F
                                 mime_type=mime_preco,
                                 tipo_contexto="busca_preco",
                                 api_key=os.getenv("GEMINI_API_KEY"),
-                                modelo=modelo_selecionado
+                                modelo=resolver_modelo("audio")
                             )
                         except Exception as e:
                             st.error(f"Erro ao transcrever áudio: {e}")

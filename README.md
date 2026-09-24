@@ -1,6 +1,6 @@
 # 📚 Catalogador de Coleção de HQs com Streamlit e Gemini
 
-Aplicativo web em Python para catalogar e gerenciar coleções físicas de quadrinhos (HQs, graphic novels, mangás, encadernados e gibis) utilizando fotos tiradas diretamente pela câmera do celular e visão computacional avançada com o modelo **Gemini 2.5 Flash / 3.6 Flash** (`google-genai`).
+Aplicativo web em Python para catalogar e gerenciar coleções físicas de quadrinhos (HQs, graphic novels, mangás, encadernados e gibis) utilizando fotos tiradas diretamente pela câmera do celular e visão computacional avançada com os modelos **Gemini 3.1 Pro** e **Gemini 3.5 Flash** (`google-genai`).
 
 ---
 
@@ -8,7 +8,7 @@ Aplicativo web em Python para catalogar e gerenciar coleções físicas de quadr
 - **Python 3.10+**
 - **Streamlit** (com suporte a `st.data_editor`, `st.camera_input` e autenticação)
 - **SQLite / Turso Cloud** (`hqs_inventario.db`)
-- **Google GenAI SDK** (`gemini-3.6-flash` / `gemini-2.5-flash`)
+- **Google GenAI SDK** (`gemini-3.1-pro-preview` / `gemini-3.5-flash`)
 - **Pandas** & **Pillow**
 
 ---

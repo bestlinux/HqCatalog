@@ -1,6 +1,6 @@
 """
 Módulo de Integração com a API do Gemini (Google GenAI SDK)
-Utiliza o modelo gemini-2.5-flash para visão computacional e identificação de HQs em fotos de prateleiras.
+Utiliza o modelo gemini-3.1-pro-preview para visão computacional e gemini-3.5-flash para curadoria e comandos.
 """
 
 import json
@@ -192,7 +192,18 @@ import io
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
-FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3-flash-preview"]
+FALLBACK_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-flash-latest",
+    "gemini-3.5-flash",
+    "gemini-3.1-pro-preview",
+    "gemini-pro-latest",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite",
+    "gemini-3-flash-preview"
+]
 
 
 def redimensionar_para_ia(imagem: Any, max_dim: int = 2400) -> Any:
@@ -214,6 +225,24 @@ def redimensionar_para_ia(imagem: Any, max_dim: int = 2400) -> Any:
     return Image.open(buffer)
 
 
+def _analisar_tipo_erro(erro_str: str) -> str:
+    """
+    Classifica o erro retornado pela API do Gemini:
+    - 'invalido': 404 NOT_FOUND ou modelo descontinuado.
+    - 'cota_zerada': 429 RESOURCE_EXHAUSTED com limit: 0 (sem cota no plano gratuito) ou cota diária esgotada.
+    - 'sobrecarga_temporaria': 503 UNAVAILABLE ou rate limit transitório recuperável.
+    - 'outro': outros erros.
+    """
+    err_low = erro_str.lower()
+    if any(k in err_low for k in ["404", "not_found", "not found", "is no longer available"]):
+        return "invalido"
+    if any(k in err_low for k in ["limit: 0", "limit:0", "perday", "per day", "daily"]):
+        return "cota_zerada"
+    if any(k in err_low for k in ["503", "unavailable", "high demand", "429", "resource_exhausted", "quota", "overloaded", "spikes in demand"]):
+        return "sobrecarga_temporaria"
+    return "outro"
+
+
 def processar_foto_prateleira(
     imagem: Any,
     api_key: Optional[str] = None,
@@ -223,7 +252,7 @@ def processar_foto_prateleira(
 ) -> List[Dict[str, Any]]:
     """
     Envia a imagem da prateleira ou capa para o modelo Gemini e retorna a lista de HQs identificadas.
-    Inclui redimensionamento prévio, retry com backoff e fallback de modelo.
+    Inclui redimensionamento prévio, retry com backoff e fallback inteligente de modelo.
     """
     client = get_gemini_client(api_key)
 
@@ -265,16 +294,17 @@ def processar_foto_prateleira(
                 ultimo_erro = ex
                 print(f"[Aviso Gemini Vision mod={mod} tentativa={tentativa}]: {ex}")
                 
-                # Identifica se é erro de sobrecarga temporária da API (503 UNAVAILABLE ou 429 RATE_LIMIT)
-                eh_sobrecarga = (
-                    "503" in erro_str or
-                    "UNAVAILABLE" in erro_str or
-                    "high demand" in erro_str or
-                    "429" in erro_str or
-                    "RESOURCE_EXHAUSTED" in erro_str
-                )
+                tipo_erro = _analisar_tipo_erro(erro_str)
 
-                if eh_sobrecarga:
+                if tipo_erro == "cota_zerada":
+                    if status_callback:
+                        status_callback(
+                            f"ℹ️ Modelo {mod} sem cota no plano atual. Alternando imediatamente para o próximo modelo..."
+                        )
+                    break
+                elif tipo_erro == "invalido":
+                    break
+                elif tipo_erro == "sobrecarga_temporaria":
                     tempo_espera = 2 ** tentativa  # 2s, 4s, 8s
                     if status_callback:
                         status_callback(
@@ -319,7 +349,7 @@ def consultar_chatbot_colecao(
     catalogo_hqs: List[Dict[str, Any]],
     historico_mensagens: Optional[List[Dict[str, str]]] = None,
     api_key: Optional[str] = None,
-    modelo: str = "gemini-3.1-flash-lite",
+    modelo: str = "gemini-3.5-flash",
     max_retries_por_modelo: int = 2
 ) -> str:
     """
@@ -383,9 +413,14 @@ def consultar_chatbot_colecao(
     # Lista ordenada de modelos recomendados e ativos
     modelos_tentativa = [modelo]
     modelos_disponiveis = [
-        "gemini-3.1-flash-lite",
         "gemini-3.5-flash",
         "gemini-3.6-flash",
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
+        "gemini-flash-latest",
+        "gemini-3.1-pro-preview",
+        "gemini-pro-latest",
+        "gemini-3.1-flash-lite",
         "gemini-3.5-flash-lite",
         "gemini-3-flash-preview"
     ]
@@ -406,11 +441,12 @@ def consultar_chatbot_colecao(
                 erro_str = str(ex)
                 print(f"[Aviso Gemini Chatbot mod={mod} tentativa={tentativa}]: {ex}")
 
-                if _eh_erro_sobrecarga(erro_str) and tentativa < max_retries_por_modelo:
+                tipo_erro = _analisar_tipo_erro(erro_str)
+                if tipo_erro == "sobrecarga_temporaria" and tentativa < max_retries_por_modelo:
                     tempo_espera = 1.0 * tentativa
                     time.sleep(tempo_espera)
                 else:
-                    # Passa para o próximo modelo da lista
+                    # Passa imediatamente para o próximo modelo da lista
                     break
 
     return "Desculpe, ocorreu uma instabilidade temporária ao consultar a IA. Por favor, tente novamente em instantes."
@@ -803,9 +839,14 @@ Retorne o JSON da operação correspondente:"""
 
     modelos_tentativa = [modelo]
     modelos_disponiveis = [
-        "gemini-3.1-flash-lite",
         "gemini-3.5-flash",
         "gemini-3.6-flash",
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
+        "gemini-flash-latest",
+        "gemini-3.1-pro-preview",
+        "gemini-pro-latest",
+        "gemini-3.1-flash-lite",
         "gemini-3.5-flash-lite",
         "gemini-3-flash-preview"
     ]
@@ -829,7 +870,8 @@ Retorne o JSON da operação correspondente:"""
             except Exception as ex:
                 ultimo_erro = ex
                 erro_str = str(ex)
-                if _eh_erro_sobrecarga(erro_str) and tentativa < max_retries_por_modelo:
+                tipo_erro = _analisar_tipo_erro(erro_str)
+                if tipo_erro == "sobrecarga_temporaria" and tentativa < max_retries_por_modelo:
                     time.sleep(1.0 * tentativa)
                 else:
                     break
