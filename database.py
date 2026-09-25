@@ -7,6 +7,7 @@ Suporta de forma híbrida e transparente:
 
 import os
 import sqlite3
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 try:
@@ -145,11 +146,20 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
     FROM hqs
     WHERE prateleira IS NOT NULL AND TRIM(prateleira) != '' AND TRIM(prateleira) != 'Não especificada' AND TRIM(prateleira) != 'Estante 1 - Prateleira 1';
     """
+    create_table_historico_sql = """
+    CREATE TABLE IF NOT EXISTS historico_destaques (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hq_id INTEGER NOT NULL,
+        data_destaque TEXT,
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """
     if is_using_turso():
         try:
             executar_turso_query(create_table_sql)
             executar_turso_query(create_table_desejos_sql)
             executar_turso_query(create_table_prateleiras_sql)
+            executar_turso_query(create_table_historico_sql)
             try:
                 executar_turso_query(seed_prateleiras_sql)
             except Exception:
@@ -187,6 +197,7 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
             cursor.execute(create_table_sql)
             cursor.execute(create_table_desejos_sql)
             cursor.execute(create_table_prateleiras_sql)
+            cursor.execute(create_table_historico_sql)
             try:
                 cursor.execute(seed_prateleiras_sql)
             except Exception:
@@ -1226,63 +1237,206 @@ def obter_hq_por_id(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict
             conn.close()
 
 
-def obter_hq_aleatoria(excluir_id: Optional[int] = None, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict[str, Any]]:
+def sortear_edicao_do_dia(
+    excluir_id: Optional[int] = None,
+    data_destaque: Optional[str] = None,
+    db_path: str = DB_DEFAULT_PATH,
+) -> Optional[Dict[str, Any]]:
     """
-    Busca uma HQ cadastrada aleatoriamente no banco de dados.
-    Permite opcionalmente excluir um ID específico para evitar repetições consecutivas.
+    Sorteia uma HQ para destaque utilizando rotação sem repetição (Shuffle Deck).
+    Evita HQs que foram destacadas recentemente para garantir variedade máxima e que todo
+    o catálogo seja percorrido antes de haver repetições.
     """
-    if excluir_id is not None:
-        sql = """
-        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
-        FROM hqs
-        WHERE id != ?
-        ORDER BY RANDOM()
-        LIMIT 1
-        """
-        params = [excluir_id]
-    else:
-        sql = """
-        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
-        FROM hqs
-        ORDER BY RANDOM()
-        LIMIT 1
-        """
-        params = []
-
     if is_using_turso():
         try:
-            res = executar_turso_query(sql, params)
-            if res.rows:
-                return dict(zip(res.columns, res.rows[0]))
-            if excluir_id is not None:
-                return obter_hq_aleatoria(excluir_id=None, db_path=db_path)
-            return None
+            # 1. Total de HQs
+            res_total = executar_turso_query("SELECT COUNT(*) FROM hqs")
+            total_hqs = int(res_total.rows[0][0]) if res_total.rows else 0
+            if total_hqs == 0:
+                return None
+
+            # 2. Buscar IDs recentes no histórico
+            ids_excluir = []
+            if total_hqs > 1:
+                limite_hist = min(max(1, total_hqs - 1), 100)
+                res_hist = executar_turso_query(
+                    "SELECT DISTINCT hq_id FROM historico_destaques ORDER BY id DESC LIMIT ?",
+                    [limite_hist]
+                )
+                if res_hist.rows:
+                    ids_excluir = [int(r[0]) for r in res_hist.rows if r[0] is not None]
+
+            if excluir_id is not None and excluir_id not in ids_excluir:
+                ids_excluir.append(excluir_id)
+
+            # Se todos os IDs forem excluídos, reseta a lista para abrir novo ciclo
+            if len(ids_excluir) >= total_hqs:
+                ids_excluir = [excluir_id] if (excluir_id is not None and total_hqs > 1) else []
+
+            # 3. Sortear HQ fora da lista de exclusão
+            if ids_excluir:
+                placeholders = ",".join(["?"] * len(ids_excluir))
+                sql = f"""
+                SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+                FROM hqs
+                WHERE id NOT IN ({placeholders})
+                ORDER BY RANDOM()
+                LIMIT 1
+                """
+                res = executar_turso_query(sql, ids_excluir)
+            else:
+                sql = """
+                SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+                FROM hqs
+                ORDER BY RANDOM()
+                LIMIT 1
+                """
+                res = executar_turso_query(sql)
+
+            if not res.rows:
+                res = executar_turso_query(
+                    "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em FROM hqs ORDER BY RANDOM() LIMIT 1"
+                )
+
+            if not res.rows:
+                return None
+
+            hq_sorteada = dict(zip(res.columns, res.rows[0]))
+
+            # 4. Gravar no histórico de destaques
+            try:
+                executar_turso_query(
+                    "INSERT INTO historico_destaques (hq_id, data_destaque) VALUES (?, ?)",
+                    [hq_sorteada["id"], data_destaque]
+                )
+            except Exception as e_hist:
+                print(f"Aviso ao registrar histórico de destaques (Turso): {e_hist}")
+
+            return hq_sorteada
         except Exception as ex:
-            print(f"Aviso Turso obter_hq_aleatoria: {ex}")
+            print(f"Aviso Turso sortear_edicao_do_dia: {ex}")
             return None
     else:
         conn = get_sqlite_connection(db_path)
         try:
             cursor = conn.cursor()
-            cursor.execute(sql, tuple(params))
-            row = cursor.fetchone()
-            if row:
-                return dict(row)
-            if excluir_id is not None:
+            cursor.execute("SELECT COUNT(*) as total FROM hqs")
+            row_count = cursor.fetchone()
+            total_hqs = row_count["total"] if row_count else 0
+            if total_hqs == 0:
+                return None
+
+            ids_excluir = []
+            if total_hqs > 1:
+                limite_hist = min(max(1, total_hqs - 1), 100)
                 cursor.execute(
-                    """
-                    SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
-                    FROM hqs
-                    ORDER BY RANDOM()
-                    LIMIT 1
-                    """
+                    "SELECT DISTINCT hq_id FROM historico_destaques ORDER BY id DESC LIMIT ?",
+                    (limite_hist,)
                 )
-                row_fallback = cursor.fetchone()
-                if row_fallback:
-                    return dict(row_fallback)
-            return None
+                rows_hist = cursor.fetchall()
+                if rows_hist:
+                    ids_excluir = [int(r["hq_id"]) for r in rows_hist if r["hq_id"] is not None]
+
+            if excluir_id is not None and excluir_id not in ids_excluir:
+                ids_excluir.append(excluir_id)
+
+            if len(ids_excluir) >= total_hqs:
+                ids_excluir = [excluir_id] if (excluir_id is not None and total_hqs > 1) else []
+
+            if ids_excluir:
+                placeholders = ",".join(["?"] * len(ids_excluir))
+                sql = f"""
+                SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+                FROM hqs
+                WHERE id NOT IN ({placeholders})
+                ORDER BY RANDOM()
+                LIMIT 1
+                """
+                cursor.execute(sql, tuple(ids_excluir))
+            else:
+                sql = """
+                SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+                FROM hqs
+                ORDER BY RANDOM()
+                LIMIT 1
+                """
+                cursor.execute(sql)
+
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em FROM hqs ORDER BY RANDOM() LIMIT 1"
+                )
+                row = cursor.fetchone()
+
+            if not row:
+                return None
+
+            hq_sorteada = dict(row)
+
+            try:
+                cursor.execute(
+                    "INSERT INTO historico_destaques (hq_id, data_destaque) VALUES (?, ?)",
+                    (hq_sorteada["id"], data_destaque)
+                )
+                conn.commit()
+            except Exception as e_hist:
+                print(f"Aviso ao registrar histórico de destaques (SQLite): {e_hist}")
+
+            return hq_sorteada
         finally:
             conn.close()
+
+
+def obter_edicao_do_dia(data_str: Optional[str] = None, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict[str, Any]]:
+    """
+    Recupera a edição do dia para a data informada (padrão: hoje no formato YYYY-MM-DD).
+    Se ainda não houver uma edição sorteada para a data, realiza um novo sorteio inteligente.
+    """
+    if not data_str:
+        data_str = datetime.now().strftime("%Y-%m-%d")
+
+    hq_id_dia = None
+    if is_using_turso():
+        try:
+            res = executar_turso_query(
+                "SELECT hq_id FROM historico_destaques WHERE data_destaque = ? ORDER BY id DESC LIMIT 1",
+                [data_str]
+            )
+            if res.rows and res.rows[0][0]:
+                hq_id_dia = int(res.rows[0][0])
+        except Exception as ex:
+            print(f"Aviso Turso obter_edicao_do_dia: {ex}")
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT hq_id FROM historico_destaques WHERE data_destaque = ? ORDER BY id DESC LIMIT 1",
+                (data_str,)
+            )
+            row = cursor.fetchone()
+            if row and row["hq_id"]:
+                hq_id_dia = int(row["hq_id"])
+        except Exception as ex:
+            print(f"Aviso SQLite obter_edicao_do_dia: {ex}")
+        finally:
+            conn.close()
+
+    if hq_id_dia is not None:
+        hq = obter_hq_por_id(hq_id_dia, db_path=db_path)
+        if hq:
+            return hq
+
+    return sortear_edicao_do_dia(data_destaque=data_str, db_path=db_path)
+
+
+def obter_hq_aleatoria(excluir_id: Optional[int] = None, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict[str, Any]]:
+    """
+    Busca uma HQ cadastrada aleatoriamente no banco de dados com rotação inteligente.
+    Permite opcionalmente excluir um ID específico para evitar repetições consecutivas.
+    """
+    return sortear_edicao_do_dia(excluir_id=excluir_id, data_destaque=None, db_path=db_path)
 
 
 

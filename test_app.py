@@ -600,6 +600,33 @@ class TestHqCatalog(unittest.TestCase):
         self.assertIsNotNone(outra)
         self.assertNotEqual(outra["id"], id_atual)
 
+    def test_obter_edicao_do_dia_persistencia_e_rotacao(self):
+        database.salvar_hqs([
+            {"titulo": "Akira Vol 1", "resumo": "Clássico mangá cyberpunk."},
+            {"titulo": "Akira Vol 2", "resumo": "Continuação da saga de Kaneda e Tetsuo."},
+            {"titulo": "Monstress Vol 1", "resumo": "Fantasia épica premiada."}
+        ], "Estante Teste", self.test_db)
+
+        # 1. Obter edição do dia para uma data específica
+        hq_dia_1 = database.obter_edicao_do_dia(data_str="2026-09-25", db_path=self.test_db)
+        self.assertIsNotNone(hq_dia_1)
+
+        # 2. Chamadas subsequentes no mesmo dia devem retornar exatamente a mesma HQ (persistência do dia)
+        hq_dia_1_repete = database.obter_edicao_do_dia(data_str="2026-09-25", db_path=self.test_db)
+        self.assertEqual(hq_dia_1["id"], hq_dia_1_repete["id"])
+
+        # 3. Sortear outra HQ no mesmo dia deve trazer uma diferente sem repetir o histórico
+        hq_outra = database.sortear_edicao_do_dia(excluir_id=hq_dia_1["id"], data_destaque="2026-09-25", db_path=self.test_db)
+        self.assertIsNotNone(hq_outra)
+        self.assertNotEqual(hq_outra["id"], hq_dia_1["id"])
+
+        # 4. No dia seguinte, sorteia a terceira HQ restante garantindo que todas passem pelo destaque
+        hq_dia_2 = database.obter_edicao_do_dia(data_str="2026-09-26", db_path=self.test_db)
+        self.assertIsNotNone(hq_dia_2)
+        # Como temos 3 HQs e 2 já foram sorteadas, a 3ª deve ser a restante
+        ids_sorteados = {hq_dia_1["id"], hq_outra["id"], hq_dia_2["id"]}
+        self.assertEqual(len(ids_sorteados), 3)
+
     def test_buscar_hqs_por_titulo_ou_edicao(self):
         database.salvar_hqs([
             {"titulo": "Watchmen", "edicao": "Edição Definitiva", "editora": "Panini"},

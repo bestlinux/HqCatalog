@@ -779,7 +779,7 @@ st.markdown("---")
 # -------------------------------------------------------------
 st.markdown("### 🌟 Edição do Dia")
 
-# Gerenciamento da Edição do Dia na sessão
+# Gerenciamento da Edição do Dia na sessão e no banco
 data_hoje = datetime.now().strftime("%Y-%m-%d")
 if st.session_state.get("data_edicao_do_dia") != data_hoje:
     st.session_state["data_edicao_do_dia"] = data_hoje
@@ -790,7 +790,7 @@ if st.session_state.get("edicao_do_dia_id"):
     hq_dia = database.obter_hq_por_id(int(st.session_state["edicao_do_dia_id"]))
 
 if not hq_dia:
-    hq_dia = database.obter_hq_aleatoria()
+    hq_dia = database.obter_edicao_do_dia(data_str=data_hoje)
     if hq_dia:
         st.session_state["edicao_do_dia_id"] = hq_dia["id"]
 
@@ -844,8 +844,8 @@ if hq_dia:
             
             col_b1, col_b2, col_b3 = st.columns([1.5, 1.5, 2])
             with col_b1:
-                if st.button("🎲 Sortear Outra", key="btn_sortear_outra_dia", use_container_width=True, help="Sortear aleatoriamente outro quadrinho da sua coleção"):
-                    outra_hq = database.obter_hq_aleatoria(excluir_id=int(hq_dia["id"]))
+                if st.button("🎲 Sortear Outra", key="btn_sortear_outra_dia", use_container_width=True, help="Sortear aleatoriamente outro quadrinho da sua coleção sem repetir recentes"):
+                    outra_hq = database.sortear_edicao_do_dia(excluir_id=int(hq_dia["id"]), data_destaque=data_hoje)
                     if outra_hq:
                         st.session_state["edicao_do_dia_id"] = outra_hq["id"]
                         st.rerun()
