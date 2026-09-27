@@ -6,8 +6,15 @@ Utiliza o modelo gemini-3.1-pro-preview para visão computacional e gemini-3.5-f
 import json
 import re
 import os
+import io
+import base64
 import time
+import urllib.parse
 from typing import List, Dict, Any, Optional
+try:
+    import requests
+except ImportError:
+    requests = None
 try:
     from PIL import Image
 except ImportError:
@@ -882,6 +889,152 @@ Retorne o JSON da operação correspondente:"""
         "explicacao": f"Não foi possível processar o comando com a IA: {ultimo_erro}",
         "dados": {}
     }
+
+
+# -------------------------------------------------------------
+# BUSCA ONLINE DE CAPAS (ITUNES / OPENLIBRARY / SERPAPI)
+# -------------------------------------------------------------
+def buscar_capas_online(
+    titulo: str,
+    edicao: str = "",
+    editora: str = "",
+    escritor: str = "",
+    limite: int = 8
+) -> List[Dict[str, str]]:
+    """
+    Busca capas de quadrinhos, mangás e graphic novels online em múltiplos serviços:
+    1. Apple Books / iTunes Search API (imagens oficiais em alta resolução)
+    2. OpenLibrary Covers API
+    3. SerpApi Google Images (se configurada)
+    Retorna uma lista de dicionários contendo {'url', 'titulo', 'fonte', 'thumbnail'}.
+    """
+    capas: List[Dict[str, str]] = []
+    urls_vistas = set()
+
+    if not titulo or not titulo.strip():
+        return []
+
+    def add_capa(url: str, tit: str, fonte: str, thumb: Optional[str] = None):
+        if not url or url in urls_vistas:
+            return
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return
+        urls_vistas.add(url)
+        capas.append({
+            "url": url,
+            "titulo": tit or titulo,
+            "fonte": fonte,
+            "thumbnail": thumb or url
+        })
+
+    # Construção de termos de busca inteligentes
+    termos = []
+    if edicao:
+        termos.append(f"{titulo} {edicao}".strip())
+    if editora:
+        termos.append(f"{titulo} {editora}".strip())
+    if escritor and escritor != "Não informado":
+        termos.append(f"{titulo} {escritor}".strip())
+    termos.append(titulo.strip())
+
+    termos_unicos = []
+    for t in termos:
+        if t and t not in termos_unicos:
+            termos_unicos.append(t)
+
+    # 1. Provedor Apple Books / iTunes
+    if requests is not None:
+        for termo in termos_unicos:
+            if len(capas) >= limite:
+                break
+            try:
+                r = requests.get(
+                    "https://itunes.apple.com/search",
+                    params={"term": termo, "media": "ebook", "country": "BR", "limit": 4},
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                    timeout=5
+                )
+                if r.status_code == 200:
+                    dados = r.json()
+                    for item in dados.get("results", []):
+                        art = item.get("artworkUrl100") or ""
+                        if art:
+                            highres = art.replace("100x100bb.jpg", "800x800bb.jpg").replace("100x100bb.png", "800x800bb.png")
+                            item_tit = item.get("trackName") or titulo
+                            add_capa(highres, item_tit, "Apple Books / iTunes", art)
+            except Exception as ex:
+                print(f"[Aviso iTunes search: {ex}]")
+
+    # 2. Provedor OpenLibrary
+    if requests is not None and len(capas) < limite:
+        for termo in termos_unicos[:2]:
+            if len(capas) >= limite:
+                break
+            try:
+                r = requests.get(
+                    "https://openlibrary.org/search.json",
+                    params={"q": termo, "limit": 4},
+                    headers={"User-Agent": "HqCatalog/1.0"},
+                    timeout=5
+                )
+                if r.status_code == 200:
+                    dados = r.json()
+                    for doc in dados.get("docs", []):
+                        cover_i = doc.get("cover_i")
+                        if cover_i:
+                            c_url = f"https://covers.openlibrary.org/b/id/{cover_i}-L.jpg"
+                            c_thumb = f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg"
+                            doc_tit = doc.get("title") or titulo
+                            add_capa(c_url, doc_tit, "OpenLibrary", c_thumb)
+            except Exception as ex:
+                print(f"[Aviso OpenLibrary search: {ex}]")
+
+    # 3. Provedor SerpApi Google Images (se configurada)
+    serp_key = os.getenv("SERPAPI_API_KEY", "")
+    if serp_key and len(capas) < limite:
+        try:
+            import serpapi
+            client = serpapi.Client(api_key=serp_key)
+            query_img = f"{titulo} {edicao} {editora} capa".strip()
+            res = client.search({"engine": "google_images", "q": query_img, "gl": "br", "hl": "pt-br", "num": 5})
+            for img_it in res.get("images_results", []):
+                orig = img_it.get("original") or img_it.get("thumbnail")
+                if orig:
+                    add_capa(orig, img_it.get("title", titulo), "Google Images", img_it.get("thumbnail"))
+        except Exception as ex:
+            print(f"[Aviso SerpApi Images: {ex}]")
+
+    return capas[:limite]
+
+
+def baixar_imagem_url_base64(url: str, max_dim: int = 800, quality: int = 85, timeout: int = 8) -> str:
+    """
+    Baixa uma imagem a partir de uma URL e converte em string base64 JPEG compacta.
+    Se não for possível baixar ou processar, retorna a própria URL original.
+    """
+    if not url or not (url.startswith("http://") or url.startswith("https://")):
+        return url
+
+    if requests is None or Image is None:
+        return url
+
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        r = requests.get(url, headers=headers, timeout=timeout)
+        if r.status_code == 200 and r.content:
+            img = Image.open(io.BytesIO(r.content))
+            img = img.convert("RGB")
+            if max(img.size) > max_dim:
+                img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=quality, optimize=True)
+            b64_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            return f"data:image/jpeg;base64,{b64_str}"
+    except Exception as ex:
+        print(f"[Aviso ao baixar imagem {url}: {ex}]")
+
+    return url
+
 
 
 

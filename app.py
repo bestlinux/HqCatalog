@@ -231,6 +231,97 @@ def dialog_cadastrar_capa(id_padrao: Optional[int] = None):
         st.info(f"Nenhum quadrinho com o ID #{id_para_capa} encontrado.");
         if st.button("❌ Fechar", key="dlg_btn_close_capa_empty", use_container_width=True): st.rerun()
 
+@st.dialog("🔍 Buscar Capa da HQ Online", width="large")
+def dialog_buscar_capa(id_padrao: Optional[int] = None):
+    val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
+    id_para_capa = st.number_input("Informe o ID da HQ:", min_value=1, step=1, value=val_id, key=f"dlg_input_buscar_capa_id_{id_padrao or 'padrao'}")
+    hq_alvo = database.obter_hq_por_id(int(id_para_capa))
+    if not hq_alvo:
+        st.warning(f"Quadrinho com ID #{id_para_capa} não encontrado.")
+        if st.button("❌ Fechar", key="btn_close_busca_empty", use_container_width=True):
+            st.rerun()
+        return
+
+    st.markdown(f"#### 📖 {hq_alvo['titulo']}")
+    detalhes_str = []
+    if hq_alvo.get("edicao"):
+        detalhes_str.append(f"**Edição:** {hq_alvo['edicao']}")
+    if hq_alvo.get("editora"):
+        detalhes_str.append(f"**Editora:** {hq_alvo['editora']}")
+    if hq_alvo.get("escritor") and hq_alvo["escritor"] != "Não informado":
+        detalhes_str.append(f"**Roteiro:** {hq_alvo['escritor']}")
+    if detalhes_str:
+        st.caption(" • ".join(detalhes_str))
+
+    termo_default = f"{hq_alvo['titulo']} {hq_alvo.get('edicao') or ''} {hq_alvo.get('editora') or ''}".strip()
+    
+    col_t1, col_t2 = st.columns([3.5, 1.2])
+    with col_t1:
+        termo_busca = st.text_input("Termo de busca da capa na web:", value=termo_default, key=f"dlg_termo_capa_{hq_alvo['id']}")
+    with col_t2:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        btn_pesquisar = st.button("🔎 Pesquisar", key=f"dlg_btn_pesquisar_capa_{hq_alvo['id']}", use_container_width=True, type="primary")
+
+    session_res_key = f"capas_encontradas_{hq_alvo['id']}"
+    
+    # Busca automaticamente ao abrir ou ao clicar no botão
+    if btn_pesquisar or session_res_key not in st.session_state:
+        with st.spinner("🔍 Buscando capas em alta resolução na internet..."):
+            resultados = gemini_service.buscar_capas_online(
+                titulo=termo_busca,
+                edicao=hq_alvo.get("edicao") or "",
+                editora=hq_alvo.get("editora") or "",
+                escritor=hq_alvo.get("escritor") or ""
+            )
+            st.session_state[session_res_key] = resultados
+
+    capas = st.session_state.get(session_res_key, [])
+
+    if capas:
+        st.markdown(f"**Capas encontradas ({len(capas)}):** *Escolha a capa desejada e clique em **Cadastrar** para atualizar esta HQ.*")
+        
+        # Grid 2 colunas para exibição visual ampla
+        for i in range(0, len(capas), 2):
+            cols = st.columns(2, gap="medium")
+            for j in range(2):
+                idx = i + j
+                if idx < len(capas):
+                    item = capas[idx]
+                    with cols[j]:
+                        with st.container(border=True):
+                            st.image(item["url"], use_container_width=True)
+                            st.caption(f"**{item.get('titulo', hq_alvo['titulo'])}**\n\n*Fonte: {item.get('fonte', 'Web')}*")
+                            if st.button("✅ Cadastrar esta Capa", key=f"btn_salvar_capa_item_{hq_alvo['id']}_{idx}", use_container_width=True, type="primary"):
+                                with st.spinner("💾 Otimizando e salvando foto da capa..."):
+                                    capa_b64 = gemini_service.baixar_imagem_url_base64(item["url"])
+                                    if database.definir_capa(int(hq_alvo["id"]), capa_b64):
+                                        st.success("🎉 Capa cadastrada com sucesso!")
+                                        if session_res_key in st.session_state:
+                                            del st.session_state[session_res_key]
+                                        st.rerun()
+                                    else:
+                                        st.error("Não foi possível salvar a capa no banco de dados.")
+    else:
+        st.info("ℹ️ Nenhuma capa encontrada automaticamente. Tente alterar o termo de busca acima ou colar o link direto da imagem.")
+
+    st.markdown("---")
+    with st.expander("🔗 Cadastrar manualmente por link (URL direta de imagem)"):
+        url_direta = st.text_input("URL da imagem (jpg, png, webp):", key=f"dlg_input_url_direta_{hq_alvo['id']}")
+        if url_direta:
+            st.image(url_direta, width=160, caption="Pré-visualização da URL")
+            if st.button("💾 Salvar Capa por URL", key=f"btn_salvar_url_direta_{hq_alvo['id']}", type="primary"):
+                with st.spinner("Salvando capa..."):
+                    capa_b64 = gemini_service.baixar_imagem_url_base64(url_direta)
+                    if database.definir_capa(int(hq_alvo["id"]), capa_b64):
+                        st.success("🎉 Capa salva com sucesso!")
+                        if session_res_key in st.session_state:
+                            del st.session_state[session_res_key]
+                        st.rerun()
+
+    if st.button("❌ Fechar / Cancelar", key=f"dlg_btn_close_busca_{hq_alvo['id']}", use_container_width=True):
+        st.rerun()
+
+
 @st.dialog("✍️ Resenha / O que achou da HQ")
 def dialog_resenha(id_padrao: Optional[int] = None):
     val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
@@ -804,8 +895,14 @@ if hq_dia:
             legenda_capa = "Foto da Capa" if tem_capa else "Capa Padrão (Não cadastrada)"
             st.image(img_capa, caption=legenda_capa, use_container_width=True)
             
+            if st.button("🔍 Buscar Capa", key="btn_buscar_capa_dia", use_container_width=True, type="primary" if not tem_capa else "secondary", help="Procurar a capa desta HQ na internet"):
+                dialog_buscar_capa(int(hq_dia["id"]))
+                
             if not tem_capa:
-                if st.button("📷 Cadastrar Capa", key="btn_add_capa_dia", use_container_width=True, help="Tire uma foto ou envie a capa desta edição"):
+                if st.button("📷 Enviar Foto", key="btn_add_capa_dia", use_container_width=True, help="Tire uma foto ou faça upload da capa desta edição"):
+                    dialog_cadastrar_capa(int(hq_dia["id"]))
+            else:
+                if st.button("📷 Alterar por Foto", key="btn_add_capa_dia", use_container_width=True, help="Tire uma nova foto para a capa"):
                     dialog_cadastrar_capa(int(hq_dia["id"]))
                     
         with col_detalhes:
@@ -842,7 +939,7 @@ if hq_dia:
                 
             st.markdown("")
             
-            col_b1, col_b2, col_b3 = st.columns([1.5, 1.5, 2])
+            col_b1, col_b2, col_b3 = st.columns([1.5, 1.5, 1.5])
             with col_b1:
                 if st.button("🎲 Sortear Outra", key="btn_sortear_outra_dia", use_container_width=True, help="Sortear aleatoriamente outro quadrinho da sua coleção sem repetir recentes"):
                     outra_hq = database.sortear_edicao_do_dia(excluir_id=int(hq_dia["id"]), data_destaque=data_hoje)
@@ -850,10 +947,11 @@ if hq_dia:
                         st.session_state["edicao_do_dia_id"] = outra_hq["id"]
                         st.rerun()
             with col_b2:
+                if st.button("🔍 Buscar Capa", key="btn_buscar_capa_detalhes_dia", use_container_width=True, help="Buscar capa desta HQ na internet"):
+                    dialog_buscar_capa(int(hq_dia["id"]))
+            with col_b3:
                 if st.button("✏️ Editar HQ", key="btn_editar_hq_dia", use_container_width=True, help="Editar informações desta HQ"):
                     dialog_editar_hq(int(hq_dia["id"]))
-            with col_b3:
-                pass
 else:
     with st.container(border=True):
         st.info("📚 **Nenhuma edição cadastrada no momento.** Tire fotos da sua prateleira ou adicione títulos para ver a **Edição do Dia** em destaque aqui!", icon="✨")

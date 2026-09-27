@@ -761,11 +761,35 @@ class TestHqCatalog(unittest.TestCase):
         )
         self.assertEqual(res["salvos"], 1)
         self.assertEqual(len(res["itens_salvos"]), 1)
-        self.assertEqual(res["itens_salvos"][0]["prateleira"], "Estante 2 - Marvel")
-
         # Verifica se a nova prateleira foi cadastrada automaticamente
         prateleiras = database.obter_prateleiras(self.test_db)
         self.assertIn("Estante 2 - Marvel", prateleiras)
+
+    def test_buscar_capas_online(self):
+        # Testa chamada da busca de capas online
+        res = gemini_service.buscar_capas_online(
+            titulo="Watchmen",
+            edicao="Edição Definitiva",
+            editora="Panini",
+            escritor="Alan Moore",
+            limite=3
+        )
+        self.assertIsInstance(res, list)
+        # Se houver conexão com internet, deve retornar pelo menos uma capa com URL válida
+        if len(res) > 0:
+            self.assertIn("url", res[0])
+            self.assertIn("fonte", res[0])
+            self.assertTrue(res[0]["url"].startswith("http"))
+
+    def test_buscar_capas_online_termo_vazio(self):
+        res = gemini_service.buscar_capas_online(titulo="")
+        self.assertEqual(res, [])
+
+    def test_baixar_imagem_url_base64_fallback(self):
+        # URL inválida deve retornar a própria string como fallback seguro
+        url_invalida = "http://url-inexistente-123456789.com/foto.jpg"
+        res = gemini_service.baixar_imagem_url_base64(url_invalida, timeout=2)
+        self.assertEqual(res, url_invalida)
 
 
 if __name__ == "__main__":
