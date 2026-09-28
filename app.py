@@ -153,8 +153,10 @@ def dialog_editar_hq(id_padrao: Optional[int] = None):
                 placeholder="Preencha somente se desejar criar uma nova prateleira..."
             )
 
-            status_atual_index = 1 if hq_atual.get("lido") == "Lido" else 0
-            novo_status_leitura = st.selectbox("Status de Leitura:", options=["Não Lido", "Lido"], index=status_atual_index)
+            opcoes_status = ["Não Lido", "Lendo", "Lido"]
+            status_atual = hq_atual.get("lido") or "Não Lido"
+            status_atual_index = opcoes_status.index(status_atual) if status_atual in opcoes_status else 0
+            novo_status_leitura = st.selectbox("Status de Leitura:", options=opcoes_status, index=status_atual_index)
             nota_atual = int(hq_atual.get("avaliacao") or 0)
             novo_avaliacao = st.selectbox("Avaliação (1 a 5 estrelas):", options=[0, 1, 2, 3, 4, 5], index=nota_atual, format_func=lambda x: "⚪ Sem Avaliação (0)" if x == 0 else f"{'⭐' * x} ({x} de 5)")
             novo_resumo = st.text_area("📖 Resumo da História (Sinopse):", value=hq_atual.get("resumo") or "", height=90, placeholder="Breve resumo da trama central da história...")
@@ -440,16 +442,35 @@ def dialog_avaliar_hq():
         if st.button("❌ Fechar", key="dlg_btn_close_rate_empty", use_container_width=True):
             st.rerun()
 
-@st.dialog("📖 Alternar Status de Leitura")
-def dialog_alternar_leitura():
-    id_para_toggle = st.number_input("Informe o ID da HQ:", min_value=1, step=1, key="dlg_input_toggle_id")
+@st.dialog("📖 Alterar Status de Leitura")
+def dialog_alternar_leitura(id_padrao: Optional[int] = None):
+    val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
+    id_para_toggle = st.number_input("Informe o ID da HQ:", min_value=1, step=1, value=val_id, key=f"dlg_input_toggle_id_{id_padrao or 'padrao'}")
     hq_toggle = database.obter_hq_por_id(int(id_para_toggle))
     if hq_toggle:
         tit_hq = hq_toggle.get("titulo") or "Sem título"
-        st.markdown(f"📖 **HQ:** **{tit_hq}** `(ID #{id_para_toggle})`")
-        novo = database.alternar_status_leitura(int(id_para_toggle))
-        st.success(f"Status alterado para **{novo}**!")
-        st.rerun()
+        ed_hq = f" ({hq_toggle.get('edicao')})" if hq_toggle.get("edicao") else ""
+        st.markdown(f"📖 **HQ:** **{tit_hq}**{ed_hq} `(ID #{id_para_toggle})`")
+        status_atual = hq_toggle.get("lido") or "Não Lido"
+        st.caption(f"Status atual: **{status_atual}**")
+        
+        st.markdown("Selecione o novo status:")
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            if st.button("⏳ Não Lido", use_container_width=True, type="primary" if status_atual == "Não Lido" else "secondary", key="btn_dlg_status_nl"):
+                database.definir_status_leitura(int(id_para_toggle), "Não Lido")
+                st.success("Status alterado para **Não Lido**!")
+                st.rerun()
+        with col_s2:
+            if st.button("📚 Lendo", use_container_width=True, type="primary" if status_atual == "Lendo" else "secondary", key="btn_dlg_status_lendo"):
+                database.definir_status_leitura(int(id_para_toggle), "Lendo")
+                st.success("Status alterado para **Lendo**!")
+                st.rerun()
+        with col_s3:
+            if st.button("✅ Lido", use_container_width=True, type="primary" if status_atual == "Lido" else "secondary", key="btn_dlg_status_lido"):
+                database.definir_status_leitura(int(id_para_toggle), "Lido")
+                st.success("Status alterado para **Lido**!")
+                st.rerun()
     else:
         st.info(f"Nenhum quadrinho com o ID #{id_para_toggle} foi encontrado.")
         if st.button("❌ Fechar", key="dlg_btn_close_toggle_empty", use_container_width=True):
@@ -643,14 +664,17 @@ with st.sidebar:
         st.metric("Total de HQs", stats["total_hqs"])
         st.metric("📖 Lidos", stats.get("total_lidos", 0))
         st.metric("Editoras", stats["total_editoras"])
+        st.metric("⭐ Média Aval.", f"{stats.get('media_avaliacao', 0.0):.1f} / 5" if stats.get("media_avaliacao", 0.0) > 0 else "-")
     with col_m2:
         st.markdown(
             """
             <style>
-            div.st-key-btn_metric_prat {
+            div.st-key-btn_metric_prat,
+            div.st-key-btn_metric_em_leitura {
                 margin-bottom: 0.5rem !important;
             }
-            div.st-key-btn_metric_prat button {
+            div.st-key-btn_metric_prat button,
+            div.st-key-btn_metric_em_leitura button {
                 background: transparent !important;
                 border: none !important;
                 box-shadow: none !important;
@@ -665,19 +689,25 @@ with st.sidebar:
                 outline: none !important;
             }
             div.st-key-btn_metric_prat button,
-            div.st-key-btn_metric_prat button * {
+            div.st-key-btn_metric_prat button *,
+            div.st-key-btn_metric_em_leitura button,
+            div.st-key-btn_metric_em_leitura button * {
                 font-size: 2.25rem !important;
                 font-weight: 700 !important;
                 line-height: 1.15 !important;
                 color: inherit !important;
             }
             div.st-key-btn_metric_prat button:hover,
-            div.st-key-btn_metric_prat button:hover * {
+            div.st-key-btn_metric_prat button:hover *,
+            div.st-key-btn_metric_em_leitura button:hover,
+            div.st-key-btn_metric_em_leitura button:hover * {
                 color: #ff4b4b !important;
                 text-decoration: underline !important;
             }
             div.st-key-btn_metric_prat button:active,
-            div.st-key-btn_metric_prat button:focus {
+            div.st-key-btn_metric_prat button:focus,
+            div.st-key-btn_metric_em_leitura button:active,
+            div.st-key-btn_metric_em_leitura button:focus {
                 background: transparent !important;
                 border: none !important;
                 box-shadow: none !important;
@@ -692,8 +722,20 @@ with st.sidebar:
         if st.button(str(stats["total_prateleiras"]), key="btn_metric_prat", help="Clique no número para abrir o Gerenciador de Prateleiras"):
             st.session_state["pagina_atual"] = "editar_prateleiras"
             st.rerun()
+
+        st.markdown(
+            """
+            <div data-testid="stMetricLabel" style="margin-bottom: 2px;">
+                <p style="margin: 0; font-size: 14px; font-weight: 400; line-height: 1.25; color: inherit; opacity: 0.8;">📚 Em Leitura</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        if st.button(str(stats.get("total_lendo", 0)), key="btn_metric_em_leitura", help="Clique no número para abrir a seção de HQs Em Leitura"):
+            st.session_state["pagina_atual"] = "em_leitura"
+            st.rerun()
+
         st.metric("⏳ Não Lidos", stats.get("total_nao_lidos", 0))
-        st.metric("⭐ Média Aval.", f"{stats.get('media_avaliacao', 0.0):.1f} / 5" if stats.get("media_avaliacao", 0.0) > 0 else "-")
 
     if stats["total_hqs"] > 0:
         pct_lido = (stats.get("total_lidos", 0) / stats["total_hqs"]) * 100
@@ -848,9 +890,127 @@ def renderizar_pagina_editar_prateleiras():
         voltar_ao_catalogo()
 
 
-# Controle de exibição de página dedicada
+# -------------------------------------------------------------
+# PÁGINA DEDICADA: HQS EM LEITURA
+# -------------------------------------------------------------
+def renderizar_pagina_em_leitura():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("📖 HQs Em Leitura")
+        st.markdown("Acompanhe e gerencie todos os quadrinhos que você está lendo no momento.")
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_em_leitura_top"):
+            voltar_ao_catalogo()
+
+    st.markdown("---")
+
+    hqs_lendo = database.obter_hqs_em_leitura()
+
+    if not hqs_lendo:
+        with st.container(border=True):
+            st.info("📚 **Não existe nenhuma HQ sendo lida no momento.**", icon="ℹ️")
+            st.markdown(
+                "Para colocar uma edição em leitura, altere o status dela para **'Lendo'** na tabela do catálogo, nos detalhes da edição ou por comando de voz/IA com o assistente."
+            )
+        st.markdown("---")
+        if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_em_leitura_vazio", use_container_width=True):
+            voltar_ao_catalogo()
+        return
+
+    st.markdown(f"### 📚 Quadrinhos em Andamento ({len(hqs_lendo)})")
+
+    for idx, hq_item in enumerate(hqs_lendo):
+        hq_id = int(hq_item["id"])
+        with st.container(border=True):
+            col_capa, col_detalhes = st.columns([1.1, 3.2], gap="medium")
+
+            with col_capa:
+                img_capa = obter_imagem_capa(hq_item.get("capa"))
+                tem_capa = bool(hq_item.get("capa") and str(hq_item["capa"]).strip())
+                legenda_capa = "Foto da Capa" if tem_capa else "Capa Padrão (Não cadastrada)"
+                st.image(img_capa, caption=legenda_capa, use_container_width=True)
+
+                col_cb1, col_cb2 = st.columns(2)
+                with col_cb1:
+                    if st.button("🔍 Buscar Capa", key=f"btn_buscar_capa_lendo_{hq_id}_{idx}", use_container_width=True, type="primary" if not tem_capa else "secondary", help="Procurar capa na internet"):
+                        dialog_buscar_capa(hq_id)
+                with col_cb2:
+                    label_foto = "📷 Enviar Foto" if not tem_capa else "📷 Alterar"
+                    if st.button(label_foto, key=f"btn_foto_capa_lendo_{hq_id}_{idx}", use_container_width=True, help="Tirar foto ou upload da capa"):
+                        dialog_cadastrar_capa(hq_id)
+
+            with col_detalhes:
+                st.subheader(f"📖 {hq_item['titulo']}")
+
+                meta_itens = []
+                if hq_item.get("edicao"):
+                    meta_itens.append(f"🔖 **Edição/Vol:** {hq_item['edicao']}")
+                if hq_item.get("editora"):
+                    meta_itens.append(f"🏢 **Editora:** {hq_item['editora']}")
+                if hq_item.get("genero"):
+                    meta_itens.append(f"🏷️ **Gênero:** {hq_item['genero']}")
+                if hq_item.get("escritor") and hq_item["escritor"] != "Não informado":
+                    meta_itens.append(f"✍️ **Roteiro:** {hq_item['escritor']}")
+                if hq_item.get("ilustrador") and hq_item["ilustrador"] != "Não informado":
+                    meta_itens.append(f"🎨 **Arte:** {hq_item['ilustrador']}")
+                if hq_item.get("prateleira"):
+                    meta_itens.append(f"📍 **Prateleira:** `{hq_item['prateleira']}`")
+
+                if meta_itens:
+                    st.markdown(" • ".join(meta_itens))
+
+                status_leitura = hq_item.get("lido", "Lendo")
+                aval = int(hq_item.get("avaliacao") or 0)
+                aval_texto = ("⭐" * aval + f" ({aval}/5)") if aval > 0 else "⚪ Sem avaliação"
+                st.caption(f"Status: **📚 {status_leitura}** | Avaliação: **{aval_texto}**")
+
+                st.markdown("---")
+
+                st.markdown("#### 📝 Resumo")
+                resumo_texto = (hq_item.get("resumo") or "").strip()
+                if resumo_texto:
+                    st.markdown(f"> {resumo_texto}")
+                else:
+                    st.info("ℹ️ *Esta edição ainda não possui um resumo cadastrado. Você pode adicioná-lo clicando em 'Editar HQ'.*")
+
+                resenha_texto = (hq_item.get("resenha") or "").strip()
+                if resenha_texto:
+                    st.markdown("#### ✍️ Resenha / Opinião")
+                    st.markdown(f"> {resenha_texto}")
+
+                st.markdown("")
+
+                col_b1, col_b2, col_b3, col_b4 = st.columns([2, 1.5, 1.5, 1.5])
+                with col_b1:
+                    if st.button("✅ Concluir Leitura (Lido)", key=f"btn_concluir_lendo_{hq_id}_{idx}", use_container_width=True, type="primary", help="Marcar esta HQ como 'Lido'"):
+                        database.definir_status_leitura(hq_id, "Lido")
+                        st.success(f"🎉 Leitura de **'{hq_item['titulo']}'** concluída com sucesso!")
+                        st.rerun()
+                with col_b2:
+                    if st.button("✍️ Resenha / Nota", key=f"btn_resenha_lendo_{hq_id}_{idx}", use_container_width=True, help="Escrever resenha ou avaliar"):
+                        dialog_resenha(hq_id)
+                with col_b3:
+                    if st.button("✏️ Editar HQ", key=f"btn_editar_lendo_{hq_id}_{idx}", use_container_width=True, help="Editar informações desta HQ"):
+                        dialog_editar_hq(hq_id)
+                with col_b4:
+                    if st.button("⏳ Mudar para Não Lido", key=f"btn_pausar_lendo_{hq_id}_{idx}", use_container_width=True, help="Mudar status para 'Não Lido'"):
+                        database.definir_status_leitura(hq_id, "Não Lido")
+                        st.info(f"Status de **'{hq_item['titulo']}'** alterado para 'Não Lido'.")
+                        st.rerun()
+
+    st.markdown("---")
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_em_leitura_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
+# Controle de exibição de páginas dedicadas
 if st.query_params.get("pagina") == "editar_prateleiras" or st.session_state.get("pagina_atual") == "editar_prateleiras":
     renderizar_pagina_editar_prateleiras()
+    st.stop()
+
+if st.query_params.get("pagina") == "em_leitura" or st.session_state.get("pagina_atual") == "em_leitura":
+    renderizar_pagina_em_leitura()
     st.stop()
 
 
@@ -1202,35 +1362,26 @@ st.markdown("---")
 # SEÇÃO 2: VISUALIZAÇÃO DO INVENTÁRIO COMPLETO
 # -------------------------------------------------------------
 with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=True):
-    col_filtro_busca, col_filtro_prat, col_filtro_gen, col_filtro_leitura, col_filtro_aval, col_filtro_ordem = st.columns([2, 1, 1, 1, 1, 1.2])
+    st.markdown(
+        """
+        <style>
+        /* Melhora a legibilidade e evita cortes nos menus suspensos de filtros */
+        div[data-baseweb="select"] {
+            min-width: 100% !important;
+        }
+        div[data-baseweb="select"] div {
+            white-space: normal !important;
+            text-overflow: unset !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
+    # Linha 1 de Filtros: Busca e Ordenação
+    col_filtro_busca, col_filtro_ordem = st.columns([2.5, 1.2])
     with col_filtro_busca:
         busca_texto = st.text_input("🔍 Buscar por título, autor, editora, gênero ou edição:", placeholder="Digite para filtrar...")
-
-    with col_filtro_prat:
-        lista_prateleiras = ["Todas"] + database.obter_prateleiras()
-        prateleira_selecionada = st.selectbox("Filtrar por Prateleira:", lista_prateleiras)
-
-    with col_filtro_gen:
-        lista_generos = ["Todos"] + database.obter_generos()
-        genero_selecionado = st.selectbox("Filtrar por Gênero:", lista_generos)
-
-    with col_filtro_leitura:
-        leitura_selecionada = st.selectbox("Status de Leitura:", ["Todos", "Lido", "Não Lido"])
-
-    with col_filtro_aval:
-        opcoes_aval = {
-            "Todas as Notas": -1,
-            "⭐⭐⭐⭐⭐ (5)": 5,
-            "⭐⭐⭐⭐ (4)": 4,
-            "⭐⭐⭐ (3)": 3,
-            "⭐⭐ (2)": 2,
-            "⭐ (1)": 1,
-            "⚪ Sem Avaliação": 0
-        }
-        aval_selecionada = st.selectbox("Filtrar por Avaliação:", list(opcoes_aval.keys()))
-        aval_filtro_val = opcoes_aval[aval_selecionada]
-
     with col_filtro_ordem:
         opcoes_ordem = {
             "🔤 Título (A-Z)": "titulo_asc",
@@ -1243,6 +1394,33 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
         }
         ordem_selecionada = st.selectbox("Ordenar por:", list(opcoes_ordem.keys()))
         ordem_val = opcoes_ordem[ordem_selecionada]
+
+    # Linha 2 de Filtros: Prateleira (ampla para caber nomes longos), Gênero, Status e Avaliação
+    col_filtro_prat, col_filtro_gen, col_filtro_leitura, col_filtro_aval = st.columns([2.2, 1.3, 1.1, 1.1])
+
+    with col_filtro_prat:
+        lista_prateleiras = ["Todas"] + database.obter_prateleiras()
+        prateleira_selecionada = st.selectbox("📍 Filtrar por Prateleira:", lista_prateleiras)
+
+    with col_filtro_gen:
+        lista_generos = ["Todos"] + database.obter_generos()
+        genero_selecionado = st.selectbox("🏷️ Filtrar por Gênero:", lista_generos)
+
+    with col_filtro_leitura:
+        leitura_selecionada = st.selectbox("📖 Status de Leitura:", ["Todos", "Não Lido", "Lendo", "Lido"])
+
+    with col_filtro_aval:
+        opcoes_aval = {
+            "Todas as Notas": -1,
+            "⭐⭐⭐⭐⭐ (5)": 5,
+            "⭐⭐⭐⭐ (4)": 4,
+            "⭐⭐⭐ (3)": 3,
+            "⭐⭐ (2)": 2,
+            "⭐ (1)": 1,
+            "⚪ Sem Avaliação": 0
+        }
+        aval_selecionada = st.selectbox("⭐ Avaliação:", list(opcoes_aval.keys()))
+        aval_filtro_val = opcoes_aval[aval_selecionada]
 
     df_hqs = database.listar_todas_hqs(
         busca=busca_texto,
@@ -1284,7 +1462,7 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                 "lido": st.column_config.SelectboxColumn(
                     "Status de Leitura",
                     help="Status de leitura da edição",
-                    options=["Não Lido", "Lido"],
+                    options=["Não Lido", "Lendo", "Lido"],
                     required=True
                 ),
                 "avaliacao": st.column_config.NumberColumn(
@@ -1318,11 +1496,16 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
             qtd_sel = len(ids_selecionados)
             with st.container(border=True):
                 st.info(f"🎯 **{qtd_sel} HQ(s) selecionada(s) no CheckBox:** Escolha uma ação em lote:")
-                col_blk_lido, col_blk_nlido, col_blk_del, col_blk_clear = st.columns([1.5, 1.5, 1.5, 1])
+                col_blk_lido, col_blk_lendo, col_blk_nlido, col_blk_del, col_blk_clear = st.columns([1.5, 1.5, 1.5, 1.5, 1])
                 with col_blk_lido:
                     if st.button("📖 Marcar como 'Lido'", type="primary", use_container_width=True, key="btn_bulk_set_lido"):
                         qtd_alt = database.atualizar_status_leitura_em_massa(ids_selecionados, "Lido")
                         st.success(f"🎉 **{qtd_alt} HQ(s)** marcada(s) como **Lido** com sucesso!")
+                        st.rerun()
+                with col_blk_lendo:
+                    if st.button("📚 Marcar como 'Lendo'", type="primary", use_container_width=True, key="btn_bulk_set_lendo"):
+                        qtd_alt = database.atualizar_status_leitura_em_massa(ids_selecionados, "Lendo")
+                        st.success(f"🎉 **{qtd_alt} HQ(s)** marcada(s) como **Lendo** com sucesso!")
                         st.rerun()
                 with col_blk_nlido:
                     if st.button("📕 Marcar como 'Não Lido'", type="secondary", use_container_width=True, key="btn_bulk_set_nao_lido"):

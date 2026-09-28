@@ -809,7 +809,7 @@ def listar_todas_hqs(
         query += " AND genero = ?"
         params.append(genero_filtro)
 
-    if status_leitura_filtro and status_leitura_filtro in ["Lido", "Não Lido"]:
+    if status_leitura_filtro and status_leitura_filtro != "Todos":
         query += " AND lido = ?"
         params.append(status_leitura_filtro)
 
@@ -1041,6 +1041,7 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
         COUNT(DISTINCT CASE WHEN editora IS NOT NULL AND editora != '' THEN editora END) as total_edit,
         COUNT(DISTINCT CASE WHEN genero IS NOT NULL AND genero != '' THEN genero END) as total_gen,
         SUM(CASE WHEN lido = 'Lido' THEN 1 ELSE 0 END) as total_lidos,
+        SUM(CASE WHEN lido = 'Lendo' THEN 1 ELSE 0 END) as total_lendo,
         AVG(CASE WHEN avaliacao > 0 THEN avaliacao ELSE NULL END) as media_aval,
         COUNT(CASE WHEN avaliacao > 0 THEN 1 ELSE NULL END) as total_avaliados
     FROM hqs
@@ -1061,21 +1062,24 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
                 r = res.rows[0]
                 tot_hqs = r[0] or 0
                 tot_lidos = r[3] or 0
-                med_aval = round(float(r[4]), 1) if r[4] is not None else 0.0
+                tot_lendo = r[4] or 0
+                med_aval = round(float(r[5]), 1) if r[5] is not None else 0.0
+                tot_nao_lidos = max(0, tot_hqs - tot_lidos - tot_lendo)
                 return {
                     "total_hqs": tot_hqs,
                     "total_prateleiras": total_prats,
                     "total_editoras": r[1] or 0,
                     "total_generos": r[2] or 0,
                     "total_lidos": tot_lidos,
-                    "total_nao_lidos": tot_hqs - tot_lidos,
+                    "total_lendo": tot_lendo,
+                    "total_nao_lidos": tot_nao_lidos,
                     "media_avaliacao": med_aval,
-                    "total_avaliados": r[5] or 0,
+                    "total_avaliados": r[6] or 0,
                 }
-            return {"total_hqs": 0, "total_prateleiras": total_prats, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
+            return {"total_hqs": 0, "total_prateleiras": total_prats, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_lendo": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
         except Exception as ex:
             print(f"Aviso Turso obter_estatisticas: {ex}")
-            return {"total_hqs": 0, "total_prateleiras": 0, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
+            return {"total_hqs": 0, "total_prateleiras": 0, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_lendo": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
     else:
         conn = get_sqlite_connection(db_path)
         try:
@@ -1088,18 +1092,21 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
             if row:
                 tot_hqs = row["total_hqs"] or 0
                 tot_lidos = row["total_lidos"] or 0
+                tot_lendo = row["total_lendo"] or 0
                 med_aval = round(float(row["media_aval"]), 1) if row["media_aval"] is not None else 0.0
+                tot_nao_lidos = max(0, tot_hqs - tot_lidos - tot_lendo)
                 return {
                     "total_hqs": tot_hqs,
                     "total_prateleiras": total_prats,
                     "total_editoras": row["total_edit"] or 0,
                     "total_generos": row["total_gen"] or 0,
                     "total_lidos": tot_lidos,
-                    "total_nao_lidos": tot_hqs - tot_lidos,
+                    "total_lendo": tot_lendo,
+                    "total_nao_lidos": tot_nao_lidos,
                     "media_avaliacao": med_aval,
                     "total_avaliados": row["total_avaliados"] or 0,
                 }
-            return {"total_hqs": 0, "total_prateleiras": total_prats, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
+            return {"total_hqs": 0, "total_prateleiras": total_prats, "total_editoras": 0, "total_generos": 0, "total_lidos": 0, "total_lendo": 0, "total_nao_lidos": 0, "media_avaliacao": 0.0, "total_avaliados": 0}
         finally:
             conn.close()
 
@@ -1155,7 +1162,13 @@ def atualizar_status_leitura_em_massa(hq_ids: List[int], novo_status: str, db_pa
     if not hq_ids:
         return 0
 
-    status_limpo = "Lido" if str(novo_status).strip().lower() == "lido" else "Não Lido"
+    st = str(novo_status).strip().lower()
+    if st == "lendo":
+        status_limpo = "Lendo"
+    elif st == "lido":
+        status_limpo = "Lido"
+    else:
+        status_limpo = "Não Lido"
     placeholders = ", ".join(["?"] * len(hq_ids))
     sql = f"UPDATE hqs SET lido = ? WHERE id IN ({placeholders})"
     params = [status_limpo] + [int(i) for i in hq_ids]
@@ -1594,30 +1607,101 @@ def definir_resumo(hq_id: int, resumo: str, db_path: str = DB_DEFAULT_PATH) -> b
 
 
 
-def alternar_status_leitura(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[str]:
-    """Alterna rapidamente o status de leitura entre 'Lido' e 'Não Lido'."""
+def definir_status_leitura(hq_id: int, status: str, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """Atualiza diretamente o status de leitura de uma HQ ('Lido', 'Lendo', 'Não Lido')."""
+    st_val = str(status or "").strip()
+    if st_val.lower() == "lendo":
+        status_limpo = "Lendo"
+    elif st_val.lower() == "lido":
+        status_limpo = "Lido"
+    else:
+        status_limpo = "Não Lido"
+
+    sql = "UPDATE hqs SET lido = ? WHERE id = ?"
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql, [status_limpo, hq_id])
+            return res.rows_affected > 0
+        except Exception as ex:
+            print(f"Erro Turso definir_status_leitura: {ex}")
+            return False
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (status_limpo, hq_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+
+def obter_hqs_em_leitura(db_path: str = DB_DEFAULT_PATH) -> List[Dict[str, Any]]:
+    """Retorna a lista de todas as HQs com status 'Lendo' ordenadas pelas mais recentes."""
+    sql = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em FROM hqs WHERE lido = 'Lendo' ORDER BY id DESC"
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql)
+            hqs = []
+            for row in res.rows:
+                hqs.append({
+                    "id": row[0],
+                    "capa": row[1] or "",
+                    "titulo": row[2],
+                    "edicao": row[3] or "",
+                    "editora": row[4] or "",
+                    "genero": row[5] or "Outro",
+                    "escritor": row[6] or "Não informado",
+                    "ilustrador": row[7] or "Não informado",
+                    "prateleira": row[8] or "",
+                    "lido": row[9] or "Lendo",
+                    "avaliacao": row[10] or 0,
+                    "resumo": row[11] or "",
+                    "resenha": row[12] or "",
+                    "criado_em": row[13] or ""
+                })
+            return hqs
+        except Exception as ex:
+            print(f"Aviso Turso obter_hqs_em_leitura: {ex}")
+            return []
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+
+def alternar_status_leitura(hq_id: int, novo_status: Optional[str] = None, db_path: str = DB_DEFAULT_PATH) -> Optional[str]:
+    """Alterna o status de leitura ou define um status específico."""
+    if novo_status and (novo_status.endswith(".db") or "/" in novo_status or "\\" in novo_status or novo_status.startswith("test_")):
+        db_path = novo_status
+        novo_status = None
+
     hq = obter_hq_por_id(hq_id, db_path)
     if not hq:
         return None
     
-    novo_status = "Não Lido" if hq.get("lido") == "Lido" else "Lido"
-    atualizar_hq(
-        hq_id=hq_id,
-        titulo=hq["titulo"],
-        edicao=hq["edicao"],
-        editora=hq["editora"],
-        genero=hq.get("genero", "Outro"),
-        escritor=hq.get("escritor", "Não informado"),
-        ilustrador=hq.get("ilustrador", "Não informado"),
-        prateleira=hq["prateleira"],
-        lido=novo_status,
-        avaliacao=int(hq.get("avaliacao") or 0),
-        capa=hq.get("capa") or "",
-        resenha=hq.get("resenha") or "",
-        resumo=hq.get("resumo") or "",
-        db_path=db_path
-    )
-    return novo_status
+    if novo_status:
+        st_low = str(novo_status).strip().lower()
+        if st_low == "lendo":
+            status_final = "Lendo"
+        elif st_low == "lido":
+            status_final = "Lido"
+        else:
+            status_final = "Não Lido"
+    else:
+        atual = hq.get("lido") or "Não Lido"
+        if atual == "Lido":
+            status_final = "Não Lido"
+        else:
+            status_final = "Lido"
+
+    definir_status_leitura(hq_id, status_final, db_path=db_path)
+    return status_final
 
 
 def obter_contexto_hqs_para_chat(db_path: str = DB_DEFAULT_PATH) -> List[Dict[str, Any]]:

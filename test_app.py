@@ -791,6 +791,43 @@ class TestHqCatalog(unittest.TestCase):
         res = gemini_service.baixar_imagem_url_base64(url_invalida, timeout=2)
         self.assertEqual(res, url_invalida)
 
+    def test_status_lendo_e_secao_em_leitura(self):
+        # 1. Cadastrar HQs de teste
+        database.salvar_hqs([
+            {"titulo": "Akira 1", "lido": "Lendo"},
+            {"titulo": "Akira 2", "lido": "Não Lido"},
+            {"titulo": "Akira 3", "lido": "Lido"},
+            {"titulo": "Akira 4", "lido": "Lendo"}
+        ], "Estante Mangás", self.test_db)
+
+        # 2. Verificar obter_hqs_em_leitura
+        em_leitura = database.obter_hqs_em_leitura(self.test_db)
+        self.assertEqual(len(em_leitura), 2)
+        titulos_lendo = [h["titulo"] for h in em_leitura]
+        self.assertIn("Akira 1", titulos_lendo)
+        self.assertIn("Akira 4", titulos_lendo)
+
+        # 3. Verificar estatísticas
+        stats = database.obter_estatisticas(self.test_db)
+        self.assertEqual(stats["total_hqs"], 4)
+        self.assertEqual(stats["total_lidos"], 1)
+        self.assertEqual(stats["total_lendo"], 2)
+        self.assertEqual(stats["total_nao_lidos"], 1)
+
+        # 4. Alterar status para Lendo e depois Lido
+        database.definir_status_leitura(2, "Lendo", self.test_db)
+        hq2 = database.obter_hq_por_id(2, self.test_db)
+        self.assertEqual(hq2["lido"], "Lendo")
+
+        database.definir_status_leitura(2, "Lido", self.test_db)
+        hq2_lido = database.obter_hq_por_id(2, self.test_db)
+        self.assertEqual(hq2_lido["lido"], "Lido")
+
+        # 5. Alteração em massa para Lendo
+        database.atualizar_status_leitura_em_massa([1, 2, 3, 4], "Lendo", self.test_db)
+        todos_lendo = database.obter_hqs_em_leitura(self.test_db)
+        self.assertEqual(len(todos_lendo), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

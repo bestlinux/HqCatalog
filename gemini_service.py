@@ -737,7 +737,7 @@ AS AÇÕES POSSÍVEIS SÃO:
      * "ilustrador": Desenhista/artista (deduza se não informado, ex: "Dave Gibbons")
      * "resumo": Sinopse ou premissa da história em 2 a 4 frases em português
      * "prateleira": Localização física (se mencionada, ex: "Estante 2", senão use a prateleira padrão fornecida)
-     * "lido": "Lido" se o usuário mencionar que já leu, senão "Não Lido"
+     * "lido": "Lido" se o usuário mencionar que já leu, "Lendo" se estiver lendo atualmente, senão "Não Lido"
      * "avaliacao": Nota de 1 a 5 se mencionada, senão 0
      * "resenha": Informações de compra mencionadas (ex: "Comprado por R$ 120,00", "Comprado hoje por R$ 120,00", etc.)
      * "preco_pago": Valor numérico em float caso tenha sido mencionado preço (ex: 120.0), senão null
@@ -753,7 +753,7 @@ AS AÇÕES POSSÍVEIS SÃO:
      * "titulo": Título da HQ
      * "edicao": Edição (se informada)
      * "campo": Nome do campo a atualizar ("lido", "avaliacao", "prateleira", "resumo", "resenha")
-     * "novo_valor": Novo valor (ex: "Lido", 5, "Estante 2", etc.)
+     * "novo_valor": Novo valor (ex: "Lido", "Lendo", "Não Lido", 5, "Estante 2", etc.)
      * "id_alvo": ID correspondente se identificado
 
 4. "adicionar_desejo": Adicionar um título na Lista de Desejos.
