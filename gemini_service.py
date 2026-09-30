@@ -1036,6 +1036,482 @@ def baixar_imagem_url_base64(url: str, max_dim: int = 800, quality: int = 85, ti
     return url
 
 
+# -------------------------------------------------------------
+# 1. 🧭 GUIA DE ORDEM DE LEITURA & CRONOLOGIA DE SAGAS (SMART READING ORDER)
+# -------------------------------------------------------------
+PROMPT_SISTEMA_ORDEM_LEITURA = """Você é o Especialista Supremo em Continuidade, Cronologia e Ordens de Leitura de Histórias em Quadrinhos (DC, Marvel, Mangás, Graphic Novels Europeias, Vertigo, Image Comics e Quadrinhos Nacionais).
+
+O usuário solicitará a ordem de leitura para uma saga, personagem, arco histórico ou universo (ex: "Saga do Infinito", "Batman dos anos 80 e 90", "Berserk", "Sandman", "Crise nas Infinitas Terras", "X-Men Era do Apocalipse", "Cavaleiro da Lua", "Guerras Secretas", "Monstro do Pântano do Alan Moore").
+
+Seu objetivo é:
+1. Mapear a cronologia canônica ideal e recomendada de leitura para o tema pedido.
+2. Cruzar com a lista de HQs que o usuário JÁ POSSUI NO CATÁLOGO dele fornecido abaixo:
+   - Se ele possui o quadrinho ou encadernado correspondente, identifique "status_colecao": "no_acervo", informe o "hq_id", "prateleira" e o status de leitura dele.
+   - Se ele NÃO possui essa edição e ela é importante para a saga, classifique como "status_colecao": "faltante" (gap), para que ele saiba que precisa adquirir essa edição.
+3. Formatar uma jornada de leitura clara, emocionante e didática, indicando o ponto de partida, o clímax e os epílogos.
+
+FORMATO DE SAÍDA:
+Retorne ESTRITAMENTE um objeto JSON válido no formato:
+{
+  "saga_identificada": "Nome Canônico da Saga ou Cronologia",
+  "universo": "DC Comics" | "Marvel" | "Mangá" | "Vertigo / Dark Fantasy" | "Autoral / Outro",
+  "introducao": "Breve introdução contextualizando o peso dessa saga/cronologia no universo dos quadrinhos e por que essa ordem é a melhor para ter a experiência máxima.",
+  "etapas": [
+    {
+      "ordem": 1,
+      "titulo": "Título da HQ ou Encadernado",
+      "edicao_recomendada": "Volume 1 / Edição Especial / Edição Definitiva",
+      "importancia": "Ponto de Partida" | "Essencial" | "Tie-in Recomendado" | "Clímax" | "Epílogo",
+      "sinopse_rapida": "Por que ler esta edição neste momento específico da cronologia e o que ela agrega à trama central.",
+      "status_colecao": "no_acervo" | "faltante",
+      "hq_id": 12,
+      "prateleira": "Estante 1 - Prateleira 2",
+      "lido": "Lido" | "Não Lido" | "Lendo" | "Não Possui",
+      "termo_busca_compra": "Batman Ano Um Panini"
+    }
+  ],
+  "gaps_criticos": [
+    {
+      "titulo": "Nome da HQ Faltante",
+      "edicao": "Volume X",
+      "motivo": "Por que esta edição é crucial para preencher o vazio na compreensão da história."
+    }
+  ],
+  "dica_curador": "Dica de ouro ou curiosidade de bastidores sobre como ler e aproveitar melhor essa sequência."
+}
+"""
+
+def gerar_ordem_leitura(
+    tema_ou_saga: str,
+    catalogo_hqs: List[Dict[str, Any]],
+    api_key: Optional[str] = None,
+    modelo: str = "gemini-3.5-flash",
+    max_retries: int = 2
+) -> Dict[str, Any]:
+    """
+    Gera um guia cronológico de leitura inteligente para qualquer saga ou personagem,
+    cruzando automaticamente com o acervo existente do usuário para apontar o que ele já tem e o que falta.
+    """
+    client = get_gemini_client(api_key)
+
+    linhas_cat = []
+    for hq in catalogo_hqs:
+        id_hq = hq.get("id") or "?"
+        tit = (hq.get("titulo") or "").strip()
+        ed = (hq.get("edicao") or "").strip()
+        edit = (hq.get("editora") or "").strip()
+        prat = (hq.get("prateleira") or "").strip()
+        lido = (hq.get("lido") or "Não Lido").strip()
+        aval = int(hq.get("avaliacao") or 0)
+        linhas_cat.append(f"- ID #{id_hq}: \"{tit}\" ({ed}) | Editora: {edit} | Local: {prat} | Status: {lido} | {aval}⭐")
+
+    acervo_str = "\n".join(linhas_cat) if linhas_cat else "O usuário ainda não tem quadrinhos cadastrados."
+
+    prompt_final = f"""{PROMPT_SISTEMA_ORDEM_LEITURA}
+
+---
+ACERVO ATUAL DO USUÁRIO ({len(catalogo_hqs)} HQs cadastradas):
+{acervo_str}
+---
+
+TEMA / SAGA SOLICITADA PELO LEITOR:
+"{tema_ou_saga}"
+
+Retorne o JSON com o Guia de Leitura Completo:"""
+
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.2
+    )
+
+    modelos = [modelo, "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview"]
+    for mod in modelos:
+        for tentativa in range(1, max_retries + 1):
+            try:
+                response = client.models.generate_content(
+                    model=mod,
+                    contents=prompt_final,
+                    config=config
+                )
+                if response and response.text:
+                    parsed = limpar_e_parsear_json_dict(response.text)
+                    if parsed and "etapas" in parsed:
+                        return parsed
+            except Exception as ex:
+                print(f"[Aviso Ordem Leitura mod={mod} t={tentativa}]: {ex}")
+                time.sleep(1.0 * tentativa)
+
+    return {
+        "saga_identificada": tema_ou_saga,
+        "universo": "Geral",
+        "introducao": "Não foi possível estruturar a ordem de leitura automaticamente no momento.",
+        "etapas": [],
+        "gaps_criticos": [],
+        "dica_curador": ""
+    }
+
+
+# -------------------------------------------------------------
+# 2. 🔍 DETETIVE DE COLEÇÃO & GAPS FALTANTES (COLLECTION DNA)
+# -------------------------------------------------------------
+PROMPT_SISTEMA_DNA_COLECAO = """Você é um Consultor Sênior de Colecionismo de Histórias em Quadrinhos e Analista de Perfil de Leitores de HQs, Graphic Novels e Mangás.
+
+Analise TODO o acervo cadastrado pelo usuário (títulos, volumes, editoras, autores/roteiristas, desenhistas, gêneros, status de leitura e notas):
+
+Seus objetivos são:
+1. Identificar o **DNA do Colecionador** (arquétipo, estilo predominante, épocas e preferências estéticas).
+2. Criar a **Distribuição Percentual por Estilos/Gêneros** (soma totalizando 100%).
+3. Atuar como **Detetive de Gaps (Volumes e Séries Faltantes)**:
+   - Identifique séries em que o usuário tem alguns volumes e faltam edições intermediárias ou conclusões (ex: tem vols 1, 2, 4 -> falta o 3; tem Sandman 1 a 3 -> faltam edições seguintes; tem Batman O Longo Dia das Bruxas mas não tem Vitória Sombria).
+4. Gerar **Recomendações Cirúrgicas de Próximas Compras**:
+   - 3 a 5 quadrinhos que ele AINDA NÃO TEM, mas que combinam perfeitamente com as obras que ele avaliou com 4 ou 5 estrelas e seus autores favoritos.
+
+FORMATO DE SAÍDA:
+Retorne ESTRITAMENTE um objeto JSON:
+{
+  "arquetipo_colecionador": "Ex: O Mestre das Graphic Novels Sombrias & Ficção Filosófica",
+  "resumo_dna": "Texto detalhado (2 a 3 parágrafos) traçando o perfil psicológico e estético do leitor com base em suas obras.",
+  "pontos_fortes_acervo": [
+    "Destaque 1 sobre a qualidade ou profundidade do acervo",
+    "Destaque 2",
+    "Destaque 3"
+  ],
+  "distribuicao_estilos": [
+    {"categoria": "Dark Fantasy & Seinen", "porcentagem": 35},
+    {"categoria": "Super-heróis Desconstruídos / Vertigo", "porcentagem": 25},
+    {"categoria": "Ficção Científica & Cyberpunk", "porcentagem": 20},
+    {"categoria": "Histórico & Biográfico", "porcentagem": 20}
+  ],
+  "gaps_detectados": [
+    {
+      "serie": "Nome da Série ou Universo",
+      "volumes_possuidos": "Vols. 1, 2 e 4",
+      "volume_faltante": "Vol. 3",
+      "prioridade": "Alta" | "Média" | "Baixa",
+      "motivo": "Volume intermediário que conecta a trama principal e fecha o arco.",
+      "termo_busca": "Berserk Volume 3 Panini"
+    }
+  ],
+  "recomendacoes_cirurgicas": [
+    {
+      "titulo": "Título da HQ Sugerida",
+      "autor": "Nome do Autor/Roteirista",
+      "editora": "Editora no Brasil",
+      "por_que_comprar": "Conexão direta com obras que ele já amou na coleção.",
+      "termo_busca": "Título da HQ Editora"
+    }
+  ]
+}
+"""
+
+def analisar_dna_colecao_e_gaps(
+    catalogo_hqs: List[Dict[str, Any]],
+    api_key: Optional[str] = None,
+    modelo: str = "gemini-3.5-flash",
+    max_retries: int = 2
+) -> Dict[str, Any]:
+    """
+    Realiza o diagnóstico completo do DNA do acervo de HQs, detecta volumes faltantes em séries
+    e gera recomendações cirúrgicas de aquisição baseadas nos títulos favoritos.
+    """
+    if not catalogo_hqs:
+        return {
+            "arquetipo_colecionador": "Colecionador Iniciante",
+            "resumo_dna": "Cadastre suas primeiras edições para desbloquear a análise de DNA da sua coleção!",
+            "pontos_fortes_acervo": [],
+            "distribuicao_estilos": [],
+            "gaps_detectados": [],
+            "recomendacoes_cirurgicas": []
+        }
+
+    client = get_gemini_client(api_key)
+
+    linhas_cat = []
+    for hq in catalogo_hqs:
+        id_hq = hq.get("id") or "?"
+        tit = (hq.get("titulo") or "").strip()
+        ed = (hq.get("edicao") or "").strip()
+        edit = (hq.get("editora") or "").strip()
+        gen = (hq.get("genero") or "Outro").strip()
+        esc = (hq.get("escritor") or "Não informado").strip()
+        ilu = (hq.get("ilustrador") or "Não informado").strip()
+        lido = (hq.get("lido") or "Não Lido").strip()
+        aval = int(hq.get("avaliacao") or 0)
+        resumo = (hq.get("resumo") or "")[:150]
+        linhas_cat.append(f"- ID #{id_hq}: \"{tit}\" ({ed}) | Edit: {edit} | Gên: {gen} | Roteiro: {esc} | Arte: {ilu} | Status: {lido} | {aval}⭐ | Sinopse: {resumo}")
+
+    acervo_str = "\n".join(linhas_cat)
+
+    prompt_final = f"""{PROMPT_SISTEMA_DNA_COLECAO}
+
+---
+ACERVO COMPLETO DO USUÁRIO ({len(catalogo_hqs)} HQs cadastradas):
+{acervo_str}
+---
+
+Retorne o diagnóstico completo do DNA e Gaps da Coleção em formato JSON:"""
+
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.2
+    )
+
+    modelos = [modelo, "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview"]
+    for mod in modelos:
+        for tentativa in range(1, max_retries + 1):
+            try:
+                response = client.models.generate_content(
+                    model=mod,
+                    contents=prompt_final,
+                    config=config
+                )
+                if response and response.text:
+                    parsed = limpar_e_parsear_json_dict(response.text)
+                    if parsed and "arquetipo_colecionador" in parsed:
+                        return parsed
+            except Exception as ex:
+                print(f"[Aviso DNA Coleção mod={mod} t={tentativa}]: {ex}")
+                time.sleep(1.0 * tentativa)
+
+    return {
+        "arquetipo_colecionador": "Colecionador Eclético",
+        "resumo_dna": "Não foi possível gerar a análise detalhada no momento devido a uma instabilidade temporária.",
+        "pontos_fortes_acervo": [],
+        "distribuicao_estilos": [],
+        "gaps_detectados": [],
+        "recomendacoes_cirurgicas": []
+    }
+
+
+# -------------------------------------------------------------
+# 3. 🎙️ STORYTELLER & RECAP EM ÁUDIO (AQUECIMENTO DE LEITURA)
+# -------------------------------------------------------------
+PROMPT_SISTEMA_RECAP_NARRATIVO = """Você é um Roteirista e Narrador de Histórias em Quadrinhos lendário (estilo voz de trailer épico, podcast imersivo ou abertura clássica "Previously on...").
+
+O usuário selecionou uma HQ da sua coleção que ele está prestes a ler ou continuar a leitura.
+Seu objetivo é criar um **Aquecimento de Leitura / Recap Dramático e Imersivo**:
+1. Recapitular a atmosfera, os antecedentes, as consequências da trama e o dilema dos personagens até este momento.
+2. Usar uma linguagem rica em nuances visuais, tensão narrativa e ganchos empolgantes.
+3. Fornecer um texto formatado em seções elegantes e um **texto_locucao** fluido ideal para narração por voz.
+
+FORMATO DE SAÍDA:
+Retorne ESTRITAMENTE um objeto JSON:
+{
+  "titulo_recap": "Anteriormente no Universo de [Nome da HQ]...",
+  "clima_narrativo": "Frase de ambientação poética ou sombria definindo o tom da obra.",
+  "pilares_da_trama": [
+    {
+      "titulo": "O Conflito Central",
+      "descricao": "Explicação envolvente do conflito estabelecido."
+    },
+    {
+      "titulo": "O Dilema do Protagonista",
+      "descricao": "A encruzilhada moral ou física que o herói/anti-herói enfrenta."
+    },
+    {
+      "titulo": "O Ponto de Virada",
+      "descricao": "Os acontecimentos mais marcantes que antecedem esta edição."
+    }
+  ],
+  "o_que_esperar": "Dicas de detalhes de roteiro e arte para prestar atenção ao abrir as páginas desta edição.",
+  "frase_de_impacto": "Frase épica de encerramento para começar a leitura agora.",
+  "texto_locucao": "Texto corrido, ritmado e potente em português, sem caracteres especiais difíceis de pronunciar, formatado especificamente para ser lido em voz alta pelo narrador (duração aproximada de 1 a 2 minutos)."
+}
+"""
+
+def gerar_recap_narrativo(
+    hq_alvo: Dict[str, Any],
+    historico_hqs_lidas: Optional[List[Dict[str, Any]]] = None,
+    api_key: Optional[str] = None,
+    modelo: str = "gemini-3.5-flash",
+    max_retries: int = 2
+) -> Dict[str, Any]:
+    """
+    Gera uma narrativa imersiva de aquecimento ("Previously on...") antes do leitor iniciar a leitura da HQ.
+    """
+    client = get_gemini_client(api_key)
+
+    tit = hq_alvo.get("titulo", "Sem título")
+    ed = hq_alvo.get("edicao", "")
+    edit = hq_alvo.get("editora", "")
+    gen = hq_alvo.get("genero", "")
+    esc = hq_alvo.get("escritor", "")
+    ilu = hq_alvo.get("ilustrador", "")
+    resumo = hq_alvo.get("resumo", "")
+
+    # Contexto de outras HQs lidas do mesmo autor ou universo
+    lidas_contexto = []
+    if historico_hqs_lidas:
+        for h in historico_hqs_lidas[:15]:
+            lidas_contexto.append(f"- \"{h.get('titulo')}\" ({h.get('edicao') or ''}) - Roteiro: {h.get('escritor') or ''}")
+
+    str_lidas = "\n".join(lidas_contexto) if lidas_contexto else "Nenhuma outra HQ relacionada lida recentemente."
+
+    prompt_final = f"""{PROMPT_SISTEMA_RECAP_NARRATIVO}
+
+---
+HQ QUE O USUÁRIO VAI LER AGORA:
+- Título: {tit}
+- Edição / Volume: {ed}
+- Editora: {edit}
+- Gênero: {gen}
+- Roteirista: {esc}
+- Ilustrador: {ilu}
+- Sinopse / Resumo Cadastrado: {resumo or 'Não informado'}
+
+OUTRAS OBRAS LIDAS PELO USUÁRIO NO ACERVO:
+{str_lidas}
+---
+
+Gere o Recap Narrativo Imersivo em JSON:"""
+
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.3
+    )
+
+    modelos = [modelo, "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"]
+    for mod in modelos:
+        for tentativa in range(1, max_retries + 1):
+            try:
+                response = client.models.generate_content(
+                    model=mod,
+                    contents=prompt_final,
+                    config=config
+                )
+                if response and response.text:
+                    parsed = limpar_e_parsear_json_dict(response.text)
+                    if parsed and "titulo_recap" in parsed:
+                        return parsed
+            except Exception as ex:
+                print(f"[Aviso Storyteller mod={mod} t={tentativa}]: {ex}")
+                time.sleep(1.0 * tentativa)
+
+    return {
+        "titulo_recap": f"Aquecimento de Leitura: {tit}",
+        "clima_narrativo": "Prepare-se para mergulhar nas páginas desta edição.",
+        "pilares_da_trama": [],
+        "o_que_esperar": resumo or "Aproveite a leitura!",
+        "frase_de_impacto": "Boa leitura!",
+        "texto_locucao": f"Você está prestes a ler {tit}. Uma história marcante escrita por {esc} e ilustrada por {ilu}."
+    }
+
+
+# -------------------------------------------------------------
+# 4. 🧠 TRIVIA & QUIZ INTERATIVO DO SEU PRÓPRIO ACERVO
+# -------------------------------------------------------------
+PROMPT_SISTEMA_QUIZ_ACERVO = """Você é o Mestre de Jogos e Curador de Conhecimento Geek do catálogo pessoal de Histórias em Quadrinhos do usuário.
+
+Seu objetivo é criar um Quiz interativo e divertido de perguntas de múltipla escolha BASEADO EXCLUSIVAMENTE nas HQs e autores que o usuário POSSUI NA COLEÇÃO DELE.
+
+Regras do Quiz:
+1. As perguntas devem explorar tramas reais das obras do catálogo, nomes de vilões/aliados, momentos icônicos, artistas lendários, prêmios (Eisner, Harvey), editoras e conexões de enredo.
+2. Cada pergunta deve ter 4 alternativas (A, B, C, D) onde APENAS UMA é correta.
+3. Forneça uma explicação empolgante ("explicacao_lore") revelando curiosidades fascinantes após a resposta.
+4. Níveis de Dificuldade:
+   - "Fácil": perguntas sobre heróis principais, sinopses conhecidas e autores famosos.
+   - "Médio": detalhes de arcos específicos, nomes de personagens secundários e momentos marcantes.
+   - "Hardcore": curiosidades de bastidores, primeira aparição, referências escondidas e detalhes refinados de roteiro.
+
+FORMATO DE SAÍDA:
+Retorne ESTRITAMENTE um objeto JSON:
+{
+  "tema_quiz": "Quiz do seu Acervo Pessoal de Quadrinhos",
+  "nivel": "Fácil" | "Médio" | "Hardcore",
+  "perguntas": [
+    {
+      "id": 1,
+      "hq_titulo": "Título da HQ do acervo relacionada",
+      "pergunta": "Texto claro e intrigante da pergunta?",
+      "opcoes": [
+        "A) Opção 1",
+        "B) Opção 2",
+        "C) Opção 3",
+        "D) Opção 4"
+      ],
+      "resposta_correta": "A",
+      "explicacao_lore": "Explicação detalhada e curiosidade sobre a resposta correta."
+    }
+  ]
+}
+"""
+
+def gerar_quiz_acervo(
+    catalogo_hqs: List[Dict[str, Any]],
+    dificuldade: str = "Médio",
+    qtd_perguntas: int = 5,
+    api_key: Optional[str] = None,
+    modelo: str = "gemini-3.5-flash",
+    max_retries: int = 2
+) -> Dict[str, Any]:
+    """
+    Gera um jogo de perguntas e respostas dinâmico e inteligente baseado nos quadrinhos da coleção do usuário.
+    """
+    if not catalogo_hqs:
+        return {
+            "tema_quiz": "Quiz do Acervo",
+            "nivel": dificuldade,
+            "perguntas": []
+        }
+
+    client = get_gemini_client(api_key)
+
+    linhas_cat = []
+    for hq in catalogo_hqs[:80]:
+        tit = (hq.get("titulo") or "").strip()
+        ed = (hq.get("edicao") or "").strip()
+        edit = (hq.get("editora") or "").strip()
+        gen = (hq.get("genero") or "").strip()
+        esc = (hq.get("escritor") or "").strip()
+        ilu = (hq.get("ilustrador") or "").strip()
+        resumo = (hq.get("resumo") or "")[:180]
+        linhas_cat.append(f"- \"{tit}\" ({ed}) | Edit: {edit} | Gên: {gen} | Roteiro: {esc} | Arte: {ilu} | Sinopse: {resumo}")
+
+    acervo_str = "\n".join(linhas_cat)
+
+    prompt_final = f"""{PROMPT_SISTEMA_QUIZ_ACERVO}
+
+---
+ACERVO DO USUÁRIO PARA GERAR O QUIZ:
+{acervo_str}
+---
+
+PARÂMETROS:
+- Nível de Dificuldade: {dificuldade}
+- Quantidade de Perguntas: {qtd_perguntas}
+
+Gere o Quiz em JSON:"""
+
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.4
+    )
+
+    modelos = [modelo, "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"]
+    for mod in modelos:
+        for tentativa in range(1, max_retries + 1):
+            try:
+                response = client.models.generate_content(
+                    model=mod,
+                    contents=prompt_final,
+                    config=config
+                )
+                if response and response.text:
+                    parsed = limpar_e_parsear_json_dict(response.text)
+                    if parsed and "perguntas" in parsed and len(parsed["perguntas"]) > 0:
+                        return parsed
+            except Exception as ex:
+                print(f"[Aviso Quiz mod={mod} t={tentativa}]: {ex}")
+                time.sleep(1.0 * tentativa)
+
+    return {
+        "tema_quiz": "Quiz do Acervo",
+        "nivel": dificuldade,
+        "perguntas": []
+    }
+
+
+
 
 
 

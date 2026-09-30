@@ -109,6 +109,27 @@ if "ultimo_resultado_salvamento" not in st.session_state:
 if "pagina_atual" not in st.session_state:
     st.session_state["pagina_atual"] = "principal"
 
+if "ordem_leitura_resultado" not in st.session_state:
+    st.session_state["ordem_leitura_resultado"] = None
+
+if "dna_colecao_resultado" not in st.session_state:
+    st.session_state["dna_colecao_resultado"] = None
+
+if "storyteller_resultado" not in st.session_state:
+    st.session_state["storyteller_resultado"] = None
+
+if "storyteller_hq_id" not in st.session_state:
+    st.session_state["storyteller_hq_id"] = None
+
+if "quiz_acervo_resultado" not in st.session_state:
+    st.session_state["quiz_acervo_resultado"] = None
+
+if "quiz_respostas_usuario" not in st.session_state:
+    st.session_state["quiz_respostas_usuario"] = {}
+
+if "quiz_finalizado" not in st.session_state:
+    st.session_state["quiz_finalizado"] = False
+
 
 # -------------------------------------------------------------
 # MODAIS (DIALOGS) DE AÇÕES RÁPIDAS
@@ -607,6 +628,36 @@ with st.sidebar:
             auth.fazer_logout()
     
     st.markdown("---")
+
+    # 🚀 Hub de IA e Navegação Rápida
+    st.markdown("#### 🚀 Hub de IA & Navegação")
+    pag_atual = st.session_state.get("pagina_atual", "principal")
+
+    def navegar_para(nome_pagina: str):
+        st.session_state["pagina_atual"] = nome_pagina
+        if nome_pagina == "principal" and "pagina" in st.query_params:
+            del st.query_params["pagina"]
+        elif nome_pagina != "principal":
+            st.query_params["pagina"] = nome_pagina
+        st.rerun()
+
+    c_nav1, c_nav2 = st.columns(2)
+    with c_nav1:
+        if st.button("📚 Catálogo", use_container_width=True, type="primary" if pag_atual == "principal" else "secondary", key="nav_btn_cat"):
+            navegar_para("principal")
+        if st.button("🧭 Ordem Leitura", use_container_width=True, type="primary" if pag_atual == "ordem_leitura" else "secondary", help="Guia de Ordem de Leitura e Cronologia de Sagas", key="nav_btn_ordem"):
+            navegar_para("ordem_leitura")
+        if st.button("🎙️ Storyteller", use_container_width=True, type="primary" if pag_atual == "storyteller" else "secondary", help="Aquecimento de Leitura e Narração por IA", key="nav_btn_story"):
+            navegar_para("storyteller")
+    with c_nav2:
+        if st.button("📖 Em Leitura", use_container_width=True, type="primary" if pag_atual == "em_leitura" else "secondary", key="nav_btn_lendo"):
+            navegar_para("em_leitura")
+        if st.button("🔍 Detetive DNA", use_container_width=True, type="primary" if pag_atual == "dna_colecao" else "secondary", help="Diagnóstico do DNA da Coleção e Gaps Faltantes", key="nav_btn_dna"):
+            navegar_para("dna_colecao")
+        if st.button("🧠 Quiz Acervo", use_container_width=True, type="primary" if pag_atual == "quiz_acervo" else "secondary", help="Trivia & Quiz do seu Próprio Acervo", key="nav_btn_quiz"):
+            navegar_para("quiz_acervo")
+
+    st.markdown("---")
     
     # Campo para chave de API do Gemini
     env_api_key = os.getenv("GEMINI_API_KEY", "")
@@ -981,26 +1032,682 @@ def renderizar_pagina_em_leitura():
 
                 st.markdown("")
 
-                col_b1, col_b2, col_b3, col_b4 = st.columns([2, 1.5, 1.5, 1.5])
+                col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns([1.8, 1.4, 1.2, 1.2, 1.2])
                 with col_b1:
-                    if st.button("✅ Concluir Leitura (Lido)", key=f"btn_concluir_lendo_{hq_id}_{idx}", use_container_width=True, type="primary", help="Marcar esta HQ como 'Lido'"):
+                    if st.button("✅ Concluir (Lido)", key=f"btn_concluir_lendo_{hq_id}_{idx}", use_container_width=True, type="primary", help="Marcar esta HQ como 'Lido'"):
                         database.definir_status_leitura(hq_id, "Lido")
                         st.success(f"🎉 Leitura de **'{hq_item['titulo']}'** concluída com sucesso!")
                         st.rerun()
                 with col_b2:
-                    if st.button("✍️ Resenha / Nota", key=f"btn_resenha_lendo_{hq_id}_{idx}", use_container_width=True, help="Escrever resenha ou avaliar"):
-                        dialog_resenha(hq_id)
+                    if st.button("🎙️ Storyteller", key=f"btn_story_lendo_{hq_id}_{idx}", use_container_width=True, help="Ouvir aquecimento narrativo antes de ler"):
+                        st.session_state["storyteller_hq_id"] = hq_id
+                        st.session_state["pagina_atual"] = "storyteller"
+                        st.rerun()
                 with col_b3:
-                    if st.button("✏️ Editar HQ", key=f"btn_editar_lendo_{hq_id}_{idx}", use_container_width=True, help="Editar informações desta HQ"):
-                        dialog_editar_hq(hq_id)
+                    if st.button("✍️ Resenha", key=f"btn_resenha_lendo_{hq_id}_{idx}", use_container_width=True, help="Escrever resenha ou avaliar"):
+                        dialog_resenha(hq_id)
                 with col_b4:
-                    if st.button("⏳ Mudar para Não Lido", key=f"btn_pausar_lendo_{hq_id}_{idx}", use_container_width=True, help="Mudar status para 'Não Lido'"):
+                    if st.button("✏️ Editar", key=f"btn_editar_lendo_{hq_id}_{idx}", use_container_width=True, help="Editar informações desta HQ"):
+                        dialog_editar_hq(hq_id)
+                with col_b5:
+                    if st.button("⏳ Pausar", key=f"btn_pausar_lendo_{hq_id}_{idx}", use_container_width=True, help="Mudar status para 'Não Lido'"):
                         database.definir_status_leitura(hq_id, "Não Lido")
                         st.info(f"Status de **'{hq_item['titulo']}'** alterado para 'Não Lido'.")
                         st.rerun()
 
     st.markdown("---")
     if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_em_leitura_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
+def player_audio_speech(texto_locucao: str):
+    """
+    Renderiza um player de narração em áudio de alta fidelidade utilizando a Web Speech API do navegador.
+    Suporta reproduzir, pausar, parar e controle de velocidade nativo em português (pt-BR).
+    """
+    import html
+    texto_limpo = (texto_locucao or "").strip().replace("\r", " ")
+    texto_escaped = html.escape(texto_limpo).replace("\n", " ").replace("'", "\\'").replace('"', '\\"')
+    
+    html_code = f"""
+    <div style="background: linear-gradient(135deg, #1b172b 0%, #291a38 100%); border: 1px solid #9d4edd; border-radius: 12px; padding: 16px 20px; margin: 15px 0; color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; box-shadow: 0 4px 14px rgba(0,0,0,0.35);">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 24px;">🎙️</span>
+                <div>
+                    <strong style="font-size: 15px; color: #e0aaff; display: block;">Narrador Imersivo de HQs</strong>
+                    <span style="font-size: 12px; color: #c77dff;">Aquecimento de Leitura por Voz</span>
+                </div>
+            </div>
+            <span id="speech-status" style="font-size: 12px; background: rgba(157, 78, 221, 0.25); border: 1px solid #7b2cbf; color: #e0aaff; padding: 4px 12px; border-radius: 20px; font-weight: 500;">Pronto para narrar</span>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <button id="btn-play" onclick="falarTexto()" style="background: #7b2cbf; color: white; border: none; padding: 9px 18px; border-radius: 8px; font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: 0.2s;">
+                ▶️ Ouvir Narração
+            </button>
+            <button id="btn-pause" onclick="pausarTexto()" style="background: #3c096c; color: white; border: 1px solid #5a189a; padding: 9px 14px; border-radius: 8px; cursor: pointer;">
+                ⏸️ Pausar
+            </button>
+            <button id="btn-stop" onclick="pararTexto()" style="background: #240046; color: #ff9e00; border: 1px solid #3c096c; padding: 9px 14px; border-radius: 8px; cursor: pointer;">
+                ⏹️ Parar
+            </button>
+            <div style="margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: #c77dff;">
+                <span>Velocidade:</span>
+                <select id="sel-rate" onchange="mudarRate(this.value)" style="background: #240046; color: #e0aaff; border: 1px solid #5a189a; border-radius: 6px; padding: 4px 8px; font-size: 12px; outline: none;">
+                    <option value="0.9">0.9x (Dramático)</option>
+                    <option value="1.0" selected>1.0x (Normal)</option>
+                    <option value="1.15">1.15x (Dinâmico)</option>
+                    <option value="1.3">1.3x (Rápido)</option>
+                </select>
+            </div>
+        </div>
+    </div>
+    <script>
+    let synth = window.speechSynthesis;
+    let utterance = null;
+    let currentRate = 1.0;
+    
+    function mudarRate(v) {{
+        currentRate = parseFloat(v);
+        if (synth && synth.speaking) {{
+            pararTexto();
+            falarTexto();
+        }}
+    }}
+    
+    function falarTexto() {{
+        if (!synth) {{
+            alert('Seu navegador não suporta a síntese de voz (Web Speech API).');
+            return;
+        }}
+        if (synth.paused) {{
+            synth.resume();
+            document.getElementById('speech-status').innerText = '🎙️ Narrando...';
+            return;
+        }}
+        synth.cancel();
+        const texto = "{texto_escaped}";
+        utterance = new SpeechSynthesisUtterance(texto);
+        utterance.lang = 'pt-BR';
+        utterance.rate = currentRate;
+        utterance.pitch = 0.95;
+        
+        let voices = synth.getVoices();
+        let ptVoice = voices.find(v => v.lang === 'pt-BR' || v.lang.startsWith('pt'));
+        if (ptVoice) utterance.voice = ptVoice;
+        
+        utterance.onstart = () => {{ document.getElementById('speech-status').innerText = '🎙️ Narrando...'; }};
+        utterance.onend = () => {{ document.getElementById('speech-status').innerText = '✅ Narração concluída'; }};
+        utterance.onerror = (e) => {{ document.getElementById('speech-status').innerText = 'Status: ' + (e.error || 'Pronto'); }};
+        
+        synth.speak(utterance);
+    }}
+    
+    function pausarTexto() {{
+        if (synth && synth.speaking) {{
+            if (synth.paused) {{
+                synth.resume();
+                document.getElementById('speech-status').innerText = '🎙️ Narrando...';
+            }} else {{
+                synth.pause();
+                document.getElementById('speech-status').innerText = '⏸️ Pausado';
+            }}
+        }}
+    }}
+    
+    function pararTexto() {{
+        if (synth) {{
+            synth.cancel();
+            document.getElementById('speech-status').innerText = '⏹️ Parado';
+        }}
+    }}
+    </script>
+    """
+    st.components.v1.html(html_code, height=140)
+
+
+# -------------------------------------------------------------
+# PÁGINA DEDICADA: GUIA DE ORDEM DE LEITURA & CRONOLOGIA DE SAGAS
+# -------------------------------------------------------------
+def renderizar_pagina_ordem_leitura():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("🧭 Guia de Ordem de Leitura & Cronologia de Sagas")
+        st.markdown("Descubra a sequência canônica ideal de leitura para qualquer saga, universo ou personagem, cruzando automaticamente com as edições que você já tem na estante.")
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_ordem_top"):
+            voltar_ao_catalogo()
+
+    st.markdown("---")
+
+    catalogo_atual = database.obter_contexto_hqs_para_chat()
+
+    with st.container(border=True):
+        st.subheader("🎯 Qual saga ou personagem você deseja explorar?")
+        
+        # Sugestões rápidas
+        st.caption("Sugestões populares para 1 clique:")
+        col_sug1, col_sug2, col_sug3 = st.columns(3)
+        tema_sugerido = None
+        with col_sug1:
+            if st.button("🦇 Batman: Ano Um até Asilo Arkham", use_container_width=True, key="btn_sug_batman"):
+                tema_sugerido = "Batman: Da origem em Ano Um até Asilo Arkham e Vitória Sombria"
+            if st.button("⏳ Sandman: Cronologia do Sonhar", use_container_width=True, key="btn_sug_sandman"):
+                tema_sugerido = "Sandman: Cronologia completa de Neil Gaiman e Prelúdio"
+        with col_sug2:
+            if st.button("🌌 Saga do Infinito (Thanos)", use_container_width=True, key="btn_sug_infinito"):
+                tema_sugerido = "Saga do Infinito da Marvel: Desafio Infinito até Guerra Infinita"
+            if st.button("⚔️ Berserk: Da Era de Ouro ao Espadachim Negro", use_container_width=True, key="btn_sug_berserk"):
+                tema_sugerido = "Berserk: Ordem canônica dos arcos do mangá de Kentaro Miura"
+        with col_sug3:
+            if st.button("⚡ Crise nas Infinitas Terras", use_container_width=True, key="btn_sug_crise"):
+                tema_sugerido = "Crise nas Infinitas Terras e os antecedentes da DC Comics"
+            if st.button("🧬 X-Men: Era do Apocalipse", use_container_width=True, key="btn_sug_xmen"):
+                tema_sugerido = "X-Men: A Saga da Era do Apocalipse e Dias de um Futuro Esquecido"
+
+        col_in_t, col_in_b = st.columns([3.5, 1.2])
+        with col_in_t:
+            input_tema_leitura = st.text_input(
+                "Digite o nome da saga, herói, arco ou universo:",
+                value=tema_sugerido or "",
+                placeholder="Ex: Demolidor de Frank Miller, Guerras Secretas, Cavaleiro da Lua, Monstro do Pântano...",
+                key="input_tema_ordem_leitura"
+            )
+        with col_in_b:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            btn_gerar_ordem = st.button("🧭 Gerar Guia com IA", type="primary", use_container_width=True, key="btn_exec_ordem_leitura")
+
+    tema_para_processar = tema_sugerido or (input_tema_leitura.strip() if btn_gerar_ordem and input_tema_leitura.strip() else None)
+
+    if tema_para_processar:
+        if not os.getenv("GEMINI_API_KEY"):
+            st.error("Chave de API do Gemini não configurada! Configure-a na barra lateral.")
+        else:
+            with st.spinner(f"🤖 Mapeando continuidade e cruzando com suas {len(catalogo_atual)} HQs..."):
+                resultado = gemini_service.gerar_ordem_leitura(
+                    tema_ou_saga=tema_para_processar,
+                    catalogo_hqs=catalogo_atual,
+                    api_key=os.getenv("GEMINI_API_KEY"),
+                    modelo=resolver_modelo("chat")
+                )
+                st.session_state["ordem_leitura_resultado"] = resultado
+
+    if st.session_state.get("ordem_leitura_resultado"):
+        res = st.session_state["ordem_leitura_resultado"]
+        
+        st.markdown(f"## 📖 {res.get('saga_identificada', 'Guia de Leitura')}")
+        universo_badge = res.get("universo", "Geral")
+        st.caption(f"Universo: **{universo_badge}** | Análise gerada com base no seu acervo pessoal")
+        
+        if res.get("introducao"):
+            st.info(f"💡 **Contexto da Cronologia:**\n\n{res['introducao']}", icon="✨")
+
+        etapas = res.get("etapas", [])
+        if etapas:
+            st.markdown(f"### 🚀 Roteiro Passo a Passo ({len(etapas)} Edições)")
+            
+            for item in etapas:
+                ordem_num = item.get("ordem", 1)
+                tit_item = item.get("titulo", "Sem título")
+                ed_item = item.get("edicao_recomendada", "")
+                imp = item.get("importancia", "Essencial")
+                sinopse = item.get("sinopse_rapida", "")
+                status_col = item.get("status_colecao", "faltante")
+                hq_id = item.get("hq_id")
+                prat = item.get("prateleira")
+                lido_st = item.get("lido", "Não Lido")
+                termo_compra = item.get("termo_busca_compra") or f"{tit_item} {ed_item}".strip()
+
+                with st.container(border=True):
+                    col_num, col_corpo, col_acoes = st.columns([0.6, 3.2, 1.4])
+                    
+                    with col_num:
+                        st.markdown(f"<div style='font-size: 2.2rem; font-weight: bold; color: #9d4edd; text-align: center; line-height: 1.2;'>#{ordem_num}</div>", unsafe_allow_html=True)
+                        st.caption(f"<div style='text-align: center;'>{imp}</div>", unsafe_allow_html=True)
+                        
+                    with col_corpo:
+                        ed_str = f" • *{ed_item}*" if ed_item else ""
+                        st.markdown(f"#### {tit_item}{ed_str}")
+                        if sinopse:
+                            st.write(sinopse)
+                            
+                        if status_col == "no_acervo":
+                            st.success(f"✅ **Você possui na estante!** Localização: `{prat or 'Catálogo'}` (ID #{hq_id}) | Status: **{lido_st}**", icon="📍")
+                        else:
+                            st.warning(f"🛒 **Edição Faltante (Gap):** Esta obra é recomendada para completar a saga.", icon="⚠️")
+                            
+                    with col_acoes:
+                        st.write("")
+                        if status_col == "no_acervo" and hq_id:
+                            if st.button("🎙️ Storyteller", key=f"btn_story_ordem_{ordem_num}_{hq_id}", use_container_width=True, help="Ouvir aquecimento narrativo desta edição"):
+                                st.session_state["storyteller_hq_id"] = int(hq_id)
+                                st.session_state["pagina_atual"] = "storyteller"
+                                st.rerun()
+                            if lido_st != "Lido":
+                                if st.button("✅ Marcar Lido", key=f"btn_lido_ordem_{ordem_num}_{hq_id}", use_container_width=True):
+                                    database.definir_status_leitura(int(hq_id), "Lido")
+                                    st.success("Marcado como Lido!")
+                                    st.rerun()
+                        else:
+                            if st.button("⭐ Add Desejos", key=f"btn_wish_ordem_{ordem_num}", use_container_width=True, help="Adicionar à Lista de Desejos"):
+                                database.adicionar_item_lista_desejos(
+                                    titulo=tit_item,
+                                    edicao=ed_item,
+                                    editora="",
+                                    observacoes=f"Sugerido no Guia de Leitura de '{res.get('saga_identificada')}'"
+                                )
+                                st.success("Adicionado à Lista de Desejos!")
+                                st.rerun()
+                            if st.button("🔍 Ver Preços", key=f"btn_preco_ordem_{ordem_num}", use_container_width=True, help="Consultar preço no Google Shopping"):
+                                with st.spinner("Buscando preços..."):
+                                    cot = gemini_service.pesquisar_precos_serpapi(termo_compra)
+                                    st.session_state["radar_precos_resultado"] = cot
+                                    st.success(f"Encontradas {cot.get('total_encontrados', 0)} ofertas!")
+
+        gaps = res.get("gaps_criticos", [])
+        if gaps:
+            with st.expander(f"🛒 Gaps Críticos da Saga ({len(gaps)} edições não encontradas no seu acervo)", expanded=False):
+                for g in gaps:
+                    st.write(f"- 📕 **{g.get('titulo')}** ({g.get('edicao', '')}): *{g.get('motivo', '')}*")
+
+        if res.get("dica_curador"):
+            st.markdown("---")
+            st.info(f"💡 **Dica do Curador Geek:** {res['dica_curador']}", icon="🎩")
+
+    st.markdown("---")
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_ordem_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
+# -------------------------------------------------------------
+# PÁGINA DEDICADA: DETETIVE DE COLEÇÃO & DNA DO COLECIONADOR
+# -------------------------------------------------------------
+def renderizar_pagina_dna_colecao():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("🔍 Detetive de Coleção & DNA do Colecionador")
+        st.markdown("Diagnóstico profundo dos seus hábitos de leitura, arquétipo de colecionador e **detecção automática de volumes e séries incompletas**.")
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_dna_top"):
+            voltar_ao_catalogo()
+
+    st.markdown("---")
+
+    catalogo_atual = database.obter_contexto_hqs_para_chat()
+
+    col_btn_diag, _ = st.columns([1.8, 3])
+    with col_btn_diag:
+        btn_exec_dna = st.button("🧬 Analisar DNA do Meu Acervo & Gaps", type="primary", use_container_width=True, key="btn_exec_dna_act")
+
+    if btn_exec_dna or (st.session_state.get("dna_colecao_resultado") is None and catalogo_atual):
+        if not os.getenv("GEMINI_API_KEY"):
+            st.error("Chave de API do Gemini não configurada! Insira na barra lateral.")
+        else:
+            with st.spinner(f"🤖 Realizando raio-X completo das suas {len(catalogo_atual)} HQs..."):
+                diag = gemini_service.analisar_dna_colecao_e_gaps(
+                    catalogo_hqs=catalogo_atual,
+                    api_key=os.getenv("GEMINI_API_KEY"),
+                    modelo=resolver_modelo("chat")
+                )
+                st.session_state["dna_colecao_resultado"] = diag
+
+    if st.session_state.get("dna_colecao_resultado"):
+        dna = st.session_state["dna_colecao_resultado"]
+
+        # Hero Banner do Arquétipo
+        with st.container(border=True):
+            st.markdown(f"### 🌟 Seu Arquétipo: <span style='color: #9d4edd;'>{dna.get('arquetipo_colecionador', 'Colecionador Eclético')}</span>", unsafe_allow_html=True)
+            if dna.get("resumo_dna"):
+                st.markdown(dna["resumo_dna"])
+
+        col_d1, col_d2 = st.columns([1.5, 1.5], gap="medium")
+
+        with col_d1:
+            with st.container(border=True):
+                st.markdown("#### 📊 Distribuição de Estilos & Gêneros")
+                dist = dna.get("distribuicao_estilos", [])
+                if dist:
+                    for d in dist:
+                        cat_nome = d.get("categoria", "Geral")
+                        pct = int(d.get("porcentagem", 20))
+                        st.write(f"**{cat_nome}** — `{pct}%`")
+                        st.progress(min(1.0, max(0.0, pct / 100.0)))
+                else:
+                    st.caption("Sem dados de distribuição disponíveis.")
+
+        with col_d2:
+            with st.container(border=True):
+                st.markdown("#### 🏆 Pontos Fortes da Sua Coleção")
+                pontos = dna.get("pontos_fortes_acervo", [])
+                if pontos:
+                    for p in pontos:
+                        st.markdown(f"- ✅ {p}")
+                else:
+                    st.caption("Pontos fortes ainda não calculados.")
+
+        st.markdown("---")
+
+        # Detetive de Gaps
+        st.markdown("### 🔍 Detetive de Gaps (Volumes e Séries Faltantes)")
+        st.caption("Identificação de volumes intermediários ou conclusões de séries que estão faltando na sua estante:")
+        gaps_lista = dna.get("gaps_detectados", [])
+
+        if not gaps_lista:
+            st.success("🎉 **Nenhum gap crítico detectado!** Suas séries identificadas parecem completas ou em dia.", icon="✨")
+        else:
+            for idx_g, gap_it in enumerate(gaps_lista):
+                with st.container(border=True):
+                    col_g_info, col_g_act = st.columns([3, 1.2])
+                    with col_g_info:
+                        serie = gap_it.get("serie", "Série")
+                        possuidos = gap_it.get("volumes_possuidos", "")
+                        faltante = gap_it.get("volume_faltante", "")
+                        prio = gap_it.get("prioridade", "Alta")
+                        motivo = gap_it.get("motivo", "")
+                        termo = gap_it.get("termo_busca") or f"{serie} {faltante}".strip()
+
+                        st.markdown(f"#### 📕 {serie} — <span style='color: #ff007f;'>Falta: {faltante}</span>", unsafe_allow_html=True)
+                        st.markdown(f"📚 **Você já possui:** `{possuidos}` | Prioridade: **{prio}**")
+                        st.write(f"💡 *{motivo}*")
+
+                    with col_g_act:
+                        st.write("")
+                        if st.button("⭐ Salvar nos Desejos", key=f"btn_wish_gap_{idx_g}", use_container_width=True):
+                            database.adicionar_item_lista_desejos(
+                                titulo=serie,
+                                edicao=faltante,
+                                editora="",
+                                observacoes=f"Detectado pelo Detetive de Gaps: {motivo}"
+                            )
+                            st.success("Adicionado à Lista de Desejos!")
+                            st.rerun()
+
+                        if st.button("🛒 Ver Ofertas", key=f"btn_preco_gap_{idx_g}", use_container_width=True):
+                            with st.spinner("Buscando preços..."):
+                                cot = gemini_service.pesquisar_precos_serpapi(termo)
+                                st.session_state["radar_precos_resultado"] = cot
+                                st.success(f"Encontradas {cot.get('total_encontrados', 0)} ofertas!")
+
+        st.markdown("---")
+
+        # Recomendações Cirúrgicas
+        st.markdown("### 🎯 Recomendações Cirúrgicas de Próximas Compras")
+        st.caption("Obras selecionadas a dedo pela IA conectando diretamente com seus quadrinhos mais bem avaliados:")
+        recs = dna.get("recomendacoes_cirurgicas", [])
+
+        if recs:
+            for idx_r, rec in enumerate(recs):
+                with st.container(border=True):
+                    c_r_info, c_r_act = st.columns([3, 1.2])
+                    with c_r_info:
+                        st.markdown(f"#### 📖 {rec.get('titulo')} *(Editora: {rec.get('editora', 'Desconhecida')})*")
+                        st.caption(f"✍️ Autor/Arte: **{rec.get('autor', 'Não informado')}**")
+                        st.write(f"💡 **Por que você vai amar:** {rec.get('por_que_comprar', '')}")
+                    with c_r_act:
+                        st.write("")
+                        if st.button("⭐ Add aos Desejos", key=f"btn_wish_rec_{idx_r}", use_container_width=True):
+                            database.adicionar_item_lista_desejos(
+                                titulo=rec.get("titulo", ""),
+                                edicao="",
+                                editora=rec.get("editora", ""),
+                                observacoes=f"Recomendação de DNA: {rec.get('por_que_comprar', '')}"
+                            )
+                            st.success("Adicionado à Lista de Desejos!")
+                            st.rerun()
+                        if st.button("🔍 Buscar Preço", key=f"btn_preco_rec_{idx_r}", use_container_width=True):
+                            termo_r = rec.get("termo_busca") or rec.get("titulo", "")
+                            with st.spinner("Buscando preços..."):
+                                cot = gemini_service.pesquisar_precos_serpapi(termo_r)
+                                st.session_state["radar_precos_resultado"] = cot
+                                st.success(f"Encontradas {cot.get('total_encontrados', 0)} ofertas!")
+
+    st.markdown("---")
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_dna_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
+# -------------------------------------------------------------
+# PÁGINA DEDICADA: STORYTELLER & AQUECIMENTO DE LEITURA POR IA
+# -------------------------------------------------------------
+def renderizar_pagina_storyteller():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("🎙️ Storyteller & Aquecimento de Leitura")
+        st.markdown("Recapitulação narrativa imersiva estilo *\"Previously on...\"* com **narração por voz da IA** para você entrar no clima antes de abrir as páginas.")
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_story_top"):
+            voltar_ao_catalogo()
+
+    st.markdown("---")
+
+    catalogo = database.obter_contexto_hqs_para_chat()
+    if not catalogo:
+        st.info("Nenhuma HQ cadastrada para gerar narrativa. Adicione algumas edições ao acervo primeiro.")
+        return
+
+    # Seletor de HQ
+    opcoes_hqs = {f"#{h['id']} - {h['titulo']} ({h.get('edicao') or 'Sem Vol'})": int(h["id"]) for h in catalogo}
+    hq_selecionada_id = st.session_state.get("storyteller_hq_id")
+    
+    # Encontra index inicial
+    idx_init = 0
+    if hq_selecionada_id:
+        for i, val in enumerate(opcoes_hqs.values()):
+            if val == hq_selecionada_id:
+                idx_init = i
+                break
+
+    col_sel, col_btn = st.columns([3, 1.3])
+    with col_sel:
+        hq_label_sel = st.selectbox(
+            "📖 Escolha a HQ que você vai começar a ler:",
+            options=list(opcoes_hqs.keys()),
+            index=idx_init,
+            key="sel_storyteller_hq"
+        )
+        hq_alvo_id = opcoes_hqs[hq_label_sel]
+    with col_btn:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        btn_gerar_story = st.button("🎙️ Gerar Aquecimento de Leitura", type="primary", use_container_width=True, key="btn_exec_story")
+
+    hq_obj = database.obter_hq_por_id(hq_alvo_id)
+
+    if btn_gerar_story or (st.session_state.get("storyteller_resultado") is None and hq_obj):
+        if not os.getenv("GEMINI_API_KEY"):
+            st.error("Chave de API do Gemini não configurada! Insira na barra lateral.")
+        else:
+            with st.spinner(f"🎙️ Criando narrativa imersiva para '{hq_obj['titulo']}'..."):
+                hqs_lidas = [h for h in catalogo if h.get("lido") == "Lido"]
+                story = gemini_service.gerar_recap_narrativo(
+                    hq_alvo=hq_obj,
+                    historico_hqs_lidas=hqs_lidas,
+                    api_key=os.getenv("GEMINI_API_KEY"),
+                    modelo=resolver_modelo("chat")
+                )
+                st.session_state["storyteller_resultado"] = story
+                st.session_state["storyteller_hq_id"] = hq_alvo_id
+
+    if st.session_state.get("storyteller_resultado") and hq_obj:
+        story = st.session_state["storyteller_resultado"]
+
+        col_capa, col_main_story = st.columns([1.1, 3], gap="medium")
+        with col_capa:
+            img_c = obter_imagem_capa(hq_obj.get("capa"))
+            st.image(img_c, use_container_width=True, caption=hq_obj["titulo"])
+            st.caption(f"📍 Prateleira: `{hq_obj.get('prateleira')}`\n\nStatus: **{hq_obj.get('lido', 'Não Lido')}**")
+
+            if hq_obj.get("lido") != "Lendo":
+                if st.button("📚 Colocar em 'Lendo'", use_container_width=True, type="primary"):
+                    database.definir_status_leitura(hq_obj["id"], "Lendo")
+                    st.success("Status alterado para 'Lendo'!")
+                    st.rerun()
+
+        with col_main_story:
+            st.markdown(f"## 🎬 {story.get('titulo_recap', 'Aquecimento de Leitura')}")
+            if story.get("clima_narrativo"):
+                st.markdown(f"> *\"{story['clima_narrativo']}\"*")
+
+            # Player de Áudio Speech
+            texto_loc = story.get("texto_locucao") or story.get("o_que_esperar", "")
+            if texto_loc:
+                player_audio_speech(texto_loc)
+
+            pilares = story.get("pilares_da_trama", [])
+            if pilares:
+                st.markdown("#### 🏛️ Pilares da Trama & Antecedentes")
+                for p in pilares:
+                    with st.container(border=True):
+                        st.markdown(f"**⚡ {p.get('titulo', 'Ponto da Trama')}**")
+                        st.write(p.get("descricao", ""))
+
+            if story.get("o_que_esperar"):
+                st.markdown("#### 👁️ O Que Prestar Atenção Nesta Edição")
+                st.info(story["o_que_esperar"], icon="💡")
+
+            if story.get("frase_de_impacto"):
+                st.markdown(f"<div style='font-size: 1.15rem; font-weight: bold; color: #ff007f; text-align: center; padding: 10px;'>\"{story['frase_de_impacto']}\"</div>", unsafe_allow_html=True)
+
+    st.markdown("---")
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_story_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
+# -------------------------------------------------------------
+# PÁGINA DEDICADA: TRIVIA & QUIZ DO PRÓPRIO ACERVO
+# -------------------------------------------------------------
+def renderizar_pagina_quiz_acervo():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("🧠 Trivia & Quiz Interativo do seu Acervo")
+        st.markdown("Teste seus conhecimentos com perguntas inteligentes baseadas **estritamente nas histórias, autores e curiosidades das HQs que você tem na estante**!")
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_quiz_top"):
+            voltar_ao_catalogo()
+
+    st.markdown("---")
+
+    catalogo = database.obter_contexto_hqs_para_chat()
+    if not catalogo:
+        st.info("Cadastre pelo menos uma HQ no catálogo para poder jogar o Quiz do Acervo.")
+        return
+
+    with st.container(border=True):
+        col_q1, col_q2, col_q3 = st.columns([1.5, 1.5, 1.5])
+        with col_q1:
+            nivel_sel = st.selectbox("Nível de Dificuldade:", ["Fácil", "Médio", "Hardcore"], index=1, key="sel_quiz_dif")
+        with col_q2:
+            qtd_sel = st.selectbox("Quantidade de Perguntas:", [3, 5, 8], index=1, key="sel_quiz_qtd")
+        with col_q3:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            btn_iniciar_quiz = st.button("🎮 Gerar Novo Quiz", type="primary", use_container_width=True, key="btn_gerar_quiz_act")
+
+    if btn_iniciar_quiz or (st.session_state.get("quiz_acervo_resultado") is None and catalogo):
+        if not os.getenv("GEMINI_API_KEY"):
+            st.error("Chave de API do Gemini não configurada! Insira na barra lateral.")
+        else:
+            with st.spinner("🤖 Elaborando perguntas exclusivas a partir dos quadrinhos do seu acervo..."):
+                quiz_data = gemini_service.gerar_quiz_acervo(
+                    catalogo_hqs=catalogo,
+                    dificuldade=nivel_sel,
+                    qtd_perguntas=qtd_sel,
+                    api_key=os.getenv("GEMINI_API_KEY"),
+                    modelo=resolver_modelo("chat")
+                )
+                st.session_state["quiz_acervo_resultado"] = quiz_data
+                st.session_state["quiz_respostas_usuario"] = {}
+                st.session_state["quiz_finalizado"] = False
+
+    if st.session_state.get("quiz_acervo_resultado"):
+        quiz = st.session_state["quiz_acervo_resultado"]
+        perguntas = quiz.get("perguntas", [])
+
+        if not perguntas:
+            st.warning("Não foi possível gerar perguntas para o quiz. Tente novamente.")
+        else:
+            st.markdown(f"### 🏆 {quiz.get('tema_quiz', 'Quiz do Acervo')} — Nível: `{quiz.get('nivel', 'Médio')}`")
+            
+            with st.form("form_quiz_usuario"):
+                for p in perguntas:
+                    p_id = p.get("id", 1)
+                    hq_rel = p.get("hq_titulo", "HQ do Acervo")
+                    pergunta_texto = p.get("pergunta", "")
+                    opcoes = p.get("opcoes", [])
+
+                    st.markdown(f"#### ❓ Pergunta #{p_id}")
+                    st.caption(f"📚 Obra relacionada: **{hq_rel}**")
+                    st.markdown(f"**{pergunta_texto}**")
+
+                    key_rad = f"quiz_rad_{p_id}"
+                    val_atual = st.session_state.get("quiz_respostas_usuario", {}).get(p_id)
+                    idx_val = 0
+                    if val_atual and opcoes:
+                        for i_op, op_t in enumerate(opcoes):
+                            if op_t.startswith(val_atual):
+                                idx_val = i_op
+                                break
+
+                    escolha = st.radio(
+                        "Selecione sua resposta:",
+                        options=opcoes,
+                        key=key_rad,
+                        label_visibility="collapsed"
+                    )
+                    # Letra selecionada (A, B, C ou D)
+                    letra_escolhida = escolha[0] if escolha else "A"
+                    st.session_state["quiz_respostas_usuario"][p_id] = letra_escolhida
+                    st.markdown("---")
+
+                btn_submeter_quiz = st.form_submit_button("🏁 Finalizar & Conferir Pontuação", type="primary", use_container_width=True)
+
+            if btn_submeter_quiz:
+                st.session_state["quiz_finalizado"] = True
+
+            if st.session_state.get("quiz_finalizado"):
+                acertos = 0
+                total = len(perguntas)
+
+                for p in perguntas:
+                    p_id = p.get("id", 1)
+                    resp_correta = str(p.get("resposta_correta", "A")).strip().upper()
+                    user_resp = str(st.session_state.get("quiz_respostas_usuario", {}).get(p_id, "")).strip().upper()
+                    if user_resp == resp_correta or (user_resp and user_resp[0] == resp_correta):
+                        acertos += 1
+
+                pct_acerto = (acertos / total) * 100 if total > 0 else 0
+
+                st.markdown("---")
+                if pct_acerto == 100:
+                    st.balloons()
+                    st.success(f"🏆 **INCRÍVEL! Pontuação Perfeita:** Você acertou **{acertos} de {total}** perguntas ({pct_acerto:.0f}%)! Você é um verdadeiro mestre do seu acervo!", icon="🌟")
+                elif pct_acerto >= 60:
+                    st.success(f"🎉 **Parabéns!** Você acertou **{acertos} de {total}** perguntas ({pct_acerto:.0f}%)!", icon="👏")
+                else:
+                    st.info(f"📚 **Resultado:** Você acertou **{acertos} de {total}** perguntas ({pct_acerto:.0f}%). Uma boa desculpa para reler algumas HQs da estante!", icon="🤓")
+
+                st.markdown("### 📋 Gabarito & Curiosidades de Bastidores (Lore)")
+                for p in perguntas:
+                    p_id = p.get("id", 1)
+                    resp_correta = str(p.get("resposta_correta", "A")).strip().upper()
+                    user_resp = str(st.session_state.get("quiz_respostas_usuario", {}).get(p_id, "")).strip().upper()
+                    eh_correta = (user_resp == resp_correta or (user_resp and user_resp[0] == resp_correta))
+
+                    with st.container(border=True):
+                        st.markdown(f"**Pergunta #{p_id}:** {p.get('pergunta')}")
+                        if eh_correta:
+                            st.success(f"✅ Sua resposta: **{user_resp}** (Correto!)", icon="✅")
+                        else:
+                            st.error(f"❌ Sua resposta: **{user_resp}** | Resposta correta: **{resp_correta}**", icon="❌")
+
+                        lore = p.get("explicacao_lore")
+                        if lore:
+                            st.info(f"💡 **Lore & Curiosidade:** {lore}", icon="📖")
+
+    st.markdown("---")
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_quiz_bottom", use_container_width=True):
         voltar_ao_catalogo()
 
 
@@ -1012,6 +1719,23 @@ if st.query_params.get("pagina") == "editar_prateleiras" or st.session_state.get
 if st.query_params.get("pagina") == "em_leitura" or st.session_state.get("pagina_atual") == "em_leitura":
     renderizar_pagina_em_leitura()
     st.stop()
+
+if st.query_params.get("pagina") == "ordem_leitura" or st.session_state.get("pagina_atual") == "ordem_leitura":
+    renderizar_pagina_ordem_leitura()
+    st.stop()
+
+if st.query_params.get("pagina") == "dna_colecao" or st.session_state.get("pagina_atual") == "dna_colecao":
+    renderizar_pagina_dna_colecao()
+    st.stop()
+
+if st.query_params.get("pagina") == "storyteller" or st.session_state.get("pagina_atual") == "storyteller":
+    renderizar_pagina_storyteller()
+    st.stop()
+
+if st.query_params.get("pagina") == "quiz_acervo" or st.session_state.get("pagina_atual") == "quiz_acervo":
+    renderizar_pagina_quiz_acervo()
+    st.stop()
+
 
 
 # -------------------------------------------------------------
@@ -1099,7 +1823,7 @@ if hq_dia:
                 
             st.markdown("")
             
-            col_b1, col_b2, col_b3 = st.columns([1.5, 1.5, 1.5])
+            col_b1, col_b2, col_b3, col_b4 = st.columns([1.5, 1.5, 1.5, 1.5])
             with col_b1:
                 if st.button("🎲 Sortear Outra", key="btn_sortear_outra_dia", use_container_width=True, help="Sortear aleatoriamente outro quadrinho da sua coleção sem repetir recentes"):
                     outra_hq = database.sortear_edicao_do_dia(excluir_id=int(hq_dia["id"]), data_destaque=data_hoje)
@@ -1107,9 +1831,14 @@ if hq_dia:
                         st.session_state["edicao_do_dia_id"] = outra_hq["id"]
                         st.rerun()
             with col_b2:
+                if st.button("🎙️ Storyteller", key="btn_story_dia", use_container_width=True, help="Ouvir o aquecimento narrativo desta edição com narração por voz de IA"):
+                    st.session_state["storyteller_hq_id"] = int(hq_dia["id"])
+                    st.session_state["pagina_atual"] = "storyteller"
+                    st.rerun()
+            with col_b3:
                 if st.button("🔍 Buscar Capa", key="btn_buscar_capa_detalhes_dia", use_container_width=True, help="Buscar capa desta HQ na internet"):
                     dialog_buscar_capa(int(hq_dia["id"]))
-            with col_b3:
+            with col_b4:
                 if st.button("✏️ Editar HQ", key="btn_editar_hq_dia", use_container_width=True, help="Editar informações desta HQ"):
                     dialog_editar_hq(int(hq_dia["id"]))
 else:
@@ -1117,6 +1846,47 @@ else:
         st.info("📚 **Nenhuma edição cadastrada no momento.** Tire fotos da sua prateleira ou adicione títulos para ver a **Edição do Dia** em destaque aqui!", icon="✨")
 
 st.markdown("---")
+
+# -------------------------------------------------------------
+# CENTRAL DE SUPERPODERES DE IA
+# -------------------------------------------------------------
+st.markdown("### 🚀 Central de Inteligência Artificial do Acervo")
+c_card1, c_card2, c_card3, c_card4 = st.columns(4)
+
+with c_card1:
+    with st.container(border=True):
+        st.markdown("#### 🧭 Ordem de Leitura")
+        st.caption("Cronologia canônica de sagas e universos cruzando com seu acervo.")
+        if st.button("Abrir Guia ➔", key="btn_card_ordem", use_container_width=True, type="primary"):
+            st.session_state["pagina_atual"] = "ordem_leitura"
+            st.rerun()
+
+with c_card2:
+    with st.container(border=True):
+        st.markdown("#### 🔍 Detetive de Gaps")
+        st.caption("Diagnóstico do DNA da coleção e detecção de volumes faltantes.")
+        if st.button("Ver Diagnóstico ➔", key="btn_card_dna", use_container_width=True, type="primary"):
+            st.session_state["pagina_atual"] = "dna_colecao"
+            st.rerun()
+
+with c_card3:
+    with st.container(border=True):
+        st.markdown("#### 🎙️ Storyteller")
+        st.caption("Aquecimento narrativo dramático com narração por voz antes de ler.")
+        if st.button("Ouvir História ➔", key="btn_card_story", use_container_width=True, type="primary"):
+            st.session_state["pagina_atual"] = "storyteller"
+            st.rerun()
+
+with c_card4:
+    with st.container(border=True):
+        st.markdown("#### 🧠 Quiz do Acervo")
+        st.caption("Teste seu conhecimento com perguntas geradas das suas próprias HQs.")
+        if st.button("Jogar Quiz ➔", key="btn_card_quiz", use_container_width=True, type="primary"):
+            st.session_state["pagina_atual"] = "quiz_acervo"
+            st.rerun()
+
+st.markdown("---")
+
 
 
 

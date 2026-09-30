@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import MagicMock, patch
 import os
 import database
 import gemini_service
@@ -828,9 +829,133 @@ class TestHqCatalog(unittest.TestCase):
         todos_lendo = database.obter_hqs_em_leitura(self.test_db)
         self.assertEqual(len(todos_lendo), 4)
 
+    @patch("gemini_service.get_gemini_client")
+    def test_smart_reading_order_structure(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.text = """{
+            "saga_identificada": "Batman: Cronologia Essencial",
+            "universo": "DC Comics",
+            "introducao": "Uma das maiores sagas.",
+            "etapas": [
+                {"ordem": 1, "titulo": "Batman: Ano Um", "edicao_recomendada": "Edição Especial", "status_colecao": "no_acervo", "hq_id": 1}
+            ],
+            "gaps_criticos": [],
+            "dica_curador": "Comece pelo Ano Um"
+        }"""
+        mock_client.models.generate_content.return_value = mock_resp
+        mock_get_client.return_value = mock_client
+
+        catalogo = [
+            {"id": 1, "titulo": "Batman: Ano Um", "edicao": "Edição Especial", "editora": "Panini", "prateleira": "Estante 1", "lido": "Lido", "avaliacao": 5}
+        ]
+        res = gemini_service.gerar_ordem_leitura(
+            tema_ou_saga="Batman",
+            catalogo_hqs=catalogo,
+            api_key="chave_teste"
+        )
+        self.assertEqual(res["saga_identificada"], "Batman: Cronologia Essencial")
+        self.assertEqual(len(res["etapas"]), 1)
+        self.assertEqual(res["etapas"][0]["status_colecao"], "no_acervo")
+
+    @patch("gemini_service.get_gemini_client")
+    def test_dna_colecao_and_gaps_structure(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.text = """{
+            "arquetipo_colecionador": "Mestre Seinen & Dark Fantasy",
+            "resumo_dna": "Perfil denso.",
+            "pontos_fortes_acervo": ["Obras completas"],
+            "distribuicao_estilos": [{"categoria": "Seinen", "porcentagem": 100}],
+            "gaps_detectados": [
+                {"serie": "Berserk", "volume_faltante": "Vol. 3", "prioridade": "Alta"}
+            ],
+            "recomendacoes_cirurgicas": [
+                {"titulo": "Vagabond", "autor": "Takehiko Inoue", "editora": "Panini"}
+            ]
+        }"""
+        mock_client.models.generate_content.return_value = mock_resp
+        mock_get_client.return_value = mock_client
+
+        catalogo = [
+            {"id": 1, "titulo": "Berserk", "edicao": "Vol. 1", "editora": "Panini", "genero": "Mangá / Seinen"}
+        ]
+        res = gemini_service.analisar_dna_colecao_e_gaps(
+            catalogo_hqs=catalogo,
+            api_key="chave_teste"
+        )
+        self.assertEqual(res["arquetipo_colecionador"], "Mestre Seinen & Dark Fantasy")
+        self.assertEqual(len(res["gaps_detectados"]), 1)
+        self.assertEqual(res["gaps_detectados"][0]["volume_faltante"], "Vol. 3")
+
+    @patch("gemini_service.get_gemini_client")
+    def test_storyteller_recap_structure(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.text = """{
+            "titulo_recap": "Anteriormente em Sandman...",
+            "clima_narrativo": "O reino dos sonhos desmorona.",
+            "pilares_da_trama": [{"titulo": "Prisão", "descricao": "Morpheus foi preso."}],
+            "o_que_esperar": "Preste atenção aos detalhes.",
+            "frase_de_impacto": "Os sonhos nunca morrem.",
+            "texto_locucao": "Você está prestes a entrar no Sonhar."
+        }"""
+        mock_client.models.generate_content.return_value = mock_resp
+        mock_get_client.return_value = mock_client
+
+        hq_alvo = {
+            "id": 1,
+            "titulo": "Sandman",
+            "edicao": "Vol. 1",
+            "resumo": "Morpheus se liberta."
+        }
+        res = gemini_service.gerar_recap_narrativo(
+            hq_alvo=hq_alvo,
+            historico_hqs_lidas=[],
+            api_key="chave_teste"
+        )
+        self.assertEqual(res["titulo_recap"], "Anteriormente em Sandman...")
+        self.assertEqual(res["frase_de_impacto"], "Os sonhos nunca morrem.")
+        self.assertIn("Sonhar", res["texto_locucao"])
+
+    @patch("gemini_service.get_gemini_client")
+    def test_quiz_acervo_structure(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.text = """{
+            "tema_quiz": "Quiz do Acervo",
+            "nivel": "Fácil",
+            "perguntas": [
+                {
+                    "id": 1,
+                    "hq_titulo": "Watchmen",
+                    "pergunta": "Quem matou o Comediante?",
+                    "opcoes": ["A) Rorschach", "B) Ozymandias", "C) Dr. Manhattan", "D) Coruja"],
+                    "resposta_correta": "B",
+                    "explicacao_lore": "Adrian Veidt (Ozymandias) arquitetou o plano."
+                }
+            ]
+        }"""
+        mock_client.models.generate_content.return_value = mock_resp
+        mock_get_client.return_value = mock_client
+
+        catalogo = [
+            {"id": 1, "titulo": "Watchmen", "edicao": "Definitiva", "editora": "Panini"}
+        ]
+        res = gemini_service.gerar_quiz_acervo(
+            catalogo_hqs=catalogo,
+            dificuldade="Fácil",
+            qtd_perguntas=1,
+            api_key="chave_teste"
+        )
+        self.assertEqual(len(res["perguntas"]), 1)
+        self.assertEqual(res["perguntas"][0]["resposta_correta"], "B")
+
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
