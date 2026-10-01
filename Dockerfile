@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Evita que o Python gere arquivos .pyc e força flush imediato nos logs
 ENV PYTHONDONTWRITEBYTECODE=1

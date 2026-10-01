@@ -20,6 +20,8 @@ try:
 except ImportError:
     libsql_client = None
 
+import jev_engine
+
 DB_DEFAULT_PATH = os.getenv("DB_PATH", "hqs_inventario.db")
 
 
@@ -100,8 +102,17 @@ def get_sqlite_connection(db_path: str = DB_DEFAULT_PATH) -> sqlite3.Connection:
     return conn
 
 
-def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
-    """Inicializa a tabela hqs caso ainda não exista e aplica migrações de schema."""
+_INITIALIZED_DBS = set()
+
+
+def init_db(db_path: str = DB_DEFAULT_PATH, force: bool = False) -> None:
+    """Inicializa a tabela hqs caso ainda não exista e aplica migrações de schema (com cache para Turso Cloud)."""
+    global _INITIALIZED_DBS
+    
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
+        if "__turso__" in _INITIALIZED_DBS and not force:
+            return
+
     create_table_sql = """
     CREATE TABLE IF NOT EXISTS hqs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,7 +165,7 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
         criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             executar_turso_query(create_table_sql)
             executar_turso_query(create_table_desejos_sql)
@@ -164,30 +175,7 @@ def init_db(db_path: str = DB_DEFAULT_PATH) -> None:
                 executar_turso_query(seed_prateleiras_sql)
             except Exception:
                 pass
-            # Migrações seguras no Turso
-            try:
-                res = executar_turso_query("PRAGMA table_info(hqs)")
-                cols = [r[1] for r in res.rows]
-                if "lido" not in cols:
-                    executar_turso_query("ALTER TABLE hqs ADD COLUMN lido TEXT DEFAULT 'Não Lido'")
-                if "genero" not in cols:
-                    executar_turso_query("ALTER TABLE hqs ADD COLUMN genero TEXT DEFAULT 'Outro'")
-                if "escritor" not in cols:
-                    executar_turso_query("ALTER TABLE hqs ADD COLUMN escritor TEXT DEFAULT 'Não informado'")
-                if "ilustrador" not in cols:
-                    executar_turso_query("ALTER TABLE hqs ADD COLUMN ilustrador TEXT DEFAULT 'Não informado'")
-                if "avaliacao" not in cols:
-                    executar_turso_query("ALTER TABLE hqs ADD COLUMN avaliacao INTEGER DEFAULT 0")
-                if "capa" not in cols:
-                    executar_turso_query("ALTER TABLE hqs ADD COLUMN capa TEXT DEFAULT ''")
-                    if "capa_url" in cols:
-                        executar_turso_query("UPDATE hqs SET capa = capa_url WHERE (capa IS NULL OR capa = '') AND capa_url IS NOT NULL")
-                if "resenha" not in cols:
-                    executar_turso_query("ALTER TABLE hqs ADD COLUMN resenha TEXT DEFAULT ''")
-                if "resumo" not in cols:
-                    executar_turso_query("ALTER TABLE hqs ADD COLUMN resumo TEXT DEFAULT ''")
-            except Exception:
-                pass
+            _INITIALIZED_DBS.add("__turso__")
         except Exception as e:
             print(f"Aviso ao inicializar Turso: {e}")
     else:
@@ -505,6 +493,18 @@ def verificar_hq_duplicada(
     if candidato_mesmo_titulo_edicao is not None:
         return candidato_mesmo_titulo_edicao
 
+    # 3. Decisão Probabilística JEV (System 1 Entity Linker)
+    if candidatos:
+        decisao_jev = jev_engine.decidir_duplicata_probabilistica(
+            {"titulo": titulo, "edicao": edicao, "editora": editora},
+            candidatos,
+            threshold_auto=0.88
+        )
+        if decisao_jev.is_duplicate and decisao_jev.existing_id:
+            for cand in candidatos:
+                if cand.get("id") == decisao_jev.existing_id:
+                    return cand
+
     return None
 
 
@@ -718,24 +718,39 @@ def salvar_hqs(
                 })
                 continue
 
-        item_preparado = {
-            "titulo": titulo,
-            "edicao": edicao,
-            "editora": editora,
-            "genero": genero,
-            "escritor": escritor,
-            "ilustrador": ilustrador,
-            "prateleira": prateleira_val,
-            "lido": lido_val,
-            "avaliacao": avaliacao_val,
-            "capa": capa,
-            "resenha": resenha,
-            "resumo": resumo
-        }
+        # Validação e higienização estrita através do schema JEV Pydantic
+        item_preparado = jev_engine.validar_e_tipar_hq(
+            dados_item={
+                "titulo": titulo,
+                "edicao": edicao,
+                "editora": editora,
+                "genero": genero,
+                "escritor": escritor,
+                "ilustrador": ilustrador,
+                "prateleira": prateleira_val,
+                "lido": lido_val,
+                "avaliacao": avaliacao_val,
+                "capa": capa,
+                "resenha": resenha,
+                "resumo": resumo
+            },
+            prateleira_padrao=prateleira_val,
+            lido_padrao=lido_val
+        )
         itens_salvos.append(item_preparado)
         registros_para_inserir.append((
-            titulo, edicao, editora, genero, escritor, ilustrador,
-            prateleira_val, lido_val, avaliacao_val, capa, resenha, resumo
+            item_preparado["titulo"],
+            item_preparado["edicao"],
+            item_preparado["editora"],
+            item_preparado["genero"],
+            item_preparado["escritor"],
+            item_preparado["ilustrador"],
+            item_preparado["prateleira"],
+            item_preparado["lido"],
+            item_preparado["avaliacao"],
+            item_preparado["capa"],
+            item_preparado["resenha"],
+            item_preparado["resumo"]
         ))
 
     if registros_para_inserir:
@@ -1712,6 +1727,12 @@ def obter_contexto_hqs_para_chat(db_path: str = DB_DEFAULT_PATH) -> List[Dict[st
     elif isinstance(df_ou_lista, list):
         return df_ou_lista
     return []
+
+
+def obter_todos_quadrinhos(db_path: str = DB_DEFAULT_PATH) -> List[Dict[str, Any]]:
+    """Retorna todas as HQs em formato de lista de dicionários (alias para contexto)."""
+    return obter_contexto_hqs_para_chat(db_path=db_path)
+
 
 
 # -------------------------------------------------------------

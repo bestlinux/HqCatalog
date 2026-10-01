@@ -24,7 +24,7 @@ O **Azure App Service (Linux)** é a forma mais simples e direta.
    - **Resource Group:** Crie um novo (ex: `rg-hqcatalog`).
    - **Name (Nome da Aplicação):** Ex: `meu-catalogo-hqs` (ficará `https://meu-catalogo-hqs.azurewebsites.net`).
    - **Publish:** *Code* ou *Docker Container*.
-   - **Runtime Stack:** `Python 3.11` ou `Python 3.12`.
+   - **Runtime Stack:** `Python 3.14`.
    - **Operating System:** `Linux`.
    - **Pricing Plan:** *Basic B1* (ou *Free F1* para testes).
 
@@ -50,7 +50,7 @@ Você pode enviar o código de 3 formas:
 - **Pelo GitHub Actions:** Conecte o repositório GitHub na aba **Deployment Center**.
 - **Via Azure CLI (Linha de Comando):**
   ```bash
-  az webapp up --name meu-catalogo-hqs --resource-group rg-hqcatalog --runtime "PYTHON:3.11"
+  az webapp up --name meu-catalogo-hqs --resource-group rg-hqcatalog --runtime "PYTHON:3.14"
   ```
 
 ---

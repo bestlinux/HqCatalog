@@ -15,15 +15,10 @@ from dotenv import load_dotenv
 # Carrega variáveis de ambiente do .env se existir
 load_dotenv()
 
-import importlib
 import database
 import gemini_service
 import auth
-
-# Garante recarregamento dos módulos locais em caso de alterações a quente
-importlib.reload(database)
-importlib.reload(gemini_service)
-importlib.reload(auth)
+import jev_engine
 
 DEFAULT_NO_COVER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "No_Image_Available.jpg")
 
@@ -649,6 +644,8 @@ with st.sidebar:
             navegar_para("ordem_leitura")
         if st.button("🎙️ Storyteller", use_container_width=True, type="primary" if pag_atual == "storyteller" else "secondary", help="Aquecimento de Leitura e Narração por IA", key="nav_btn_story"):
             navegar_para("storyteller")
+        if st.button("📦 Importação Lote", use_container_width=True, type="primary" if pag_atual == "importacao_lote" else "secondary", help="Importar coleções inteiras com curadoria da IA", key="nav_btn_lote"):
+            navegar_para("importacao_lote")
     with c_nav2:
         if st.button("📖 Em Leitura", use_container_width=True, type="primary" if pag_atual == "em_leitura" else "secondary", key="nav_btn_lendo"):
             navegar_para("em_leitura")
@@ -1711,6 +1708,312 @@ def renderizar_pagina_quiz_acervo():
         voltar_ao_catalogo()
 
 
+def renderizar_pagina_importacao_lote():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("📦 Importação em Lote com Curadoria IA")
+        st.markdown(
+            "Cadastre coleções inteiras, sagas completas ou sequências de volumes de uma só vez "
+            "(como a **Coleção Salvat 1 ao 64**, mangás, sagas Marvel/DC ou encadernados). "
+            "A IA pesquisa todos os metadados (roteirista, desenhista, editora, gênero, sinopse e capas) "
+            "e você revisa e aprova a listagem antes de salvar no seu acervo."
+        )
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_lote_top"):
+            voltar_ao_catalogo()
+
+    st.markdown("---")
+
+    # Sugestões rápidas de 1 clique
+    st.markdown("#### 💡 Sugestões de Coleções e Sagas Populares:")
+    col_sug1, col_sug2, col_sug3 = st.columns(3)
+    
+    proposta_sugerida = None
+    with col_sug1:
+        if st.button("🦸‍♂️ Marvel Salvat (1 ao 64)", use_container_width=True, key="sug_salvat"):
+            proposta_sugerida = "Incluir a coleção Coleção Oficial de Graphic Novels Marvel (Salvat) do número 1 ao 64"
+        if st.button("⚔️ Mangá Berserk (1 ao 40)", use_container_width=True, key="sug_berserk"):
+            proposta_sugerida = "Importar a coleção do mangá Berserk da Panini dos volumes 1 ao 40"
+    with col_sug2:
+        if st.button("🦇 DC Eaglemoss (1 ao 20)", use_container_width=True, key="sug_eaglemoss"):
+            proposta_sugerida = "Incluir a Coleção DC Comics Graphic Novels (Eaglemoss) do número 1 ao 20"
+        if st.button("🪓 Chainsaw Man (1 ao 11)", use_container_width=True, key="sug_chainsaw"):
+            proposta_sugerida = "Importar mangá Chainsaw Man da Panini volumes 1 a 11"
+    with col_sug3:
+        if st.button("⏳ Sandman Definitivo (1 ao 5)", use_container_width=True, key="sug_sandman"):
+            proposta_sugerida = "Importar coleção Sandman Edição Definitiva volumes 1 a 5 da Panini"
+        if st.button("📜 Clássica Marvel (1 ao 20)", use_container_width=True, key="sug_classica"):
+            proposta_sugerida = "Incluir Coleção Clássica Marvel da Panini do número 1 ao 20"
+
+    with st.container(border=True):
+        st.subheader("📝 1. Defina a Coleção ou Lote a Ser Importado")
+        
+        texto_padrao = proposta_sugerida or st.session_state.get("importacao_lote_input_txt", "")
+        proposta_input = st.text_area(
+            "Descreva a coleção, sequência ou volumes desejados:",
+            value=texto_padrao,
+            placeholder='Ex: "Incluir a coleção Coleção Oficial de Graphic Novels Marvel (Salvat) do número 1 ao 64" ou "Cadastrar mangá One Piece volumes 1 a 12"',
+            help="Especifique o nome da coleção ou série e o intervalo de volumes desejado.",
+            height=85,
+            key="input_proposta_lote_area"
+        )
+
+        col_cfg1, col_cfg2, col_cfg3 = st.columns([2, 1.2, 1.8])
+        
+        prateleiras_existentes = [p for p in database.obter_prateleiras() if p and p != "Estante 1 - Prateleira 1"]
+        with col_cfg1:
+            opcoes_p = ["➕ Digitar nova prateleira..."] + list(prateleiras_existentes)
+            escolha_p = st.selectbox(
+                "📍 Prateleira de Destino:",
+                options=opcoes_p,
+                index=1 if prateleiras_existentes else 0,
+                key="sel_prateleira_lote"
+            )
+            if escolha_p == "➕ Digitar nova prateleira...":
+                prateleira_destino = st.text_input("Nome da nova prateleira:", value="Estante de Coleções", key="txt_nova_prat_lote")
+            else:
+                prateleira_destino = escolha_p
+
+        with col_cfg2:
+            status_leitura_padrao = st.selectbox(
+                "📖 Status Inicial:",
+                options=["Não Lido", "Lido", "Lendo", "Quero Ler"],
+                index=0,
+                key="sel_status_lote"
+            )
+
+        with col_cfg3:
+            st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
+            buscar_capas_auto = st.checkbox(
+                "🖼️ Buscar capas na internet",
+                value=False,
+                help="Busca capas oficiais em alta resolução (Apple Books / OpenLibrary) automaticamente.",
+                key="chk_capas_lote"
+            )
+
+        col_btn_gerar, _ = st.columns([1.5, 2])
+        with col_btn_gerar:
+            btn_pesquisar_ia = st.button("🤖 1. Consultar IA & Gerar Prévia do Lote", type="primary", use_container_width=True, key="btn_exec_lote_ia")
+
+    if btn_pesquisar_ia and proposta_input.strip():
+        if not os.getenv("GEMINI_API_KEY"):
+            st.error("❌ Chave de API do Gemini não configurada! Insira-a na barra lateral.")
+        else:
+            status_box = st.empty()
+            def _atualizar_progresso(msg: str):
+                status_box.info(msg, icon="⏳")
+
+            with st.spinner("🤖 IA pesquisando a coleção e estruturando metadados..."):
+                try:
+                    itens_retornados = gemini_service.gerar_importacao_lote(
+                        proposta=proposta_input.strip(),
+                        prateleira_padrao=prateleira_destino.strip() or "Estante de Coleções",
+                        lido_padrao=status_leitura_padrao,
+                        api_key=os.getenv("GEMINI_API_KEY"),
+                        modelo=resolver_modelo("chat"),
+                        buscar_capas_auto=buscar_capas_auto,
+                        progresso_callback=_atualizar_progresso
+                    )
+                    
+                    if not itens_retornados:
+                        st.warning("⚠️ A IA não conseguiu identificar edições para a proposta informada. Tente detalhar melhor o nome da coleção ou série.")
+                    else:
+                        status_box.empty()
+                        # Enriquece com verificação de duplicidade determinística e probabilística (JEV)
+                        catalogo_completo = database.obter_todos_quadrinhos()
+                        itens_enriquecidos = []
+                        for it in itens_retornados:
+                            dup = database.verificar_hq_duplicada(
+                                it.get("titulo", ""),
+                                it.get("edicao", ""),
+                                it.get("editora", "")
+                            )
+                            decisao_jev = jev_engine.decidir_duplicata_probabilistica(it, catalogo_completo)
+                            
+                            it_copy = dict(it)
+                            if dup:
+                                it_copy["incluir"] = False
+                                it_copy["ja_no_acervo"] = True
+                                it_copy["status_acervo"] = f"⚠️ Já no Acervo (ID #{dup['id']})"
+                            elif decisao_jev.is_duplicate and decisao_jev.existing_id:
+                                it_copy["incluir"] = False
+                                it_copy["ja_no_acervo"] = True
+                                it_copy["status_acervo"] = f"⚠️ Provável Duplicata (ID #{decisao_jev.existing_id} - {int(decisao_jev.confidence*100)}% match)"
+                            elif decisao_jev.requires_human_confirmation:
+                                it_copy["incluir"] = True
+                                it_copy["ja_no_acervo"] = False
+                                it_copy["status_acervo"] = f"🔍 Similar ao ID #{decisao_jev.existing_id} ({int(decisao_jev.confidence*100)}%)"
+                            else:
+                                it_copy["incluir"] = True
+                                it_copy["ja_no_acervo"] = False
+                                it_copy["status_acervo"] = "✨ Nova Edição"
+
+                            if not it_copy.get("prateleira"):
+                                it_copy["prateleira"] = prateleira_destino.strip() or "Estante de Coleções"
+                            itens_enriquecidos.append(it_copy)
+
+                        st.session_state["importacao_lote_dados"] = {
+                            "itens": itens_enriquecidos,
+                            "proposta": proposta_input.strip(),
+                            "prateleira": prateleira_destino.strip() or "Estante de Coleções",
+                            "lido": status_leitura_padrao
+                        }
+                        st.rerun()
+                except Exception as ex:
+                    status_box.empty()
+                    st.error(f"❌ Ocorreu um erro ao consultar a IA: {ex}")
+
+    # Exibição da Lista para Revisão & Aprovação
+    if st.session_state.get("importacao_lote_dados"):
+        dados_lote = st.session_state["importacao_lote_dados"]
+        itens_lista = dados_lote.get("itens", [])
+
+        if itens_lista:
+            st.markdown("---")
+            st.subheader(f"📋 2. Revisão & Aprovação do Lote ({len(itens_lista)} Edições Identificadas)")
+            
+            total_itens = len(itens_lista)
+            total_existentes = sum(1 for it in itens_lista if it.get("ja_no_acervo"))
+            total_novos = total_itens - total_existentes
+
+            c_met1, c_met2, c_met3 = st.columns(3)
+            with c_met1:
+                st.metric("Total de Edições no Lote", total_itens)
+            with c_met2:
+                st.metric("Novas para Adicionar", total_novos)
+            with c_met3:
+                st.metric("Já no Acervo (Duplicadas)", total_existentes)
+
+            st.info(
+                "💡 **Revise e aprove antes de salvar:** Você pode desmarcar a caixa **'Incluir?'** para itens que não deseja adicionar "
+                "e editar qualquer informação (Título, Volume, Roteirista, Sinopse, etc.) diretamente na tabela abaixo.",
+                icon="✍️"
+            )
+
+            # Prepara DataFrame para exibição e edição interativa
+            df_lote = pd.DataFrame(itens_lista)
+            
+            # Garante colunas esperadas
+            colunas_esperadas = ["incluir", "edicao", "titulo", "editora", "genero", "escritor", "ilustrador", "prateleira", "resumo", "status_acervo"]
+            for col in colunas_esperadas:
+                if col not in df_lote.columns:
+                    df_lote[col] = ""
+
+            df_lote = df_lote[colunas_esperadas]
+
+            df_editado = st.data_editor(
+                df_lote,
+                column_config={
+                    "incluir": st.column_config.CheckboxColumn("Incluir?", help="Marque para cadastrar este item no banco de dados", default=True),
+                    "edicao": st.column_config.TextColumn("Vol/Edição", width="small"),
+                    "titulo": st.column_config.TextColumn("Título da Edição", width="large", required=True),
+                    "editora": st.column_config.TextColumn("Editora", width="medium"),
+                    "genero": st.column_config.TextColumn("Gênero", width="medium"),
+                    "escritor": st.column_config.TextColumn("Roteirista", width="medium"),
+                    "ilustrador": st.column_config.TextColumn("Desenhista", width="medium"),
+                    "prateleira": st.column_config.TextColumn("Prateleira", width="medium"),
+                    "resumo": st.column_config.TextColumn("Sinopse / Resumo", width="large"),
+                    "status_acervo": st.column_config.TextColumn("Status no Acervo", disabled=True, width="medium"),
+                },
+                use_container_width=True,
+                num_rows="dynamic",
+                key="editor_tabela_lote"
+            )
+
+            # Seção expansível para visualização rica em cartões
+            with st.expander(f"👁️ Visualizar Cards Detalhados ({len(itens_lista)} itens)", expanded=False):
+                for idx_c, it_c in enumerate(itens_lista, 1):
+                    with st.container(border=True):
+                        c_card_capa, c_card_info = st.columns([1, 4])
+                        with c_card_capa:
+                            if it_c.get("capa"):
+                                st.image(it_c["capa"], use_container_width=True)
+                            else:
+                                st.caption("🖼️ Sem capa online")
+                        with c_card_info:
+                            st.markdown(f"**#{idx_c} - {it_c.get('titulo', 'Sem Título')}** (Vol: `{it_c.get('edicao', '-')}`)")
+                            st.caption(f"🏢 **Editora:** {it_c.get('editora', '-')} | 🏷️ **Gênero:** {it_c.get('genero', '-')} | ✍️ **Roteiro:** {it_c.get('escritor', '-')} | 🎨 **Arte:** {it_c.get('ilustrador', '-')}")
+                            if it_c.get("resumo"):
+                                st.markdown(f"> *{it_c['resumo']}*")
+
+            st.markdown("---")
+
+            # Contagem dos itens marcados como 'incluir'
+            itens_selecionados_df = df_editado[df_editado["incluir"] == True]
+            qtd_para_salvar = len(itens_selecionados_df)
+
+            col_salvar, col_limpar = st.columns([2, 1.2])
+            with col_salvar:
+                btn_confirmar_lote = st.button(
+                    f"✅ 2. Aprovar e Cadastrar {qtd_para_salvar} HQs no Banco de Dados",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=(qtd_para_salvar == 0),
+                    key="btn_aprovar_lote_banco"
+                )
+
+            with col_limpar:
+                if st.button("🗑️ Descartar Prévia", use_container_width=True, key="btn_descartar_lote"):
+                    del st.session_state["importacao_lote_dados"]
+                    st.rerun()
+
+            if btn_confirmar_lote:
+                # Converte os itens aprovados do DataFrame para lista de dicionários
+                itens_finais_para_banco = []
+                for _, row in itens_selecionados_df.iterrows():
+                    # Recupera URL da capa original se existir
+                    idx_original = row.name if row.name in df_lote.index else None
+                    capa_val = ""
+                    if idx_original is not None and idx_original < len(itens_lista):
+                        capa_val = itens_lista[idx_original].get("capa", "")
+
+                    item_dict = {
+                        "titulo": str(row.get("titulo", "")).strip(),
+                        "edicao": str(row.get("edicao", "")).strip(),
+                        "editora": str(row.get("editora", "")).strip(),
+                        "genero": str(row.get("genero", "")).strip() or "Outro",
+                        "escritor": str(row.get("escritor", "")).strip() or "Não informado",
+                        "ilustrador": str(row.get("ilustrador", "")).strip() or "Não informado",
+                        "prateleira": str(row.get("prateleira", "")).strip() or dados_lote.get("prateleira", "Estante de Coleções"),
+                        "lido": dados_lote.get("lido", "Não Lido"),
+                        "avaliacao": 0,
+                        "capa": capa_val,
+                        "resumo": str(row.get("resumo", "")).strip()
+                    }
+                    itens_finais_para_banco.append(item_dict)
+
+                with st.spinner("💾 Gravando quadrinhos aprovados no banco de dados..."):
+                    resultado_salvar = database.salvar_hqs(
+                        itens=itens_finais_para_banco,
+                        prateleira=dados_lote.get("prateleira", "Estante de Coleções"),
+                        lido_padrao=dados_lote.get("lido", "Não Lido"),
+                        ignorar_duplicadas=True,
+                        retornar_detalhes=True
+                    )
+
+                st.balloons()
+                del st.session_state["importacao_lote_dados"]
+
+                num_salvos = resultado_salvar.get("salvos", 0) if isinstance(resultado_salvar, dict) else resultado_salvar
+                num_dup = resultado_salvar.get("duplicados", 0) if isinstance(resultado_salvar, dict) else 0
+
+                st.success(
+                    f"🎉 **Lote importado com sucesso!** Foram cadastradas **{num_salvos} novas edições** no seu acervo."
+                    + (f" ({num_dup} edições duplicadas foram ignoradas automaticamente)." if num_dup > 0 else ""),
+                    icon="✅"
+                )
+
+                col_ir_cat, _ = st.columns([1.5, 2])
+                with col_ir_cat:
+                    if st.button("📚 Ir para o Catálogo e Ver Coleção", type="primary", use_container_width=True, key="btn_ir_cat_pos_lote"):
+                        voltar_ao_catalogo()
+
+    st.markdown("---")
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_lote_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
 # Controle de exibição de páginas dedicadas
 if st.query_params.get("pagina") == "editar_prateleiras" or st.session_state.get("pagina_atual") == "editar_prateleiras":
     renderizar_pagina_editar_prateleiras()
@@ -1734,6 +2037,10 @@ if st.query_params.get("pagina") == "storyteller" or st.session_state.get("pagin
 
 if st.query_params.get("pagina") == "quiz_acervo" or st.session_state.get("pagina_atual") == "quiz_acervo":
     renderizar_pagina_quiz_acervo()
+    st.stop()
+
+if st.query_params.get("pagina") == "importacao_lote" or st.session_state.get("pagina_atual") == "importacao_lote":
+    renderizar_pagina_importacao_lote()
     st.stop()
 
 
@@ -1851,9 +2158,17 @@ st.markdown("---")
 # CENTRAL DE SUPERPODERES DE IA
 # -------------------------------------------------------------
 st.markdown("### 🚀 Central de Inteligência Artificial do Acervo")
-c_card1, c_card2, c_card3, c_card4 = st.columns(4)
+c_card1, c_card2, c_card3, c_card4, c_card5 = st.columns(5)
 
 with c_card1:
+    with st.container(border=True):
+        st.markdown("#### 📦 Importação Lote")
+        st.caption("Cadastre coleções inteiras (ex: Salvat 1 a 64, mangás) com curadoria IA.")
+        if st.button("Importar Lote ➔", key="btn_card_lote", use_container_width=True, type="primary"):
+            st.session_state["pagina_atual"] = "importacao_lote"
+            st.rerun()
+
+with c_card2:
     with st.container(border=True):
         st.markdown("#### 🧭 Ordem de Leitura")
         st.caption("Cronologia canônica de sagas e universos cruzando com seu acervo.")
@@ -1861,7 +2176,7 @@ with c_card1:
             st.session_state["pagina_atual"] = "ordem_leitura"
             st.rerun()
 
-with c_card2:
+with c_card3:
     with st.container(border=True):
         st.markdown("#### 🔍 Detetive de Gaps")
         st.caption("Diagnóstico do DNA da coleção e detecção de volumes faltantes.")
@@ -1869,7 +2184,7 @@ with c_card2:
             st.session_state["pagina_atual"] = "dna_colecao"
             st.rerun()
 
-with c_card3:
+with c_card4:
     with st.container(border=True):
         st.markdown("#### 🎙️ Storyteller")
         st.caption("Aquecimento narrativo dramático com narração por voz antes de ler.")
@@ -1877,7 +2192,7 @@ with c_card3:
             st.session_state["pagina_atual"] = "storyteller"
             st.rerun()
 
-with c_card4:
+with c_card5:
     with st.container(border=True):
         st.markdown("#### 🧠 Quiz do Acervo")
         st.caption("Teste seu conhecimento com perguntas geradas das suas próprias HQs.")

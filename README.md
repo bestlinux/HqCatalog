@@ -17,7 +17,7 @@ Aplicativo web completo em Python para catalogar, gerenciar e explorar coleçõe
 ---
 
 ## 🛠️ Stack Utilizada
-- **Python 3.10+**
+- **Python 3.14+** (Python 3.14.8)
 - **Streamlit** (com suporte a `st.data_editor`, `st.camera_input`, modais `@st.dialog` e autenticação)
 - **SQLite / Turso Cloud** (`hqs_inventario.db`)
 - **Google GenAI SDK** (`gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.1-pro-preview`)

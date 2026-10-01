@@ -27,6 +27,8 @@ except ImportError:
     genai = None
     types = None
 
+import jev_engine
+
 
 PROMPT_SISTEMA_HQS = """Você é um especialista em catalogação e curadoria profissional de histórias em quadrinhos (HQs, graphic novels, mangás, encadernados, gibis e zines).
 Analise a imagem da prateleira/estante fornecida com MÁXIMA ATENÇÃO às lombadas e capas visíveis.
@@ -152,12 +154,13 @@ def higienizar_item_hq(item: Dict[str, Any]) -> Dict[str, Any]:
 
     # Remove pontuação residual no final do título (ex: "Paraíso: " -> "Paraíso")
     titulo = re.sub(r"[\s\-–—:]+$", "", titulo).strip()
+    genero_canonico = jev_engine.normalizar_genero_canonico(genero)
 
     return {
         "titulo": titulo,
         "edicao": edicao,
         "editora": editora,
-        "genero": genero,
+        "genero": genero_canonico,
         "escritor": escritor,
         "ilustrador": ilustrador,
         "resumo": resumo
@@ -808,8 +811,36 @@ def processar_comando_crud_assistido(
 ) -> Dict[str, Any]:
     """
     Interpreta comandos em linguagem natural para operações de CRUD assistidas no acervo de HQs.
-    Identifica a intenção (adicionar, remover, atualizar, etc.), extrai e enriquece os dados usando o Gemini.
+    Utiliza JEV System 1 para decisões determinísticas/rápidas (<5ms) e recorre ao Gemini System 2
+    para desambiguação complexa e enriquecimento enciclopédico de metadados.
     """
+    # 1. Fast Path JEV System 1: Decisão rápida sem latência
+    decisao_jev = jev_engine.classificar_intencao_system1(comando)
+    
+    if decisao_jev.intent == jev_engine.IntencaoEnum.REMOVER and decisao_jev.entities.get("id"):
+        return {
+            "acao": "remover",
+            "dados": {"id": decisao_jev.entities["id"]},
+            "mensagem_assistente": f"Solicitação de remoção da edição #{decisao_jev.entities['id']} validada via JEV System 1."
+        }
+
+    if decisao_jev.intent == jev_engine.IntencaoEnum.ATUALIZAR_STATUS and decisao_jev.entities.get("titulo"):
+        dup_dec = jev_engine.decidir_duplicata_probabilistica(
+            {"titulo": decisao_jev.entities["titulo"], "edicao": ""},
+            catalogo_hqs,
+            threshold_auto=0.80
+        )
+        if dup_dec.is_duplicate and dup_dec.existing_id:
+            return {
+                "acao": "atualizar",
+                "dados": {
+                    "id": dup_dec.existing_id,
+                    "lido": decisao_jev.entities.get("novo_status", "Lido")
+                },
+                "mensagem_assistente": f"Status de '{dup_dec.existing_title}' atualizado para {decisao_jev.entities.get('novo_status', 'Lido')} via JEV System 1."
+            }
+
+    # 2. System 2: Processamento generativo via Gemini SDK
     client = get_gemini_client(api_key)
 
     # Resumo enxuto do catálogo para a IA conseguir relacionar títulos e IDs existentes
@@ -1509,6 +1540,198 @@ Gere o Quiz em JSON:"""
         "nivel": dificuldade,
         "perguntas": []
     }
+
+
+# -------------------------------------------------------------
+# CURADORIA E IMPORTAÇÃO EM LOTE DE COLEÇÕES / SAGAS
+# -------------------------------------------------------------
+PROMPT_SISTEMA_IMPORTACAO_LOTE = """Você é um especialista enciclopédico em Histórias em Quadrinhos, Mangás, Graphic Novels e coleções editoriais (Salvat, Panini, Eaglemoss, JBC, Mythos, Pipoca & Nanquim, Devir, DC Comics, Marvel, etc.).
+O usuário deseja realizar uma IMPORTAÇÃO EM LOTE para cadastrar uma coleção, saga, sequência de edições ou lista de quadrinhos no seu acervo.
+
+SUA MISSÃO:
+Interpretar a proposta do usuário e gerar a listagem catalográfica detalhada e individualizada de CADA edição/volume que faz parte do lote solicitado.
+
+REGRAS DE EXTRAÇÃO E CATALOGAÇÃO:
+1. IDENTIFICAÇÃO EXATA DE COLEÇÃO E INTERVALO:
+   - Se o usuário solicitar um intervalo (ex: "Coleção Oficial de Graphic Novels Marvel (Salvat) do número 1 ao 64", "Berserk 1 a 40", "Sandman 1 a 5"), você DEVE gerar um item para CADA número dentro do intervalo (sem pular volumes intermediários).
+   - Use seu conhecimento enciclopédico sobre os lançamentos oficiais no Brasil para preencher os dados reais e canônicos de cada volume.
+
+2. CAMPOS OBRIGATÓRIOS PARA CADA ITEM (Array JSON):
+   - "titulo": Título da história/obra contida na edição (ex: para a Salvat Vol. 1: "O Espetacular Homem-Aranha: De Volta ao Lar", Vol. 2: "Surpreendentes X-Men: Superdotados", Vol. 3: "Vingadores: A Queda"; para mangás com título único: "Chainsaw Man", "Berserk", "Akira", etc.).
+   - "edicao": Número/Volume da edição (ex: "1", "2", "64", "Vol. 1", "#10").
+   - "editora": Nome da editora responsável (ex: "Salvat", "Panini", "Eaglemoss", "JBC", "NewPOP", "Pipoca & Nanquim", "Mythos", "Devir", etc.).
+   - "genero": Gênero temático (ex: "Super-heróis", "Mangá / Shonen", "Mangá / Seinen", "Terror", "Ficção Científica", "Fantasia", "Aventura", "Drama", "Histórico", "Policial / Noir", "Humor").
+   - "escritor": Roteirista(s) principal(is) (ex: "J. Michael Straczynski", "Joss Whedon", "Alan Moore", "Eiichiro Oda", etc. ou "Não informado").
+   - "ilustrador": Desenhista(s) / Ilustrador(es) principal(is) (ex: "John Romita Jr.", "John Cassaday", "Dave Gibbons", "Kentarou Miura", etc. ou "Não informado").
+   - "resumo": Sinopse descritiva e cativante em português (2 a 4 frases) resumindo a trama desta edição específica.
+
+3. RETORNO ESTRITAMENTE JSON:
+   - Retorne ESTRITAMENTE um array JSON contendo todos os itens:
+[
+  {
+    "titulo": "O Espetacular Homem-Aranha: De Volta ao Lar",
+    "edicao": "1",
+    "editora": "Salvat",
+    "genero": "Super-heróis",
+    "escritor": "J. Michael Straczynski",
+    "ilustrador": "John Romita Jr.",
+    "resumo": "Peter Parker enfrenta novos desafios como professor e conhece o misterioso Ezekiel, que questiona a verdadeira origem mística de seus poderes aracnídeos enquanto a ameaça de Morlun se aproxima."
+  }
+]
+   - NÃO inclua texto introdutório ou conclusivo fora do JSON.
+"""
+
+
+def detectar_intervalo_volumes(texto: str) -> Optional[tuple]:
+    """Detecta intervalos numéricos como '1 ao 64', 'volumes 1 a 64', 'do número 1 até 64'."""
+    padrao = re.search(
+        r'(?:do\s+n[úu]mero|vol(?:ume)?s?|edi[çc][õo]es|de)?\s*(\d{1,3})\s*(?:a|ao|at[ée]|-)\s*(\d{1,3})',
+        texto,
+        re.IGNORECASE
+    )
+    if padrao:
+        inicio = int(padrao.group(1))
+        fim = int(padrao.group(2))
+        if 1 <= inicio < fim <= 500:
+            return (inicio, fim)
+    return None
+
+
+def gerar_importacao_lote(
+    proposta: str,
+    prateleira_padrao: str = "",
+    lido_padrao: str = "Não Lido",
+    api_key: Optional[str] = None,
+    modelo: str = "gemini-3.6-flash",
+    buscar_capas_auto: bool = False,
+    progresso_callback: Optional[Any] = None,
+    max_retries: int = 2
+) -> List[Dict[str, Any]]:
+    """
+    Gera a listagem de HQs para importação em lote a partir de uma proposta em linguagem natural,
+    como 'Incluir a coleção Coleção Oficial de Graphic Novels Marvel (Salvat) do número 1 ao 64'.
+    """
+    if not proposta or not proposta.strip():
+        return []
+
+    client = get_gemini_client(api_key)
+    
+    intervalo = detectar_intervalo_volumes(proposta)
+    chunks_tarefas = []
+    
+    # Se o intervalo for muito grande (> 35 volumes), quebramos em lotes menores para garantir completude sem corte de tokens
+    if intervalo and (intervalo[1] - intervalo[0] + 1) > 35:
+        ini_total, fim_total = intervalo
+        tamanho_chunk = 30
+        c_ini = ini_total
+        while c_ini <= fim_total:
+            c_fim = min(c_ini + tamanho_chunk - 1, fim_total)
+            chunks_tarefas.append((c_ini, c_fim))
+            c_ini = c_fim + 1
+    else:
+        chunks_tarefas.append(None)
+
+    todos_itens: List[Dict[str, Any]] = []
+
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.1
+    )
+
+    modelos = [modelo]
+    for fb in FALLBACK_MODELS:
+        if fb not in modelos:
+            modelos.append(fb)
+
+    total_chunks = len(chunks_tarefas)
+
+    for idx, chunk in enumerate(chunks_tarefas, 1):
+        if chunk:
+            c_ini, c_fim = chunk
+            prompt_chunk = f"""{PROMPT_SISTEMA_IMPORTACAO_LOTE}
+
+---
+PROPOSTA DO USUÁRIO:
+"{proposta}"
+
+SUB-LOTE ATUAL:
+Por favor, gere especificamente os dados das edições/volumes do número {c_ini} até o número {c_fim} (inclusive).
+---
+Gere o Array JSON com as edições do {c_ini} ao {c_fim}:"""
+            if progresso_callback:
+                progresso_callback(f"🤖 IA pesquisando e catalogando edições {c_ini} ao {c_fim} (Parte {idx}/{total_chunks})...")
+        else:
+            prompt_chunk = f"""{PROMPT_SISTEMA_IMPORTACAO_LOTE}
+
+---
+PROPOSTA DO USUÁRIO:
+"{proposta}"
+---
+Gere o Array JSON completo com todas as edições:"""
+            if progresso_callback:
+                progresso_callback("🤖 IA pesquisando e catalogando a coleção solicitada...")
+
+        chunk_itens = []
+        sucesso_chunk = False
+
+        for mod in modelos:
+            if sucesso_chunk:
+                break
+            for tentativa in range(1, max_retries + 1):
+                try:
+                    response = client.models.generate_content(
+                        model=mod,
+                        contents=prompt_chunk,
+                        config=config
+                    )
+                    if response and response.text:
+                        parsed = limpar_e_parsear_json(response.text)
+                        if parsed:
+                            chunk_itens = parsed
+                            sucesso_chunk = True
+                            break
+                except Exception as ex:
+                    print(f"[Aviso Importacao Lote mod={mod} t={tentativa}]: {ex}")
+                    time.sleep(1.0 * tentativa)
+
+        for item in chunk_itens:
+            # Garante prateleira e status
+            if prateleira_padrao and not item.get("prateleira"):
+                item["prateleira"] = prateleira_padrao
+            if not item.get("lido"):
+                item["lido"] = lido_padrao
+            if "avaliacao" not in item:
+                item["avaliacao"] = 0
+            if "capa" not in item:
+                item["capa"] = ""
+            todos_itens.append(item)
+
+    # Busca automática de capas se solicitada
+    if buscar_capas_auto and todos_itens:
+        if progresso_callback:
+            progresso_callback(f"🖼️ Buscando capas online para {len(todos_itens)} edições...")
+        
+        def _buscar_capa_item(item_dict):
+            if not item_dict.get("capa"):
+                try:
+                    res_capas = buscar_capas_online(
+                        titulo=item_dict.get("titulo", ""),
+                        edicao=item_dict.get("edicao", ""),
+                        editora=item_dict.get("editora", ""),
+                        escritor=item_dict.get("escritor", ""),
+                        limite=2
+                    )
+                    if res_capas and len(res_capas) > 0:
+                        item_dict["capa"] = res_capas[0].get("url") or res_capas[0].get("thumbnail") or ""
+                except Exception:
+                    pass
+            return item_dict
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            todos_itens = list(executor.map(_buscar_capa_item, todos_itens))
+
+    return todos_itens
+
 
 
 

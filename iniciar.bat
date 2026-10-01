@@ -12,5 +12,5 @@ echo No computador, acesse:
 echo http://localhost:8501
 echo ========================================================
 echo.
-py -3 -m streamlit run app.py
+py -3.14 -m streamlit run app.py
 pause

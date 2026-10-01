@@ -951,10 +951,120 @@ class TestHqCatalog(unittest.TestCase):
         self.assertEqual(len(res["perguntas"]), 1)
         self.assertEqual(res["perguntas"][0]["resposta_correta"], "B")
 
+    def test_detectar_intervalo_volumes(self):
+        intervalo1 = gemini_service.detectar_intervalo_volumes("Incluir a coleção Salvat do número 1 ao 64")
+        self.assertEqual(intervalo1, (1, 64))
+
+        intervalo2 = gemini_service.detectar_intervalo_volumes("Mangá Berserk volumes 1 a 40")
+        self.assertEqual(intervalo2, (1, 40))
+
+        intervalo3 = gemini_service.detectar_intervalo_volumes("Sandman volume único")
+        self.assertIsNone(intervalo3)
+
+    @patch("gemini_service.get_gemini_client")
+    def test_gerar_importacao_lote(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.text = """[
+            {
+                "titulo": "O Espetacular Homem-Aranha: De Volta ao Lar",
+                "edicao": "1",
+                "editora": "Salvat",
+                "genero": "Super-heróis",
+                "escritor": "J. Michael Straczynski",
+                "ilustrador": "John Romita Jr.",
+                "resumo": "Peter Parker enfrenta Morlun."
+            },
+            {
+                "titulo": "Surpreendentes X-Men: Superdotados",
+                "edicao": "2",
+                "editora": "Salvat",
+                "genero": "Super-heróis",
+                "escritor": "Joss Whedon",
+                "ilustrador": "John Cassaday",
+                "resumo": "Os X-Men enfrentam a cura mutante."
+            }
+        ]"""
+        mock_client.models.generate_content.return_value = mock_resp
+        mock_get_client.return_value = mock_client
+
+        itens = gemini_service.gerar_importacao_lote(
+            proposta="Incluir a coleção Coleção Oficial de Graphic Novels Marvel (Salvat) do número 1 ao 2",
+            prateleira_padrao="Estante Marvel Salvat",
+            api_key="chave_teste"
+        )
+
+        self.assertEqual(len(itens), 2)
+        self.assertEqual(itens[0]["titulo"], "O Espetacular Homem-Aranha: De Volta ao Lar")
+        self.assertEqual(itens[0]["edicao"], "1")
+        self.assertEqual(itens[0]["editora"], "Salvat")
+        self.assertEqual(itens[0]["escritor"], "J. Michael Straczynski")
+        self.assertEqual(itens[0]["prateleira"], "Estante Marvel Salvat")
+        self.assertEqual(itens[1]["edicao"], "2")
+        self.assertEqual(itens[1]["editora"], "Salvat")
+
+    def test_jev_schemas_and_enums(self):
+        import jev_engine
+        raw_item = {
+            "titulo": "  Watchmen - Edição Definitiva  ",
+            "edicao": "Vol. 1",
+            "editora": "Panini",
+            "genero": "super herois e acao",
+            "lido": "sim",
+            "avaliacao": 10, # Deve ser limitado a 5
+            "escritor": "Alan Moore"
+        }
+        item_tipado = jev_engine.validar_e_tipar_hq(raw_item)
+        self.assertEqual(item_tipado["titulo"], "Watchmen - Edição Definitiva")
+        self.assertEqual(item_tipado["genero"], "Super-heróis")
+        self.assertEqual(item_tipado["lido"], "Lido")
+        self.assertEqual(item_tipado["avaliacao"], 5)
+
+    def test_jev_intent_classification_system1(self):
+        import jev_engine
+        
+        # Teste de busca de preço
+        dec_preco = jev_engine.classificar_intencao_system1("Onde comprar o mangá Berserk volume 1?")
+        self.assertEqual(dec_preco.intent, jev_engine.IntencaoEnum.BUSCAR_PRECO)
+        self.assertFalse(dec_preco.requires_system2)
+        self.assertIn("berserk", dec_preco.entities["termo_busca"].lower())
+
+        # Teste de remoção por ID
+        dec_rem = jev_engine.classificar_intencao_system1("Remover a HQ ID #42")
+        self.assertEqual(dec_rem.intent, jev_engine.IntencaoEnum.REMOVER)
+        self.assertEqual(dec_rem.entities["id"], 42)
+        self.assertFalse(dec_rem.requires_system2)
+
+        # Teste de atualização de status
+        dec_st = jev_engine.classificar_intencao_system1("Marque Sandman como lido")
+        self.assertEqual(dec_st.intent, jev_engine.IntencaoEnum.ATUALIZAR_STATUS)
+        self.assertEqual(dec_st.entities["novo_status"], "Lido")
+        self.assertIn("sandman", dec_st.entities["titulo"].lower())
+
+    def test_jev_probabilistic_deduplication(self):
+        import jev_engine
+        acervo = [
+            {"id": 1, "titulo": "O Espetacular Homem-Aranha", "edicao": "1", "editora": "Salvat"},
+            {"id": 2, "titulo": "Batman: Ano Um", "edicao": "Volume Único", "editora": "Panini"}
+        ]
+
+        # Candidata idêntica ou quase idêntica
+        cand_dup = {"titulo": "Homem-Aranha", "edicao": "Vol 1", "editora": "Salvat"}
+        decisao = jev_engine.decidir_duplicata_probabilistica(cand_dup, acervo)
+        self.assertTrue(decisao.is_duplicate)
+        self.assertEqual(decisao.existing_id, 1)
+        self.assertGreaterEqual(decisao.confidence, 0.80)
+
+        # Candidata claramente nova
+        cand_nova = {"titulo": "Akira", "edicao": "1", "editora": "JBC"}
+        decisao_nova = jev_engine.decidir_duplicata_probabilistica(cand_nova, acervo)
+        self.assertFalse(decisao_nova.is_duplicate)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
 
 
