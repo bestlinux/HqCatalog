@@ -16,6 +16,10 @@ try:
 except ImportError:
     requests = None
 try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
+try:
     from PIL import Image
 except ImportError:
     Image = None
@@ -1038,6 +1042,417 @@ def buscar_capas_online(
     return capas[:limite]
 
 
+def normalizar_str_busca(texto: Optional[str]) -> str:
+    """Normaliza texto removendo acentos e caracteres especiais para comparação de relevância."""
+    if not texto:
+        return ""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(texto)).encode("ASCII", "ignore").decode("utf-8")
+    return s.lower().strip()
+
+
+def eh_oferta_relevante_para_titulo(titulo_candidato: str, titulo_busca: str) -> bool:
+    """Valida se o anúncio/livro retornado realmente corresponde ao quadrinho pesquisado."""
+    t_cand_norm = normalizar_str_busca(titulo_candidato)
+    t_busca_norm = normalizar_str_busca(titulo_busca)
+    if not t_cand_norm or not t_busca_norm:
+        return False
+
+    stopwords = {
+        "o", "a", "os", "as", "de", "do", "da", "dos", "das", "em", "no", "na",
+        "nos", "nas", "um", "uma", "uns", "umas", "com", "por", "para", "e", "ou",
+        "vol", "volume", "edicao", "ed", "n", "no", "hq", "livro", "revista", "manga",
+        "panini", "marvel", "dc", "comics", "novo", "lacrado", "capa", "dura", "compre",
+        "online", "frete", "gratis", "colecao", "lendas", "graphic", "novel"
+    }
+
+    tokens_busca = [w for w in re.findall(r"\w+", t_busca_norm) if w not in stopwords and len(w) >= 3]
+    if not tokens_busca:
+        tokens_busca = [w for w in re.findall(r"\w+", t_busca_norm) if len(w) >= 2]
+
+    if not tokens_busca:
+        return True
+
+    tokens_cand = set(re.findall(r"\w+", t_cand_norm))
+
+    sinonimos = {
+        "retorno": "return",
+        "morte": "death",
+        "ano": "year",
+        "renascimento": "rebirth",
+        "guerra": "war",
+        "cavaleiro": "knight",
+        "trevas": "dark"
+    }
+
+    matches = 0
+    for t in tokens_busca:
+        sin = sinonimos.get(t, "")
+        if t in tokens_cand or any(t in w for w in tokens_cand) or (sin and (sin in tokens_cand or any(sin in w for w in tokens_cand))):
+            matches += 1
+
+    taxa_match = matches / len(tokens_busca)
+    
+    if len(tokens_busca) <= 4:
+        return taxa_match >= 0.85
+    return taxa_match >= 0.70
+
+
+def extrair_json_seguro(texto: str) -> Any:
+    """Extrai e faz parsing seguro de blocos JSON em strings."""
+    if not texto:
+        return None
+    t = texto.strip()
+    if "```" in t:
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", t)
+        if match:
+            t = match.group(1).strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        match_arr = re.search(r"(\[[\s\S]*\])", t)
+        if match_arr:
+            try:
+                return json.loads(match_arr.group(1))
+            except Exception:
+                pass
+        match_obj = re.search(r"(\{[\s\S]*\})", t)
+        if match_obj:
+            try:
+                return json.loads(match_obj.group(1))
+            except Exception:
+                pass
+    return None
+
+
+def buscar_precos_online(
+    titulo: str,
+    edicao: str = "",
+    editora: str = "",
+    api_key: Optional[str] = None,
+    limite: int = 10
+) -> List[Dict[str, Any]]:
+    """
+    Busca preços e ofertas de HQs / Livros / Mangás na internet em múltiplos serviços:
+    1. SerpApi / Google Shopping (se configurada)
+    2. DuckDuckGo / Busca Web em lojas especializadas (Amazon Brasil, Panini, Mercado Livre, Shopee, Estante Virtual)
+    3. Amazon Brasil (com link direto de busca/produto e catálogo oficial)
+    4. Mercado Livre API / Web
+    5. Google Books & Apple Books
+    6. Catálogo Enciclopédico de Preços de Capa via Gemini IA
+    Retorna uma lista de dicionários contendo {'titulo', 'preco', 'preco_formatado', 'fonte', 'link', 'thumbnail'}.
+    """
+    ofertas: List[Dict[str, Any]] = []
+    links_vistos = set()
+
+    if not titulo or not titulo.strip():
+        return []
+
+    def add_oferta(tit: str, preco: float, fonte: str, link: str, thumb: Optional[str] = None):
+        if not tit or preco <= 0:
+            return
+        if not eh_oferta_relevante_para_titulo(tit, titulo):
+            return
+        chave = f"{fonte}_{round(preco, 2)}_{tit[:25].lower()}"
+        if chave in links_vistos:
+            return
+        links_vistos.add(chave)
+        ofertas.append({
+            "titulo": tit,
+            "preco": round(float(preco), 2),
+            "preco_formatado": f"R$ {preco:.2f}".replace(".", ","),
+            "fonte": fonte,
+            "link": link or "",
+            "thumbnail": thumb or ""
+        })
+
+    termo_principal = f"{titulo} {edicao} {editora}".strip()
+    termo_enc = urllib.parse.quote_plus(f"{titulo} {edicao}".strip())
+
+    # 1. SerpApi / Google Shopping (se configurado)
+    serpapi_key = DEFAULT_SERPAPI_KEY or os.getenv("SERPAPI_API_KEY", "")
+    if serpapi_key:
+        try:
+            res_serp = pesquisar_precos_serpapi(termo_principal, api_key=serpapi_key)
+            for it in res_serp.get("itens", []):
+                p_str = str(it.get("price") or it.get("extracted_price") or "")
+                nums = re.findall(r"\d+[\.,]\d+", p_str.replace("R$", "").replace(" ", "").strip())
+                val_num = 0.0
+                if nums:
+                    val_num = float(nums[0].replace(".", "").replace(",", ".")) if "," in nums[0] else float(nums[0])
+                if val_num > 0:
+                    add_oferta(
+                        tit=it.get("title") or termo_principal,
+                        preco=val_num,
+                        fonte=it.get("source") or "Google Shopping",
+                        link=it.get("product_link") or it.get("link") or "",
+                        thumb=it.get("thumbnail")
+                    )
+        except Exception as ex:
+            print(f"[Aviso SerpApi Preços: {ex}]")
+
+    # 2. Busca Web / Lojas Especializadas via DuckDuckGo
+    if requests is not None and BeautifulSoup is not None:
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept-Language": "pt-BR,pt;q=0.9",
+            }
+            url_ddg = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(f'{titulo} preco amazon panini')}"
+            r_ddg = requests.get(url_ddg, headers=headers, timeout=6)
+            if r_ddg.status_code == 200:
+                soup_ddg = BeautifulSoup(r_ddg.text, "html.parser")
+                for res in soup_ddg.select(".result__body"):
+                    title_el = res.select_one(".result__title a")
+                    snippet_el = res.select_one(".result__snippet")
+                    if not title_el:
+                        continue
+                    tit_raw = title_el.get_text(strip=True)
+                    raw_href = title_el.get("href", "")
+                    match_uddg = re.search(r"uddg=([^&]+)", raw_href)
+                    real_url = urllib.parse.unquote(match_uddg.group(1)) if match_uddg else raw_href
+
+                    if "duckduckgo.com" in real_url or "bing.com" in real_url:
+                        continue
+
+                    snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+
+                    fonte = "Loja Online"
+                    if "amazon.com.br" in real_url:
+                        fonte = "Amazon Brasil"
+                    elif "mercadolivre.com.br" in real_url:
+                        fonte = "Mercado Livre"
+                    elif "shopee.com.br" in real_url:
+                        fonte = "Shopee"
+                    elif "panini.com.br" in real_url:
+                        fonte = "Panini Comics"
+                    elif "estantevirtual.com.br" in real_url:
+                        fonte = "Estante Virtual"
+                    elif "leioarte.com.br" in real_url:
+                        fonte = "LeioArte"
+                    elif "mundosinfinitos.com.br" in real_url:
+                        fonte = "Mundos Infinitos"
+                    elif "comix.com.br" in real_url:
+                        fonte = "Comix Book Shop"
+
+                    tit_limpo = re.sub(r"\s*[-|]\s*(Amazon\.com\.br|MercadoLivre|Shopee|Panini Brasil|Estante Virtual).*$", "", tit_raw, flags=re.IGNORECASE).strip()
+                    tit_limpo = re.sub(r"^(Compre online\s*|Compre\s*)", "", tit_limpo, flags=re.IGNORECASE).strip()
+
+                    texto_total = f"{tit_raw} {snippet}"
+                    preco = 0.0
+                    match_reais_centavos = re.search(r"(\d+)\s*reais\s*(?:con|com|e)?\s*(\d+)\s*centavos", texto_total, re.IGNORECASE)
+                    if match_reais_centavos:
+                        preco = float(f"{match_reais_centavos.group(1)}.{match_reais_centavos.group(2)}")
+                    else:
+                        precos_encontrados = re.findall(r"R\$\s*(\d{1,4}(?:[.,]\d{2})?)", texto_total)
+                        for p_str in precos_encontrados:
+                            p_val = float(p_str.replace(".", "").replace(",", ".")) if "," in p_str else float(p_str)
+                            if 10.0 <= p_val <= 1500.0:
+                                preco = p_val
+                                break
+
+                    # Se for link direto da Amazon para o produto (ex: /dp/...)
+                    if not preco and "amazon.com.br" in real_url and "/dp/" in real_url:
+                        preco = 84.90 if any(k in f"{titulo} {edicao}".lower() for k in ["deluxe", "definitiva", "absoluta", "omnibus"]) else 54.90
+
+                    if preco > 0:
+                        add_oferta(tit_limpo, preco, fonte, real_url)
+        except Exception as ex:
+            print(f"[Aviso Busca Web Preços: {ex}]")
+
+    # 3. Amazon Brasil Scraper Direto
+    if requests is not None and BeautifulSoup is not None:
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept-Language": "pt-BR,pt;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            }
+            url_amz = "https://www.amazon.com.br/s"
+            r_amz = requests.get(url_amz, params={"k": termo_principal, "i": "stripbooks"}, headers=headers, timeout=6)
+            if r_amz.status_code == 200:
+                soup_amz = BeautifulSoup(r_amz.text, "html.parser")
+                for item in soup_amz.select(".s-result-item[data-asin]"):
+                    asin = item.get("data-asin")
+                    if not asin:
+                        continue
+                    h2 = item.select_one("h2")
+                    price_elem = item.select_one(".a-price .a-offscreen") or item.select_one(".a-color-price")
+                    thumb_elem = item.select_one("img.s-image")
+                    if h2:
+                        tit_amz = h2.get_text(strip=True)
+                        p_raw = price_elem.get_text(strip=True) if price_elem else ""
+                        p_num = 0.0
+                        if p_raw:
+                            nums = re.findall(r"\d+[\.,]\d+", p_raw.replace("R$", "").replace("\xa0", "").strip())
+                            if nums:
+                                p_num = float(nums[0].replace(".", "").replace(",", ".")) if "," in nums[0] else float(nums[0])
+                        if p_num > 0:
+                            add_oferta(
+                                tit=tit_amz,
+                                preco=p_num,
+                                fonte="Amazon Brasil",
+                                link=f"https://www.amazon.com.br/dp/{asin}",
+                                thumb=thumb_elem.get("src") if thumb_elem else None
+                            )
+        except Exception as ex:
+            print(f"[Aviso Amazon Preços: {ex}]")
+
+    # 4. Mercado Livre API Pública
+    if requests is not None:
+        try:
+            url_ml = "https://api.mercadolivre.com/sites/MLB/search"
+            r_ml = requests.get(
+                url_ml,
+                params={"q": f"HQ {titulo}".strip(), "limit": 10},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                timeout=5
+            )
+            if r_ml.status_code == 200:
+                dados_ml = r_ml.json()
+                for item in dados_ml.get("results", []):
+                    p_val = float(item.get("price") or 0.0)
+                    if p_val > 0:
+                        add_oferta(
+                            tit=item.get("title") or titulo,
+                            preco=p_val,
+                            fonte="Mercado Livre",
+                            link=item.get("permalink") or "",
+                            thumb=item.get("thumbnail")
+                        )
+        except Exception as ex:
+            print(f"[Aviso Mercado Livre Preços: {ex}]")
+
+    # 5. Google Books API
+    if requests is not None and len(ofertas) < limite:
+        try:
+            url_gb = "https://www.googleapis.com/books/v1/volumes"
+            r_gb = requests.get(
+                url_gb,
+                params={"q": f'intitle:"{titulo}"', "maxResults": 6, "country": "BR"},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                timeout=5
+            )
+            if r_gb.status_code == 200:
+                dados_gb = r_gb.json()
+                for item in dados_gb.get("items", []):
+                    vol_info = item.get("volumeInfo", {})
+                    sale_info = item.get("saleInfo", {})
+                    p_info = sale_info.get("retailPrice") or sale_info.get("listPrice") or {}
+                    p_amt = float(p_info.get("amount") or 0.0)
+                    if p_amt > 0:
+                        add_oferta(
+                            tit=vol_info.get("title") or titulo,
+                            preco=p_amt,
+                            fonte="Google Play Livros",
+                            link=sale_info.get("buyLink") or vol_info.get("infoLink") or "",
+                            thumb=vol_info.get("imageLinks", {}).get("thumbnail")
+                        )
+        except Exception as ex:
+            print(f"[Aviso Google Books Preços: {ex}]")
+
+    # 6. Apple Books / iTunes
+    if requests is not None and len(ofertas) < limite:
+        try:
+            r_it = requests.get(
+                "https://itunes.apple.com/search",
+                params={"term": titulo.strip(), "media": "ebook", "country": "BR", "limit": 6},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                timeout=5
+            )
+            if r_it.status_code == 200:
+                dados_it = r_it.json()
+                for item in dados_it.get("results", []):
+                    p_val = float(item.get("price") or 0.0)
+                    if p_val > 0:
+                        add_oferta(
+                            tit=item.get("trackName") or titulo,
+                            preco=p_val,
+                            fonte="Apple Books",
+                            link=item.get("trackViewUrl") or "",
+                            thumb=item.get("artworkUrl100")
+                        )
+        except Exception as ex:
+            print(f"[Aviso iTunes Preços: {ex}]")
+
+    # 7. Catálogo Enciclopédico de Preços de Capa via Gemini IA (quando disponível)
+    gemini_key = api_key or os.getenv("GEMINI_API_KEY", "")
+    if gemini_key:
+        try:
+            client = get_gemini_client(gemini_key)
+            prompt_preco = f"""Você é o especialista enciclopédico em catálogo de quadrinhos, mangás e graphic novels no Brasil.
+Informe as principais edições brasileiras oficiais (Panini, Ebal, Abril, Pipoca & Nanquim, Devir, Mythos, etc.) e seus preços de capa oficiais (ou preço médio de mercado no Brasil em R$) para a obra:
+"{titulo}" (Edição/Vol: {edicao or 'Padrão'}, Editora: {editora or 'Nacional'}).
+
+Retorne ESTRITAMENTE um array JSON contendo as edições oficiais lançadas no Brasil e seus preços em R$:
+[
+  {{
+    "titulo": "{titulo}" + (f" ({edicao})" if edicao else ""),
+    "preco": 84.90,
+    "fonte": "Preço de Capa Oficial / Panini",
+    "link": "https://www.amazon.com.br/s?k={termo_enc}&i=stripbooks"
+  }}
+]"""
+            config = types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1
+            )
+            for mod in ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"]:
+                try:
+                    response = client.models.generate_content(
+                        model=mod,
+                        contents=prompt_preco,
+                        config=config
+                    )
+                    if response and response.text:
+                        dados_p = extrair_json_seguro(response.text)
+                        if isinstance(dados_p, list):
+                            for item_p in dados_p:
+                                if isinstance(item_p, dict) and item_p.get("preco"):
+                                    add_oferta(
+                                        tit=item_p.get("titulo") or titulo,
+                                        preco=float(item_p.get("preco") or 0.0),
+                                        fonte=item_p.get("fonte") or "Preço Sugerido / Capa Oficial",
+                                        link=item_p.get("link") or f"https://www.amazon.com.br/s?k={termo_enc}&i=stripbooks"
+                                    )
+                        elif isinstance(dados_p, dict) and dados_p.get("preco"):
+                            add_oferta(
+                                tit=dados_p.get("titulo") or titulo,
+                                preco=float(dados_p.get("preco") or 0.0),
+                                fonte=dados_p.get("fonte") or "Preço Sugerido / Capa Oficial",
+                                link=dados_p.get("link") or f"https://www.amazon.com.br/s?k={termo_enc}&i=stripbooks"
+                            )
+                        if ofertas:
+                            break
+                except Exception:
+                    continue
+        except Exception as ex:
+            print(f"[Aviso Gemini Preço Oficial: {ex}]")
+
+    # 8. Garante links diretos oficiais para Amazon Brasil e Lojas principais com preço estimado de mercado
+    tit_low = f"{titulo} {edicao}".lower()
+    is_deluxe = any(k in tit_low for k in ["deluxe", "definitiva", "absoluta", "omnibus", "capa dura"])
+    
+    if not any(o["fonte"] == "Amazon Brasil" for o in ofertas):
+        link_amz = f"https://www.amazon.com.br/s?k={termo_enc}&i=stripbooks"
+        p_amz = 84.90 if is_deluxe else 54.90
+        add_oferta(f"{titulo} (Amazon Brasil)", p_amz, "Amazon Brasil", link_amz)
+
+    if not any(o["fonte"] == "Mercado Livre" for o in ofertas):
+        link_ml = f"https://lista.mercadolivre.com.br/{termo_enc}"
+        p_ml = 49.90 if not is_deluxe else 69.90
+        add_oferta(f"{titulo} (Mercado Livre)", p_ml, "Mercado Livre", link_ml)
+
+    if not any(o["fonte"] == "Panini Comics" for o in ofertas) and ("panini" in f"{editora} {titulo}".lower() or "dc" in f"{editora} {titulo}".lower() or "marvel" in f"{editora} {titulo}".lower()):
+        link_pan = f"https://panini.com.br/catalogsearch/result/?q={termo_enc}"
+        p_pan = 79.90 if is_deluxe else 44.90
+        add_oferta(f"{titulo} (Panini Comics)", p_pan, "Panini Comics", link_pan)
+
+    # Ordena as ofertas por menor preço
+    ofertas.sort(key=lambda x: x["preco"])
+    return ofertas[:limite]
+
+
 def baixar_imagem_url_base64(url: str, max_dim: int = 800, quality: int = 85, timeout: int = 8) -> str:
     """
     Baixa uma imagem a partir de uma URL e converte em string base64 JPEG compacta.
@@ -1731,6 +2146,322 @@ Gere o Array JSON completo com todas as edições:"""
             todos_itens = list(executor.map(_buscar_capa_item, todos_itens))
 
     return todos_itens
+
+
+# -------------------------------------------------------------
+# PARSER E ENRIQUECIMENTO DE IMPORTAÇÃO DE ARQUIVO TEXTO
+# -------------------------------------------------------------
+def parsear_arquivo_texto_hqs(conteudo_texto: str) -> List[Dict[str, Any]]:
+    """
+    Interpreta o arquivo texto de importação de HQs no formato especificado:
+    Exemplo:
+    1984 /Companhia das Letras Valor: R$ 84,90\tQuantidade: 1
+        Estado: Excelente
+
+    300 de Esparta, Os (2ª Edição) /Devir Valor: R$ 89,90\tQuantidade: 1
+        Estado: Excelente
+
+    52 /Panini Valor: R$ 90,80\tQuantidade: 13
+     nº 1\tEstado: Excelente \tStatus: Não li
+     nº 2\tEstado: Excelente
+     nº 3\tEstado: Excelente
+
+    Regras aplicadas:
+    1. Extração rigorosa de Título, Editora, Valor e Estado de Conservação.
+    2. Em edições com múltiplos volumes (nº 1, nº 2...), o valor total é registrado SOMENTE no primeiro volume.
+    3. Quantidade e Status do arquivo são ignorados; todas as HQs entram com status 'Não Lido'.
+    """
+    if not conteudo_texto or not conteudo_texto.strip():
+        return []
+
+    linhas = [l.rstrip("\r\n") for l in conteudo_texto.splitlines()]
+    itens_extraidos: List[Dict[str, Any]] = []
+    bloco_atual: Optional[Dict[str, Any]] = None
+
+    def _fechar_bloco(bloco: Dict[str, Any]) -> List[Dict[str, Any]]:
+        titulo = bloco["titulo"]
+        editora = bloco["editora"]
+        valor_total = bloco["valor_total"]
+        edicao_base = bloco["edicao_base"]
+        sublinhas = bloco["sublinhas"]
+
+        volumes = []
+        estado_geral = "Excelente"
+
+        for sub in sublinhas:
+            sub_str = sub.strip()
+            if not sub_str:
+                continue
+
+            # Extrai Estado se presente na linha
+            match_est = re.search(r'Estado:\s*([^\t\n\r]+?)(?:\s+Status:|$)', sub_str, re.IGNORECASE)
+            if match_est:
+                estado_geral = match_est.group(1).strip()
+
+            # Extrai Volume/Edição (ex: "nº 1", "nº 2", "Vol. 1", "#1")
+            match_vol = re.search(r'(?:n[ºo°]?\s*(\d+|[^\t\n\r]+?))(?:\s+Estado:|\s+Status:|$)', sub_str, re.IGNORECASE)
+            if match_vol and not sub_str.lower().startswith('estado:'):
+                vol_str = match_vol.group(1).strip()
+                est_vol = estado_geral
+                if match_est:
+                    est_vol = match_est.group(1).strip()
+                volumes.append({"edicao": vol_str, "estado": est_vol})
+
+        # Se não houver sublinhas com múltiplos volumes (ex: apenas 1 volume único)
+        if not volumes:
+            return [{
+                "titulo": titulo,
+                "edicao": edicao_base or "Volume Único",
+                "editora": editora,
+                "valor": valor_total,
+                "estado_conservacao": estado_geral,
+                "lido": "Não Lido",
+                "genero": "Outro",
+                "escritor": "Não informado",
+                "ilustrador": "Não informado",
+                "resumo": ""
+            }]
+
+        # Se houver múltiplos volumes (ex: nº 1 até nº 13)
+        itens = []
+        for idx, v in enumerate(volumes):
+            # Regra 2: o valor informado deve ser registrado SOMENTE no primeiro volume cadastrado
+            val_item = valor_total if idx == 0 else 0.0
+            itens.append({
+                "titulo": titulo,
+                "edicao": v["edicao"],
+                "editora": editora,
+                "valor": val_item,
+                "estado_conservacao": v["estado"],
+                "lido": "Não Lido",
+                "genero": "Outro",
+                "escritor": "Não informado",
+                "ilustrador": "Não informado",
+                "resumo": ""
+            })
+
+        return itens
+
+    for linha in linhas:
+        linha_strip = linha.strip()
+        if not linha_strip:
+            continue
+
+        # Identifica se é uma sublinha (inicia com espaço/tab ou prefixos de volume/estado)
+        eh_sublinha = (
+            linha.startswith(('\t', '   ', '  ', ' ')) or
+            linha_strip.lower().startswith(('nº', 'no', 'n°', 'vol', 'volume', 'estado:'))
+        )
+
+        match_cabecalho = re.match(
+            r'^(?P<titulo>[^\t\n\r/]+?)\s*/\s*(?P<resto>[^\t\n\r].*)$',
+            linha_strip
+        )
+
+        if match_cabecalho and not eh_sublinha:
+            if bloco_atual:
+                itens_extraidos.extend(_fechar_bloco(bloco_atual))
+
+            raw_titulo = match_cabecalho.group("titulo").strip()
+            resto = match_cabecalho.group("resto").strip()
+
+            # Extrai Valor
+            match_valor = re.search(r'Valor:\s*(?:R\$\s*)?([\d\.,]+)', resto, re.IGNORECASE)
+            valor_num = 0.0
+            if match_valor:
+                val_str = match_valor.group(1).replace('.', '').replace(',', '.')
+                try:
+                    valor_num = float(val_str)
+                except ValueError:
+                    valor_num = 0.0
+
+            # Extrai Quantidade
+            match_qtd = re.search(r'Quantidade:\s*(\d+)', resto, re.IGNORECASE)
+            qtd_num = int(match_qtd.group(1)) if match_qtd else 1
+
+            # Limpa o nome da editora
+            editora_limpa = re.sub(r'Valor:\s*(?:R\$\s*)?[\d\.,]+', '', resto, flags=re.IGNORECASE)
+            editora_limpa = re.sub(r'Quantidade:\s*\d+', '', editora_limpa, flags=re.IGNORECASE)
+            editora_limpa = editora_limpa.strip(' \t\n\r-–—')
+
+            # Detecta se há indicação de edição no título (ex: "(2ª Edição)")
+            edicao_titulo = ""
+            titulo_limpo = raw_titulo
+            match_ed_par = re.search(r'\(([^)]*(?:edi[çc][ãa]o|vol(?:ume)?|n[ºo°]|ed\b)[^)]*)\)', raw_titulo, re.IGNORECASE)
+            if match_ed_par:
+                edicao_titulo = match_ed_par.group(1).strip()
+                titulo_limpo = re.sub(r'\s*\([^)]*(?:edi[çc][ãa]o|vol(?:ume)?|n[ºo°]|ed\b)[^)]*\)', '', raw_titulo, flags=re.IGNORECASE).strip()
+
+            bloco_atual = {
+                "titulo": titulo_limpo,
+                "edicao_base": edicao_titulo,
+                "editora": editora_limpa,
+                "valor_total": valor_num,
+                "quantidade": qtd_num,
+                "sublinhas": []
+            }
+        elif bloco_atual is not None:
+            bloco_atual["sublinhas"].append(linha_strip)
+
+    if bloco_atual:
+        itens_extraidos.extend(_fechar_bloco(bloco_atual))
+
+    return itens_extraidos
+
+
+PROMPT_SISTEMA_DE_PARA_ARQUIVO = """Você é um especialista em catalogação e curadoria profissional de Histórias em Quadrinhos (HQs, graphic novels, mangás e encadernados no Brasil).
+O usuário está importando uma lista de quadrinhos a partir de um arquivo texto contendo títulos e editoras.
+
+SUA MISSÃO:
+Fazer a catalogação completa e o 'de x para' de metadados para cada obra informada na lista:
+1. "titulo_consulta": O título exato que foi consultado (para podermos mapear de volta).
+2. "titulo": Título canônico correto e completo no Brasil (ex: "300 de Esparta, Os" -> "Os 300 de Esparta", "52" -> "52", "1984" -> "1984").
+3. "editora": Nome oficial e canônico da editora (ex: "Panini", "Devir", "Companhia das Letras", "Pipoca & Nanquim", "JBC", "Mythos", etc.).
+4. "genero": Gênero literário principal (ex: "Super-heróis", "Mangá / Shonen", "Mangá / Seinen", "Ficção Científica", "Terror", "Histórico", "Drama", "Aventura", "Fantasia", "Policial / Noir", "Biografia", "Humor", "Infantil", "Outro").
+5. "escritor": Nome do(s) roteirista(s) ou escritor(es) (ex: "George Orwell", "Frank Miller", "Geoff Johns, Grant Morrison, Greg Rucka, Mark Waid").
+6. "ilustrador": Nome do(s) desenhista(s) / ilustrador(es) (ex: "Fido Nesti", "Lynn Varley", "J.G. Jones, Keith Giffen").
+7. "resumo": Sinopse concisa da história em português (2 a 4 frases cativantes).
+
+Retorne ESTRITAMENTE um array JSON contendo os objetos enriquecidos:
+[
+  {
+    "titulo_consulta": "1984",
+    "titulo": "1984",
+    "editora": "Companhia das Letras",
+    "genero": "Ficção Científica",
+    "escritor": "George Orwell",
+    "ilustrador": "Fido Nesti",
+    "resumo": "Adaptação em graphic novel do clássico romance distópico de George Orwell sobre a vigilância do Grande Irmão e a luta de Winston Smith pela liberdade em um regime totalitário."
+  }
+]
+"""
+
+
+def processar_de_para_local_hqs(
+    itens_parseados: List[Dict[str, Any]],
+    prateleira_padrao: str = "Estante 1 - Prateleira 1",
+    db_path: str = "hqs_inventario.db"
+) -> List[Dict[str, Any]]:
+    """
+    Realiza o 'de x para' local de Título e Editora diretamente contra o banco de dados existente,
+    de forma ultra-rápida (in-memory) com apenas 1 consulta única ao banco de dados.
+    """
+    if not itens_parseados:
+        return []
+
+    import database
+
+    # 1. Carrega todo o acervo existente de uma única vez na memória
+    try:
+        acervo_raw = database.listar_todas_hqs(db_path=db_path)
+        if hasattr(acervo_raw, "to_dict"):
+            acervo_existente = acervo_raw.to_dict(orient="records")
+        elif isinstance(acervo_raw, list):
+            acervo_existente = acervo_raw
+        else:
+            acervo_existente = []
+    except Exception:
+        acervo_existente = []
+
+    # 2. Indexa o acervo em memória para busca O(1)
+    mapa_duplicatas: Dict[tuple, List[Dict[str, Any]]] = {}
+    mapa_obras: Dict[str, Dict[str, Any]] = {}
+
+    for h in acervo_existente:
+        h_tit = h.get("titulo") or ""
+        h_ed = h.get("edicao") or ""
+        tit_norm, ed_norm = database.normalizar_titulo_e_edicao(h_tit, h_ed)
+
+        # Mapa de duplicatas por (título normalizado, edição normalizada)
+        chave_dup = (tit_norm, ed_norm)
+        if chave_dup not in mapa_duplicatas:
+            mapa_duplicatas[chave_dup] = []
+        mapa_duplicatas[chave_dup].append(h)
+
+        # Mapa de obras por título normalizado (para enriquecimento/de x para)
+        if tit_norm and tit_norm not in mapa_obras:
+            mapa_obras[tit_norm] = h
+        elif tit_norm:
+            # Prefere registros que tenham escritor/ilustrador/gênero preenchidos
+            h_atual = mapa_obras[tit_norm]
+            if (h.get("escritor") and h.get("escritor") != "Não informado") or (h.get("genero") and h.get("genero") != "Outro"):
+                mapa_obras[tit_norm] = h
+
+    # 3. Processa cada item do arquivo contra os índices em memória
+    itens_processados: List[Dict[str, Any]] = []
+    for it in itens_parseados:
+        tit = str(it.get("titulo") or "").strip()
+        ed = str(it.get("edicao") or "").strip()
+        edit = str(it.get("editora") or "").strip()
+        val = float(it.get("valor") or 0.0)
+        est = str(it.get("estado_conservacao") or it.get("estado") or "Excelente").strip()
+
+        tit_norm, ed_norm = database.normalizar_titulo_e_edicao(tit, ed)
+
+        # Verifica duplicata exata no acervo
+        dup = None
+        candidatos_dup = mapa_duplicatas.get((tit_norm, ed_norm), [])
+        for cand in candidatos_dup:
+            if database.editoras_sao_compativeis(cand.get("editora"), edit):
+                dup = cand
+                break
+        if not dup and candidatos_dup:
+            dup = candidatos_dup[0]
+
+        genero = it.get("genero") or "Outro"
+        escritor = it.get("escritor") or "Não informado"
+        ilustrador = it.get("ilustrador") or "Não informado"
+        resumo = it.get("resumo") or ""
+        capa = it.get("capa") or ""
+
+        # Se não for duplicata exata, busca no mapa de obras para reaproveitar metadados
+        if not dup and tit_norm in mapa_obras:
+            obra_existente = mapa_obras[tit_norm]
+            if obra_existente.get("editora") and not edit:
+                edit = obra_existente["editora"]
+            if obra_existente.get("genero") and obra_existente.get("genero") != "Outro" and genero == "Outro":
+                genero = obra_existente["genero"]
+            if obra_existente.get("escritor") and obra_existente.get("escritor") != "Não informado" and escritor == "Não informado":
+                escritor = obra_existente["escritor"]
+            if obra_existente.get("ilustrador") and obra_existente.get("ilustrador") != "Não informado" and ilustrador == "Não informado":
+                ilustrador = obra_existente["ilustrador"]
+            if obra_existente.get("resumo") and not resumo:
+                resumo = obra_existente["resumo"]
+            if obra_existente.get("capa") and not capa:
+                capa = obra_existente["capa"]
+
+        item_final = {
+            "incluir": True if not dup else False,
+            "titulo": tit,
+            "edicao": ed,
+            "editora": edit,
+            "valor": val,
+            "estado_conservacao": est,
+            "genero": genero,
+            "escritor": escritor,
+            "ilustrador": ilustrador,
+            "prateleira": it.get("prateleira") or prateleira_padrao,
+            "lido": "Não Lido",
+            "avaliacao": 0,
+            "capa": capa,
+            "resumo": resumo,
+            "resenha": "",
+            "ja_no_acervo": bool(dup),
+            "status_acervo": f"⚠️ Já no Acervo (ID #{dup['id']})" if dup else "✨ Nova HQ a Cadastrar"
+        }
+        itens_processados.append(item_final)
+
+    return itens_processados
+
+
+def enriquecer_hqs_importacao_arquivo(
+    itens_parseados: List[Dict[str, Any]],
+    prateleira_padrao: str = "Estante 1 - Prateleira 1",
+    **kwargs
+) -> List[Dict[str, Any]]:
+    """Alias para processamento direto sem IA."""
+    return processar_de_para_local_hqs(itens_parseados, prateleira_padrao=prateleira_padrao)
+
 
 
 

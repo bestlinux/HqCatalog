@@ -64,6 +64,8 @@ class ItemHqJEV(BaseModel):
     prateleira: str = Field(default="Estante 1 - Prateleira 1", description="Localização física")
     lido: str = Field(default=StatusLeituraEnum.NAO_LIDO.value, description="Status de leitura")
     avaliacao: int = Field(default=0, ge=0, le=5, description="Avaliação de 0 a 5 estrelas")
+    valor: float = Field(default=0.0, ge=0.0, description="Valor da HQ em Reais (R$)")
+    estado_conservacao: str = Field(default="Excelente", description="Estado de conservação da HQ")
     capa: str = Field(default="", description="URL ou base64 da capa")
     resumo: str = Field(default="", description="Sinopse ou resumo")
     resenha: str = Field(default="", description="Resenha pessoal do usuário")
@@ -80,6 +82,31 @@ class ItemHqJEV(BaseModel):
     def sanitizar_edicao(cls, v: Any) -> str:
         s = str(v or "").strip().strip("\"'“”")
         return s
+
+    @field_validator("valor", mode="before")
+    @classmethod
+    def sanitizar_valor(cls, v: Any) -> float:
+        if v is None:
+            return 0.0
+        if isinstance(v, (int, float)):
+            return max(0.0, float(v))
+        s = str(v).replace("R$", "").replace("r$", "").replace(" ", "").strip()
+        if not s:
+            return 0.0
+        if "," in s and "." in s:
+            s = s.replace(".", "").replace(",", ".")
+        elif "," in s:
+            s = s.replace(",", ".")
+        try:
+            return max(0.0, float(s))
+        except (ValueError, TypeError):
+            return 0.0
+
+    @field_validator("estado_conservacao", mode="before")
+    @classmethod
+    def sanitizar_estado(cls, v: Any) -> str:
+        s = str(v or "").strip().strip("\"'“”")
+        return s or "Excelente"
 
     @field_validator("genero", mode="before")
     @classmethod

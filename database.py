@@ -125,6 +125,8 @@ def init_db(db_path: str = DB_DEFAULT_PATH, force: bool = False) -> None:
         prateleira TEXT NOT NULL,
         lido TEXT DEFAULT 'Não Lido',
         avaliacao INTEGER DEFAULT 0,
+        valor REAL DEFAULT 0.0,
+        estado_conservacao TEXT DEFAULT 'Excelente',
         capa TEXT DEFAULT '',
         resenha TEXT DEFAULT '',
         resumo TEXT DEFAULT '',
@@ -175,6 +177,14 @@ def init_db(db_path: str = DB_DEFAULT_PATH, force: bool = False) -> None:
                 executar_turso_query(seed_prateleiras_sql)
             except Exception:
                 pass
+            try:
+                executar_turso_query("ALTER TABLE hqs ADD COLUMN valor REAL DEFAULT 0.0")
+            except Exception:
+                pass
+            try:
+                executar_turso_query("ALTER TABLE hqs ADD COLUMN estado_conservacao TEXT DEFAULT 'Excelente'")
+            except Exception:
+                pass
             _INITIALIZED_DBS.add("__turso__")
         except Exception as e:
             print(f"Aviso ao inicializar Turso: {e}")
@@ -203,6 +213,10 @@ def init_db(db_path: str = DB_DEFAULT_PATH, force: bool = False) -> None:
                 cursor.execute("ALTER TABLE hqs ADD COLUMN ilustrador TEXT DEFAULT 'Não informado'")
             if "avaliacao" not in columns:
                 cursor.execute("ALTER TABLE hqs ADD COLUMN avaliacao INTEGER DEFAULT 0")
+            if "valor" not in columns:
+                cursor.execute("ALTER TABLE hqs ADD COLUMN valor REAL DEFAULT 0.0")
+            if "estado_conservacao" not in columns:
+                cursor.execute("ALTER TABLE hqs ADD COLUMN estado_conservacao TEXT DEFAULT 'Excelente'")
             if "capa" not in columns:
                 cursor.execute("ALTER TABLE hqs ADD COLUMN capa TEXT DEFAULT ''")
                 if "capa_url" in columns:
@@ -527,7 +541,7 @@ def buscar_hqs_por_titulo_ou_edicao(
     # 1. Tentativa de correspondência exata de título (+ edição se fornecida)
     if ed_clean:
         sql_exata = """
-        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em
         FROM hqs
         WHERE LOWER(TRIM(titulo)) = LOWER(?)
           AND LOWER(TRIM(COALESCE(edicao, ''))) = LOWER(?)
@@ -536,7 +550,7 @@ def buscar_hqs_por_titulo_ou_edicao(
         params_exata = [tit_clean, ed_clean]
     else:
         sql_exata = """
-        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em
         FROM hqs
         WHERE LOWER(TRIM(titulo)) = LOWER(?)
         ORDER BY id DESC
@@ -568,7 +582,7 @@ def buscar_hqs_por_titulo_ou_edicao(
     # 2. Se especificou edição mas não bateu texto exato, busca título exato e filtra por edição normalizada
     if ed_clean and ed_norm:
         sql_tit_so = """
-        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em
         FROM hqs
         WHERE LOWER(TRIM(titulo)) = LOWER(?)
         ORDER BY id DESC
@@ -600,7 +614,7 @@ def buscar_hqs_por_titulo_ou_edicao(
     termo_like = f"%{tit_clean}%"
     if ed_clean:
         sql_like = """
-        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em
         FROM hqs
         WHERE LOWER(titulo) LIKE LOWER(?)
           AND LOWER(COALESCE(edicao, '')) LIKE LOWER(?)
@@ -609,7 +623,7 @@ def buscar_hqs_por_titulo_ou_edicao(
         params_like = [termo_like, f"%{ed_clean}%"]
     else:
         sql_like = """
-        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+        SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em
         FROM hqs
         WHERE LOWER(titulo) LIKE LOWER(?)
         ORDER BY id DESC
@@ -640,12 +654,12 @@ def salvar_hqs(
     lido_padrao: str = "Não Lido",
     ignorar_duplicadas: bool = True,
     retornar_detalhes: bool = False,
+    progresso_callback: Optional[Any] = None,
     **kwargs
 ) -> Any:
     """
-    Insere uma lista de quadrinhos identificados no banco de dados.
-    Por padrão, ignora edições duplicadas (mesmo Título, Edição/Número equivalente e Editora).
-    Aceita 'hqs' como alias de 'itens' e 'prateleira_padrao' como alias de 'prateleira'.
+    Insere uma lista de quadrinhos identificados no banco de dados com alta performance.
+    Utiliza indexação in-memory e inserções em lotes (batching) com suporte a callback de progresso.
     """
     if itens is None and "hqs" in kwargs:
         itens = kwargs.pop("hqs")
@@ -659,6 +673,26 @@ def salvar_hqs(
         if retornar_detalhes:
             return {"salvos": 0, "duplicados": 0, "itens_salvos": [], "itens_duplicados": []}
         return 0
+
+    # 1. Se configurado para ignorar duplicadas, carrega o acervo existente UMA ÚNICA VEZ em memória
+    mapa_duplicatas_db: Dict[tuple, List[Dict[str, Any]]] = {}
+    if ignorar_duplicadas:
+        try:
+            acervo_raw = listar_todas_hqs(db_path=db_path)
+            if hasattr(acervo_raw, "to_dict"):
+                acervo_existente = acervo_raw.to_dict(orient="records")
+            elif isinstance(acervo_raw, list):
+                acervo_existente = acervo_raw
+            else:
+                acervo_existente = []
+        except Exception:
+            acervo_existente = []
+
+        for h in acervo_existente:
+            k = normalizar_titulo_e_edicao(h.get("titulo"), h.get("edicao"))
+            if k not in mapa_duplicatas_db:
+                mapa_duplicatas_db[k] = []
+            mapa_duplicatas_db[k].append(h)
 
     registros_para_inserir = []
     itens_salvos = []
@@ -681,6 +715,21 @@ def salvar_hqs(
         except (ValueError, TypeError):
             avaliacao_raw = 0
         avaliacao_val = max(0, min(5, avaliacao_raw))
+        try:
+            val_in = item.get("valor", 0.0)
+            if isinstance(val_in, (int, float)):
+                valor_raw = float(val_in)
+            else:
+                s_val = str(val_in or "").replace("R$", "").replace("r$", "").replace(" ", "").strip()
+                if "," in s_val and "." in s_val:
+                    s_val = s_val.replace(".", "").replace(",", ".")
+                elif "," in s_val:
+                    s_val = s_val.replace(",", ".")
+                valor_raw = float(s_val or 0.0)
+        except (ValueError, TypeError):
+            valor_raw = 0.0
+        valor_val = max(0.0, valor_raw)
+        estado_val = (item.get("estado_conservacao") or item.get("estado") or "Excelente").strip()
         capa = (item.get("capa") or item.get("capa_url") or "").strip()
         resenha = (item.get("resenha") or "").strip()
         resumo = (item.get("resumo") or "").strip()
@@ -688,7 +737,7 @@ def salvar_hqs(
         tit_norm, ed_norm = normalizar_titulo_e_edicao(titulo, edicao)
 
         if ignorar_duplicadas:
-            # 1. Verifica duplicidade no mesmo lote da foto
+            # 1. Verifica duplicidade no mesmo lote
             item_duplicado_no_lote = False
             for prev_item in itens_salvos:
                 prev_tit_norm, prev_ed_norm = normalizar_titulo_e_edicao(prev_item.get("titulo"), prev_item.get("edicao"))
@@ -697,7 +746,7 @@ def salvar_hqs(
                     editoras_sao_compativeis(prev_item.get("editora"), editora)):
                     itens_duplicados.append({
                         **item,
-                        "motivo_duplicata": f"Duplicada na mesma foto: '{titulo}' ({edicao})"
+                        "motivo_duplicata": f"Duplicada no mesmo lote: '{titulo}' ({edicao})"
                     })
                     item_duplicado_no_lote = True
                     break
@@ -705,8 +754,16 @@ def salvar_hqs(
             if item_duplicado_no_lote:
                 continue
 
-            # 2. Verifica duplicidade no banco de dados
-            hq_existente = verificar_hq_duplicada(titulo, edicao, editora, db_path)
+            # 2. Verifica duplicidade no acervo via busca instantânea em memória
+            cands_db = mapa_duplicatas_db.get((tit_norm, ed_norm), [])
+            hq_existente = None
+            for cand in cands_db:
+                if editoras_sao_compativeis(cand.get("editora"), editora):
+                    hq_existente = cand
+                    break
+            if not hq_existente and cands_db:
+                hq_existente = cands_db[0]
+
             if hq_existente:
                 ed_cadastrada = hq_existente.get("edicao") or "Sem Edição"
                 edit_cadastrada = hq_existente.get("editora") or "Desconhecida"
@@ -730,6 +787,8 @@ def salvar_hqs(
                 "prateleira": prateleira_val,
                 "lido": lido_val,
                 "avaliacao": avaliacao_val,
+                "valor": valor_val,
+                "estado_conservacao": estado_val,
                 "capa": capa,
                 "resenha": resenha,
                 "resumo": resumo
@@ -748,6 +807,8 @@ def salvar_hqs(
             item_preparado["prateleira"],
             item_preparado["lido"],
             item_preparado["avaliacao"],
+            item_preparado["valor"],
+            item_preparado["estado_conservacao"],
             item_preparado["capa"],
             item_preparado["resenha"],
             item_preparado["resumo"]
@@ -766,27 +827,36 @@ def salvar_hqs(
                 cadastrar_prateleira(p_cad, db_path)
             except Exception:
                 pass
+
+        total_reg = len(registros_para_inserir)
         if is_using_turso():
-            for reg in registros_para_inserir:
-                executar_turso_query(
-                    """
-                    INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, capa, resenha, resumo)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    list(reg)
-                )
+            # Inserção em lotes de 50 registros no Turso Cloud para máxima velocidade
+            tamanho_lote = 50
+            for i in range(0, total_reg, tamanho_lote):
+                lote = registros_para_inserir[i:i + tamanho_lote]
+                placeholders = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(lote))
+                sql_batch = f"""
+                INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, capa, resenha, resumo)
+                VALUES {placeholders}
+                """
+                params_batch = [val for reg in lote for val in reg]
+                executar_turso_query(sql_batch, params_batch)
+                if progresso_callback:
+                    progresso_callback(min(i + len(lote), total_reg), total_reg)
         else:
             conn = get_sqlite_connection(db_path)
             try:
                 cursor = conn.cursor()
                 cursor.executemany(
                     """
-                    INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, capa, resenha, resumo)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, capa, resenha, resumo)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     registros_para_inserir,
                 )
                 conn.commit()
+                if progresso_callback:
+                    progresso_callback(total_reg, total_reg)
             finally:
                 conn.close()
 
@@ -813,7 +883,7 @@ def listar_todas_hqs(
     """
     Consulta o banco e retorna todas as HQs em formato pandas DataFrame ou lista de dicts.
     """
-    query = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em FROM hqs WHERE 1=1"
+    query = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em FROM hqs WHERE 1=1"
     params = []
 
     if prateleira_filtro and prateleira_filtro != "Todas":
@@ -1243,7 +1313,7 @@ def atualizar_prateleira_em_massa(hq_ids: List[int], nova_prateleira: str, db_pa
 
 def obter_hq_por_id(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict[str, Any]]:
     """Busca os dados de uma HQ específica pelo seu ID."""
-    sql = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em FROM hqs WHERE id = ?"
+    sql = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em FROM hqs WHERE id = ?"
     if is_using_turso():
         try:
             res = executar_turso_query(sql, [hq_id])
@@ -1305,7 +1375,7 @@ def sortear_edicao_do_dia(
             if ids_excluir:
                 placeholders = ",".join(["?"] * len(ids_excluir))
                 sql = f"""
-                SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+                SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em
                 FROM hqs
                 WHERE id NOT IN ({placeholders})
                 ORDER BY RANDOM()
@@ -1314,7 +1384,7 @@ def sortear_edicao_do_dia(
                 res = executar_turso_query(sql, ids_excluir)
             else:
                 sql = """
-                SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+                SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em
                 FROM hqs
                 ORDER BY RANDOM()
                 LIMIT 1
@@ -1323,7 +1393,7 @@ def sortear_edicao_do_dia(
 
             if not res.rows:
                 res = executar_turso_query(
-                    "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em FROM hqs ORDER BY RANDOM() LIMIT 1"
+                    "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em FROM hqs ORDER BY RANDOM() LIMIT 1"
                 )
 
             if not res.rows:
@@ -1374,7 +1444,7 @@ def sortear_edicao_do_dia(
             if ids_excluir:
                 placeholders = ",".join(["?"] * len(ids_excluir))
                 sql = f"""
-                SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+                SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em
                 FROM hqs
                 WHERE id NOT IN ({placeholders})
                 ORDER BY RANDOM()
@@ -1383,7 +1453,7 @@ def sortear_edicao_do_dia(
                 cursor.execute(sql, tuple(ids_excluir))
             else:
                 sql = """
-                SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em
+                SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em
                 FROM hqs
                 ORDER BY RANDOM()
                 LIMIT 1
@@ -1393,7 +1463,7 @@ def sortear_edicao_do_dia(
             row = cursor.fetchone()
             if not row:
                 cursor.execute(
-                    "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em FROM hqs ORDER BY RANDOM() LIMIT 1"
+                    "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em FROM hqs ORDER BY RANDOM() LIMIT 1"
                 )
                 row = cursor.fetchone()
 
@@ -1479,6 +1549,8 @@ def atualizar_hq(
     ilustrador: str = "Não informado",
     lido: str = "Não Lido",
     avaliacao: int = 0,
+    valor: float = 0.0,
+    estado_conservacao: str = "Excelente",
     capa: str = "",
     resenha: str = "",
     resumo: str = "",
@@ -1490,9 +1562,22 @@ def atualizar_hq(
     except (ValueError, TypeError):
         val_avaliacao = 0
 
+    try:
+        if isinstance(valor, (int, float)):
+            val_valor = max(0.0, float(valor))
+        else:
+            s_val = str(valor or "").replace("R$", "").replace("r$", "").replace(" ", "").strip()
+            if "," in s_val and "." in s_val:
+                s_val = s_val.replace(".", "").replace(",", ".")
+            elif "," in s_val:
+                s_val = s_val.replace(",", ".")
+            val_valor = max(0.0, float(s_val or 0.0))
+    except (ValueError, TypeError):
+        val_valor = 0.0
+
     sql = """
     UPDATE hqs
-    SET titulo = ?, edicao = ?, editora = ?, genero = ?, escritor = ?, ilustrador = ?, prateleira = ?, lido = ?, avaliacao = ?, capa = ?, resenha = ?, resumo = ?
+    SET titulo = ?, edicao = ?, editora = ?, genero = ?, escritor = ?, ilustrador = ?, prateleira = ?, lido = ?, avaliacao = ?, valor = ?, estado_conservacao = ?, capa = ?, resenha = ?, resumo = ?
     WHERE id = ?
     """
     params = [
@@ -1505,6 +1590,8 @@ def atualizar_hq(
         prateleira.strip(),
         lido.strip(),
         val_avaliacao,
+        val_valor,
+        estado_conservacao.strip(),
         capa.strip(),
         resenha.strip(),
         resumo.strip(),
@@ -1543,6 +1630,39 @@ def definir_capa(hq_id: int, capa: str, db_path: str = DB_DEFAULT_PATH) -> bool:
         try:
             cursor = conn.cursor()
             cursor.execute(sql, (url_clean, hq_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+
+def definir_valor(hq_id: int, valor: float, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """Atualiza diretamente o valor (preço) de uma HQ."""
+    try:
+        if isinstance(valor, (int, float)):
+            val_num = max(0.0, float(valor))
+        else:
+            s_val = str(valor or "").replace("R$", "").replace("r$", "").replace(" ", "").strip()
+            if "," in s_val and "." in s_val:
+                s_val = s_val.replace(".", "").replace(",", ".")
+            elif "," in s_val:
+                s_val = s_val.replace(",", ".")
+            val_num = max(0.0, float(s_val or 0.0))
+    except (ValueError, TypeError):
+        val_num = 0.0
+
+    sql = "UPDATE hqs SET valor = ? WHERE id = ?"
+    if is_using_turso():
+        try:
+            res = executar_turso_query(sql, [val_num, hq_id])
+            return res.rows_affected > 0
+        except Exception:
+            return False
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (val_num, hq_id))
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -1653,7 +1773,7 @@ def definir_status_leitura(hq_id: int, status: str, db_path: str = DB_DEFAULT_PA
 
 def obter_hqs_em_leitura(db_path: str = DB_DEFAULT_PATH) -> List[Dict[str, Any]]:
     """Retorna a lista de todas as HQs com status 'Lendo' ordenadas pelas mais recentes."""
-    sql = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, resumo, resenha, criado_em FROM hqs WHERE lido = 'Lendo' ORDER BY id DESC"
+    sql = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em FROM hqs WHERE lido = 'Lendo' ORDER BY id DESC"
     if is_using_turso():
         try:
             res = executar_turso_query(sql)
@@ -1671,9 +1791,11 @@ def obter_hqs_em_leitura(db_path: str = DB_DEFAULT_PATH) -> List[Dict[str, Any]]
                     "prateleira": row[8] or "",
                     "lido": row[9] or "Lendo",
                     "avaliacao": row[10] or 0,
-                    "resumo": row[11] or "",
-                    "resenha": row[12] or "",
-                    "criado_em": row[13] or ""
+                    "valor": row[11] or 0.0,
+                    "estado_conservacao": row[12] or "Excelente",
+                    "resumo": row[13] or "",
+                    "resenha": row[14] or "",
+                    "criado_em": row[15] or ""
                 })
             return hqs
         except Exception as ex:
@@ -1919,6 +2041,207 @@ def atualizar_item_lista_desejos(
             return cursor.rowcount > 0
         finally:
             conn.close()
+
+
+# -------------------------------------------------------------
+# AUDITORIA & LIMPEZA DE DUPLICATAS NO ACERVO
+# -------------------------------------------------------------
+def excluir_hq_por_id(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """Exclui permanentemente uma HQ do banco de dados e remove do histórico de destaques."""
+    sql_del = "DELETE FROM hqs WHERE id = ?"
+    sql_hist = "DELETE FROM historico_destaques WHERE hq_id = ?"
+    if is_using_turso():
+        try:
+            executar_turso_query(sql_hist, [hq_id])
+            res = executar_turso_query(sql_del, [hq_id])
+            return res.rows_affected > 0
+        except Exception as ex:
+            print(f"Erro Turso excluir_hq_por_id: {ex}")
+            return False
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql_hist, (hq_id,))
+            cursor.execute(sql_del, (hq_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception as ex:
+            print(f"Erro SQLite excluir_hq_por_id: {ex}")
+            return False
+        finally:
+            conn.close()
+
+
+def mesclar_hqs(hq_id_manter: int, hq_id_remover: int, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """
+    Mescla duas HQs duplicadas:
+    Preserva no registro que será mantido as melhores informações (capa, avaliação, resenha, valor, status de leitura)
+    e exclui o registro duplicado.
+    """
+    hq_manter = obter_hq_por_id(hq_id_manter, db_path=db_path)
+    hq_remover = obter_hq_por_id(hq_id_remover, db_path=db_path)
+
+    if not hq_manter or not hq_remover:
+        return False
+
+    # Combina as melhores informações
+    capa_final = hq_manter.get("capa") or hq_remover.get("capa") or ""
+    resumo_final = hq_manter.get("resumo") or hq_remover.get("resumo") or ""
+    resenha_final = hq_manter.get("resenha") or hq_remover.get("resenha") or ""
+
+    # Status de leitura: se um estiver "Lido", preserva "Lido"
+    status_manter = hq_manter.get("lido") or "Não Lido"
+    status_remover = hq_remover.get("lido") or "Não Lido"
+    if status_manter == "Lido" or status_remover == "Lido":
+        status_final = "Lido"
+    elif status_manter == "Lendo" or status_remover == "Lendo":
+        status_final = "Lendo"
+    else:
+        status_final = "Não Lido"
+
+    # Avaliação: maior nota
+    aval_manter = int(hq_manter.get("avaliacao") or 0)
+    aval_remover = int(hq_remover.get("avaliacao") or 0)
+    aval_final = max(aval_manter, aval_remover)
+
+    # Valor: maior valor
+    val_manter = float(hq_manter.get("valor") or 0.0)
+    val_remover = float(hq_remover.get("valor") or 0.0)
+    val_final = max(val_manter, val_remover)
+
+    # Gênero, Escritor, Ilustrador
+    genero_final = hq_manter.get("genero") if (hq_manter.get("genero") and hq_manter.get("genero") != "Outro") else hq_remover.get("genero") or "Outro"
+    escritor_final = hq_manter.get("escritor") if (hq_manter.get("escritor") and hq_manter.get("escritor") != "Não informado") else hq_remover.get("escritor") or "Não informado"
+    ilustrador_final = hq_manter.get("ilustrador") if (hq_manter.get("ilustrador") and hq_manter.get("ilustrador") != "Não informado") else hq_remover.get("ilustrador") or "Não informado"
+
+    # Atualiza o registro a ser mantido
+    atualizar_hq(
+        hq_id=hq_id_manter,
+        titulo=hq_manter.get("titulo", ""),
+        edicao=hq_manter.get("edicao", ""),
+        editora=hq_manter.get("editora", ""),
+        prateleira=hq_manter.get("prateleira", "Não especificada"),
+        genero=genero_final,
+        escritor=escritor_final,
+        ilustrador=ilustrador_final,
+        lido=status_final,
+        avaliacao=aval_final,
+        valor=val_final,
+        estado_conservacao=hq_manter.get("estado_conservacao", "Excelente"),
+        capa=capa_final,
+        resenha=resenha_final,
+        resumo=resumo_final,
+        db_path=db_path
+    )
+
+    # Exclui o duplicado
+    return excluir_hq_por_id(hq_id_remover, db_path=db_path)
+
+
+def identificar_duplicatas_no_acervo(db_path: str = DB_DEFAULT_PATH) -> List[Dict[str, Any]]:
+    """
+    Varre todo o acervo de quadrinhos em busca de possíveis duplicidades com alta performance O(N).
+    Retorna uma lista de grupos de duplicatas, cada um contendo as HQs repetidas e o motivo.
+    """
+    acervo_raw = listar_todas_hqs(db_path=db_path)
+    if hasattr(acervo_raw, "to_dict"):
+        hqs = acervo_raw.to_dict(orient="records")
+    elif isinstance(acervo_raw, list):
+        hqs = acervo_raw
+    else:
+        hqs = []
+
+    if not hqs or len(hqs) < 2:
+        return []
+
+    grupos_duplicatas: Dict[str, Dict[str, Any]] = {}
+    hqs_processadas_ids = set()
+
+    # 1. Agrupamento por Título e Edição Normalizados (Duplicatas Exatas / Quase Exatas) - O(N)
+    mapa_por_chave: Dict[tuple, List[Dict[str, Any]]] = {}
+    for h in hqs:
+        tit_norm, ed_norm = normalizar_titulo_e_edicao(h.get("titulo"), h.get("edicao"))
+        chave = (tit_norm, ed_norm)
+        if chave not in mapa_por_chave:
+            mapa_por_chave[chave] = []
+        mapa_por_chave[chave].append(h)
+
+    for (tit_n, ed_n), lista in mapa_por_chave.items():
+        if len(lista) > 1:
+            id_grupo = f"exata_{tit_n}_{ed_n}"
+            tit_exemplo = lista[0].get("titulo") or tit_n
+            ed_exemplo = lista[0].get("edicao") or ed_n
+            grupos_duplicatas[id_grupo] = {
+                "grupo_id": id_grupo,
+                "titulo_base": tit_exemplo,
+                "edicao_base": ed_exemplo,
+                "tipo": "Exata",
+                "motivo": f"Mesmo Título ('{tit_exemplo}') e Edição ('{ed_exemplo}') cadastrados {len(lista)} vezes.",
+                "hqs": lista
+            }
+            for h in lista:
+                hqs_processadas_ids.add(h["id"])
+
+    # 2. Varredura por Baldes Indexados (Edição + Primeiro Token/Prefixo) para Similaridade JEV rápida
+    hqs_restantes = [h for h in hqs if h["id"] not in hqs_processadas_ids]
+    if hqs_restantes:
+        baldes_edicao: Dict[str, List[Dict[str, Any]]] = {}
+        for h in hqs_restantes:
+            _, ed_norm = normalizar_titulo_e_edicao(h.get("titulo"), h.get("edicao"))
+            if ed_norm not in baldes_edicao:
+                baldes_edicao[ed_norm] = []
+            baldes_edicao[ed_norm].append(h)
+
+        for ed_k, lista_ed in baldes_edicao.items():
+            if len(lista_ed) < 2:
+                continue
+
+            # Compara apenas dentro do mesmo volume/edição com triagem rápida de similaridade
+            n_ed = len(lista_ed)
+            for i in range(n_ed):
+                h1 = lista_ed[i]
+                if h1["id"] in hqs_processadas_ids:
+                    continue
+
+                t1_norm, _ = normalizar_titulo_e_edicao(h1.get("titulo"), h1.get("edicao"))
+                t1_primeira_palavra = t1_norm.split()[0] if t1_norm.split() else ""
+                similares = [h1]
+
+                for j in range(i + 1, n_ed):
+                    h2 = lista_ed[j]
+                    if h2["id"] in hqs_processadas_ids:
+                        continue
+
+                    t2_norm, _ = normalizar_titulo_e_edicao(h2.get("titulo"), h2.get("edicao"))
+                    t2_primeira_palavra = t2_norm.split()[0] if t2_norm.split() else ""
+
+                    # Triagem rápida de blocking antes de rodar JEV
+                    if t1_primeira_palavra == t2_primeira_palavra or (len(t1_norm) >= 4 and len(t2_norm) >= 4 and t1_norm[:3] == t2_norm[:3]):
+                        decisao = jev_engine.decidir_duplicata_probabilistica(
+                            {"titulo": h2.get("titulo", ""), "edicao": h2.get("edicao", ""), "editora": h2.get("editora", "")},
+                            [h1],
+                            threshold_auto=0.85
+                        )
+                        if decisao.is_duplicate:
+                            similares.append(h2)
+
+                if len(similares) > 1:
+                    id_grupo = f"similar_{h1['id']}"
+                    grupos_duplicatas[id_grupo] = {
+                        "grupo_id": id_grupo,
+                        "titulo_base": h1.get("titulo", ""),
+                        "edicao_base": h1.get("edicao", ""),
+                        "tipo": "Similar",
+                        "motivo": f"Títulos com grafia muito semelhante na mesma edição detectados pelo motor JEV.",
+                        "hqs": similares
+                    }
+                    for h in similares:
+                        hqs_processadas_ids.add(h["id"])
+
+    resultado = list(grupos_duplicatas.values())
+    resultado.sort(key=lambda g: (0 if g["tipo"] == "Exata" else 1, -len(g["hqs"])))
+    return resultado
 
 
 

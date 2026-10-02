@@ -169,6 +169,15 @@ def dialog_editar_hq(id_padrao: Optional[int] = None):
                 placeholder="Preencha somente se desejar criar uma nova prateleira..."
             )
 
+            col_val_edit, col_est_edit = st.columns(2)
+            with col_val_edit:
+                novo_valor = st.number_input("Valor (R$):", min_value=0.0, value=float(hq_atual.get("valor") or 0.0), step=1.0, format="%.2f")
+            with col_est_edit:
+                opcoes_estados = ["Excelente", "Muito Bom", "Bom", "Regular", "Ruim", "Novo / Lacrado"]
+                est_atual_hq = hq_atual.get("estado_conservacao") or "Excelente"
+                idx_est_hq = opcoes_estados.index(est_atual_hq) if est_atual_hq in opcoes_estados else 0
+                novo_estado = st.selectbox("Estado de Conservação:", options=opcoes_estados, index=idx_est_hq)
+
             opcoes_status = ["Não Lido", "Lendo", "Lido"]
             status_atual = hq_atual.get("lido") or "Não Lido"
             status_atual_index = opcoes_status.index(status_atual) if status_atual in opcoes_status else 0
@@ -204,6 +213,8 @@ def dialog_editar_hq(id_padrao: Optional[int] = None):
                         ilustrador=novo_ilustrador,
                         lido=novo_status_leitura,
                         avaliacao=novo_avaliacao,
+                        valor=novo_valor,
+                        estado_conservacao=novo_estado,
                         capa=hq_atual.get("capa") or "",
                         resenha=nova_resenha,
                         resumo=novo_resumo
@@ -337,6 +348,105 @@ def dialog_buscar_capa(id_padrao: Optional[int] = None):
                         st.rerun()
 
     if st.button("❌ Fechar / Cancelar", key=f"dlg_btn_close_busca_{hq_alvo['id']}", use_container_width=True):
+        st.rerun()
+
+
+@st.dialog("💰 Buscar Preço da HQ Online", width="large")
+def dialog_buscar_preco(id_padrao: Optional[int] = None):
+    val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
+    id_para_preco = st.number_input("Informe o ID da HQ:", min_value=1, step=1, value=val_id, key=f"dlg_input_buscar_preco_id_{id_padrao or 'padrao'}")
+    hq_alvo = database.obter_hq_por_id(int(id_para_preco))
+    if not hq_alvo:
+        st.warning(f"Quadrinho com ID #{id_para_preco} não encontrado.")
+        if st.button("❌ Fechar", key="btn_close_busca_preco_empty", use_container_width=True):
+            st.rerun()
+        return
+
+    st.markdown(f"#### 📖 {hq_alvo['titulo']}")
+    detalhes_str = []
+    if hq_alvo.get("edicao"):
+        detalhes_str.append(f"**Edição:** {hq_alvo['edicao']}")
+    if hq_alvo.get("editora"):
+        detalhes_str.append(f"**Editora:** {hq_alvo['editora']}")
+    val_atual = float(hq_alvo.get("valor") or 0.0)
+    if val_atual > 0:
+        detalhes_str.append(f"**Preço Atual Cadastrado:** `R$ {val_atual:.2f}`")
+    else:
+        detalhes_str.append(f"**Preço Atual Cadastrado:** `Não informado`")
+
+    if detalhes_str:
+        st.caption(" • ".join(detalhes_str))
+
+    termo_default = f"{hq_alvo['titulo']} {hq_alvo.get('edicao') or ''} {hq_alvo.get('editora') or ''}".strip()
+
+    col_t1, col_t2 = st.columns([3.5, 1.2])
+    with col_t1:
+        termo_busca = st.text_input("Termo de busca na web:", value=termo_default, key=f"dlg_termo_preco_{hq_alvo['id']}")
+    with col_t2:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        btn_pesquisar = st.button("🔎 Pesquisar", key=f"dlg_btn_pesquisar_preco_{hq_alvo['id']}", use_container_width=True, type="primary")
+
+    session_res_key = f"precos_encontrados_{hq_alvo['id']}"
+
+    if btn_pesquisar or session_res_key not in st.session_state:
+        with st.spinner("🔍 Buscando cotações e preços online..."):
+            resultados = gemini_service.buscar_precos_online(
+                titulo=termo_busca,
+                edicao=hq_alvo.get("edicao") or "",
+                editora=hq_alvo.get("editora") or "",
+                api_key=st.session_state.get("gemini_api_key")
+            )
+            st.session_state[session_res_key] = resultados
+
+    precos = st.session_state.get(session_res_key, [])
+
+    if precos:
+        st.markdown(f"**Ofertas e Preços Encontrados ({len(precos)}):** *Clique em **Selecionar este Preço** para atualizar o valor desta HQ no catálogo.*")
+
+        for idx, item in enumerate(precos):
+            with st.container(border=True):
+                col_info, col_valor, col_btn = st.columns([3, 1.5, 1.8], gap="medium")
+                with col_info:
+                    st.markdown(f"**{item['titulo']}**")
+                    link_txt = f"[Abrir anúncio na loja ➔]({item['link']})" if item.get("link") else ""
+                    st.caption(f"🏬 Loja / Fonte: **{item.get('fonte', 'Online')}** {(' • ' + link_txt) if link_txt else ''}")
+                with col_valor:
+                    st.markdown(f"### 🏷️ `{item['preco_formatado']}`")
+                with col_btn:
+                    st.write("")
+                    if st.button(f"✅ Selecionar Preço", key=f"btn_sel_preco_{hq_alvo['id']}_{idx}", use_container_width=True, type="primary"):
+                        if database.definir_valor(int(hq_alvo["id"]), item["preco"]):
+                            st.success(f"🎉 Preço atualizado para **{item['preco_formatado']}** com sucesso!")
+                            if session_res_key in st.session_state:
+                                del st.session_state[session_res_key]
+                            st.rerun()
+                        else:
+                            st.error("Não foi possível salvar o valor no banco de dados.")
+    else:
+        st.info("ℹ️ Nenhum preço automático encontrado para este termo. Tente refinar o termo de busca ou insira o valor manualmente abaixo.")
+
+    st.markdown("---")
+    with st.expander("✍️ Inserir ou ajustar valor manualmente (R$)"):
+        col_m1, col_m2 = st.columns([2, 1.2])
+        with col_m1:
+            valor_manual = st.number_input(
+                "Valor da HQ (R$):",
+                min_value=0.0,
+                value=float(hq_alvo.get("valor") or 0.0),
+                step=0.5,
+                format="%.2f",
+                key=f"dlg_input_valor_manual_{hq_alvo['id']}"
+            )
+        with col_m2:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            if st.button("💾 Salvar Valor Manual", key=f"btn_salvar_valor_manual_{hq_alvo['id']}", type="primary", use_container_width=True):
+                if database.definir_valor(int(hq_alvo["id"]), valor_manual):
+                    st.success(f"🎉 Valor atualizado para **R$ {valor_manual:.2f}** com sucesso!")
+                    if session_res_key in st.session_state:
+                        del st.session_state[session_res_key]
+                    st.rerun()
+
+    if st.button("❌ Fechar / Cancelar", key=f"dlg_btn_close_busca_preco_{hq_alvo['id']}", use_container_width=True):
         st.rerun()
 
 
@@ -630,6 +740,8 @@ with st.sidebar:
 
     def navegar_para(nome_pagina: str):
         st.session_state["pagina_atual"] = nome_pagina
+        if nome_pagina == "auditoria_duplicatas":
+            st.session_state["cache_duplicatas"] = None
         if nome_pagina == "principal" and "pagina" in st.query_params:
             del st.query_params["pagina"]
         elif nome_pagina != "principal":
@@ -640,6 +752,8 @@ with st.sidebar:
     with c_nav1:
         if st.button("📚 Catálogo", use_container_width=True, type="primary" if pag_atual == "principal" else "secondary", key="nav_btn_cat"):
             navegar_para("principal")
+        if st.button("🔍 Duplicatas", use_container_width=True, type="primary" if pag_atual == "auditoria_duplicatas" else "secondary", help="Auditoria e Limpeza de Duplicatas no Acervo", key="nav_btn_dups"):
+            navegar_para("auditoria_duplicatas")
         if st.button("🧭 Ordem Leitura", use_container_width=True, type="primary" if pag_atual == "ordem_leitura" else "secondary", help="Guia de Ordem de Leitura e Cronologia de Sagas", key="nav_btn_ordem"):
             navegar_para("ordem_leitura")
         if st.button("🎙️ Storyteller", use_container_width=True, type="primary" if pag_atual == "storyteller" else "secondary", help="Aquecimento de Leitura e Narração por IA", key="nav_btn_story"):
@@ -649,6 +763,8 @@ with st.sidebar:
     with c_nav2:
         if st.button("📖 Em Leitura", use_container_width=True, type="primary" if pag_atual == "em_leitura" else "secondary", key="nav_btn_lendo"):
             navegar_para("em_leitura")
+        if st.button("📄 Importar Arquivo", use_container_width=True, type="primary" if pag_atual == "importacao_arquivo" else "secondary", help="Importação de HQs a partir de arquivo texto (.txt)", key="nav_btn_import_txt"):
+            navegar_para("importacao_arquivo")
         if st.button("🔍 Detetive DNA", use_container_width=True, type="primary" if pag_atual == "dna_colecao" else "secondary", help="Diagnóstico do DNA da Coleção e Gaps Faltantes", key="nav_btn_dna"):
             navegar_para("dna_colecao")
         if st.button("🧠 Quiz Acervo", use_container_width=True, type="primary" if pag_atual == "quiz_acervo" else "secondary", help="Trivia & Quiz do seu Próprio Acervo", key="nav_btn_quiz"):
@@ -2014,9 +2130,431 @@ def renderizar_pagina_importacao_lote():
         voltar_ao_catalogo()
 
 
+# -------------------------------------------------------------
+# PÁGINA DEDICADA: IMPORTAÇÃO DE ARQUIVO TEXTO (.TXT)
+# -------------------------------------------------------------
+def renderizar_pagina_importacao_arquivo():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("📄 Importação de Arquivo de HQs (.txt)")
+        st.markdown(
+            "Importe sua lista de quadrinhos a partir de um arquivo de texto. "
+            "A IA fará o **de x para** de títulos e editoras, recuperará os metadados (gêneros, autores, sinopses e capas) "
+            "e registrará os volumes no acervo com status **'Não Lido'** e o valor atribuído ao primeiro volume de cada série."
+        )
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_import_txt_top"):
+            voltar_ao_catalogo()
+
+    st.markdown("---")
+
+    # 1. Configuração de Destino e Opções
+    # 1. Configuração da Prateleira de Destino
+    with st.container(border=True):
+        st.subheader("📍 1. Configuração da Prateleira de Destino")
+        lista_prats = [p for p in database.obter_prateleiras() if p and p != "Estante 1 - Prateleira 1"]
+        opcoes_prat_imp = ["-- Selecione uma prateleira --"] + list(lista_prats) + ["➕ Outra / Digitar nova prateleira..."]
+        prat_imp_sel = st.selectbox("📍 Prateleira de destino para estas HQs:", options=opcoes_prat_imp, key="sel_prat_import_arquivo")
+        
+        prat_arquivo_final = "Não especificada"
+        if prat_imp_sel == "➕ Outra / Digitar nova prateleira...":
+            nova_p = st.text_input("✍️ Digite o nome da nova prateleira:", placeholder="Ex: Estante Principal - Prateleira 1", key="input_nova_prat_arquivo").strip()
+            if nova_p:
+                prat_arquivo_final = nova_p
+        elif prat_imp_sel != "-- Selecione uma prateleira --":
+            prat_arquivo_final = prat_imp_sel.strip()
+
+    # 2. Entrada do Arquivo ou Texto
+    st.markdown("### 📥 2. Envio do Arquivo ou Texto")
+    tab_up_txt, tab_colar_txt = st.tabs(["📁 Enviar Arquivo .txt", "✍️ Colar Texto Diretamente"])
+
+    conteudo_texto_importar = ""
+
+    with tab_up_txt:
+        arquivo_up = st.file_uploader(
+            "Selecione um arquivo de texto (.txt):",
+            type=["txt", "text", "tsv", "csv"],
+            key="uploader_arquivo_hqs"
+        )
+        if arquivo_up is not None:
+            try:
+                conteudo_texto_importar = arquivo_up.getvalue().decode("utf-8")
+            except UnicodeDecodeError:
+                conteudo_texto_importar = arquivo_up.getvalue().decode("latin-1", errors="ignore")
+
+    with tab_colar_txt:
+        texto_colado = st.text_area(
+            "Cole o conteúdo do arquivo texto abaixo:",
+            value="",
+            height=200,
+            placeholder="""1984 /Companhia das Letras Valor: R$ 84,90\tQuantidade: 1
+\tEstado: Excelente
+
+300 de Esparta, Os (2ª Edição) /Devir Valor: R$ 89,90\tQuantidade: 1
+\tEstado: Excelente
+
+52 /Panini Valor: R$ 90,80\tQuantidade: 13
+ nº 1\tEstado: Excelente \tStatus: Não li
+ nº 2\tEstado: Excelente
+ nº 3\tEstado: Excelente""",
+            key="area_texto_importar_arquivo"
+        )
+        if texto_colado.strip():
+            conteudo_texto_importar = texto_colado
+
+    # 3. Parser e "De x Para" Local Instantâneo (Sem IA)
+    if conteudo_texto_importar.strip():
+        import hashlib
+        hash_atual = hashlib.md5((conteudo_texto_importar + "___" + prat_arquivo_final).encode("utf-8", errors="ignore")).hexdigest()
+
+        if st.session_state.get("importacao_txt_hash") != hash_atual:
+            itens_brutos = gemini_service.parsear_arquivo_texto_hqs(conteudo_texto_importar)
+            if itens_brutos:
+                itens_processados = gemini_service.processar_de_para_local_hqs(
+                    itens_parseados=itens_brutos,
+                    prateleira_padrao=prat_arquivo_final
+                )
+                st.session_state["importacao_txt_itens"] = itens_processados
+                st.session_state["importacao_txt_hash"] = hash_atual
+            else:
+                st.session_state["importacao_txt_itens"] = []
+                st.session_state["importacao_txt_hash"] = hash_atual
+
+        itens_processados = st.session_state.get("importacao_txt_itens", [])
+        if itens_processados:
+
+            total_volumes = len(itens_processados)
+            obras_distintas = len(set((it["titulo"], it["editora"]) for it in itens_processados))
+            valor_total_lote = sum(float(it.get("valor") or 0.0) for it in itens_processados)
+            novas_cadastrar = sum(1 for it in itens_processados if not it.get("ja_no_acervo"))
+            dups_encontradas = sum(1 for it in itens_processados if it.get("ja_no_acervo"))
+
+            with st.container(border=True):
+                st.markdown(f"#### 🔍 3. Revisão e Aprovação das HQs ({total_volumes} volumes identificados)")
+                c_m1, c_m2, c_m3, c_m4 = st.columns(4)
+                with c_m1:
+                    st.metric("Total de Volumes", total_volumes)
+                with c_m2:
+                    st.metric("Obras Distintas", obras_distintas)
+                with c_m3:
+                    st.metric("Valor Total do Lote", f"R$ {valor_total_lote:.2f}")
+                with c_m4:
+                    st.metric("Novas a Cadastrar", novas_cadastrar, delta=f"{dups_encontradas} no acervo" if dups_encontradas > 0 else None)
+
+                st.info(
+                    "💡 **Revise e aprove antes de salvar:** Edições novas já estão marcadas para cadastro com status **'Não Lido'**. "
+                    "Para séries com múltiplos volumes, o valor é registrado somente no 1º volume. "
+                    "Você pode alterar qualquer campo (Título, Volume, Editora, Valor, Estado, Prateleira) diretamente na tabela abaixo.",
+                    icon="✏️"
+                )
+
+                df_rev = pd.DataFrame(itens_processados)
+                colunas_rev = ["incluir", "titulo", "edicao", "editora", "valor", "estado_conservacao", "prateleira", "status_acervo"]
+                for c in colunas_rev:
+                    if c not in df_rev.columns:
+                        df_rev[c] = ""
+
+                df_rev = df_rev[colunas_rev]
+
+                df_rev_editado = st.data_editor(
+                    df_rev,
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    column_config={
+                        "incluir": st.column_config.CheckboxColumn("Cadastrar?", help="Marque para cadastrar esta HQ no catálogo", default=True),
+                        "titulo": st.column_config.TextColumn("Título da HQ *", required=True, width="large"),
+                        "edicao": st.column_config.TextColumn("Edição / Vol.", width="small"),
+                        "editora": st.column_config.TextColumn("Editora", width="medium"),
+                        "valor": st.column_config.NumberColumn("Valor (R$)", format="R$ %.2f", min_value=0.0, step=0.5),
+                        "estado_conservacao": st.column_config.SelectboxColumn(
+                            "Estado de Conservação",
+                            options=["Excelente", "Muito Bom", "Bom", "Regular", "Ruim", "Novo / Lacrado"],
+                            required=True
+                        ),
+                        "prateleira": st.column_config.TextColumn("Prateleira"),
+                        "status_acervo": st.column_config.TextColumn("Status no Acervo", disabled=True),
+                    },
+                    key="editor_tabela_revisao_arquivo"
+                )
+
+                # Salvar no banco
+                itens_aprovados_df = df_rev_editado[df_rev_editado["incluir"] == True]
+                qtd_aprovadas = len(itens_aprovados_df)
+
+                st.markdown("---")
+                col_salv, col_desc = st.columns([2, 1.2])
+                with col_salv:
+                    btn_salvar_banco = st.button(
+                        f"💾 4. Confirmar & Cadastrar {qtd_aprovadas} HQs no Catálogo",
+                        type="primary",
+                        use_container_width=True,
+                        disabled=(qtd_aprovadas == 0),
+                        key="btn_confirmar_salvar_arquivo_db"
+                    )
+
+                with col_desc:
+                    if st.button("🗑️ Limpar / Recomeçar", use_container_width=True, key="btn_descartar_rev_arquivo"):
+                        st.session_state.pop("importacao_txt_hash", None)
+                        st.session_state.pop("importacao_txt_itens", None)
+                        st.rerun()
+
+                if btn_salvar_banco:
+                    itens_finais_banco = []
+                    for _, row in itens_aprovados_df.iterrows():
+                        idx_orig = row.name if row.name in df_rev.index else None
+                        item_base = itens_processados[idx_orig] if (idx_orig is not None and idx_orig < len(itens_processados)) else {}
+
+                        item_final = {
+                            "titulo": str(row.get("titulo", "")).strip(),
+                            "edicao": str(row.get("edicao", "")).strip(),
+                            "editora": str(row.get("editora", "")).strip(),
+                            "genero": str(item_base.get("genero") or "Outro").strip(),
+                            "escritor": str(item_base.get("escritor") or "Não informado").strip(),
+                            "ilustrador": str(item_base.get("ilustrador") or "Não informado").strip(),
+                            "prateleira": str(row.get("prateleira", "")).strip() or prat_arquivo_final,
+                            "lido": "Não Lido",
+                            "avaliacao": 0,
+                            "valor": float(row.get("valor") or 0.0),
+                            "estado_conservacao": str(row.get("estado_conservacao") or "Excelente").strip(),
+                            "capa": str(item_base.get("capa") or "").strip(),
+                            "resumo": str(item_base.get("resumo") or "").strip(),
+                            "resenha": ""
+                        }
+                        itens_finais_banco.append(item_final)
+
+                    prog_container = st.container()
+                    with prog_container:
+                        barra_progresso = st.progress(0, text=f"💾 Preparando gravação de {len(itens_finais_banco)} HQs...")
+                        texto_status_salvamento = st.empty()
+
+                    def callback_progresso(atual, total):
+                        if total > 0:
+                            percentual = min(1.0, atual / total)
+                            barra_progresso.progress(percentual, text=f"💾 Gravando no banco: {atual} de {total} HQs ({int(percentual*100)}%)...")
+                            texto_status_salvamento.caption(f"⚡ Inserindo em lotes: **{atual}** / **{total}** edições salvas...")
+
+                    res_salvar = database.salvar_hqs(
+                        itens=itens_finais_banco,
+                        prateleira=prat_arquivo_final,
+                        lido_padrao="Não Lido",
+                        ignorar_duplicadas=True,
+                        retornar_detalhes=True,
+                        progresso_callback=callback_progresso
+                    )
+
+                    barra_progresso.empty()
+                    texto_status_salvamento.empty()
+                    st.session_state.pop("importacao_txt_hash", None)
+                    st.session_state.pop("importacao_txt_itens", None)
+
+                    st.balloons()
+                    num_salvos = res_salvar.get("salvos", 0) if isinstance(res_salvar, dict) else res_salvar
+                    num_dup = res_salvar.get("duplicados", 0) if isinstance(res_salvar, dict) else 0
+
+                    st.success(
+                        f"🎉 **Importação concluída com sucesso!** Foram cadastradas **{num_salvos} novas edições** com status 'Não Lido'."
+                        + (f" ({num_dup} edições duplicadas foram ignoradas automaticamente)." if num_dup > 0 else ""),
+                        icon="✅"
+                    )
+
+                    col_ir, _ = st.columns([1.5, 2])
+                    with col_ir:
+                        if st.button("📚 Ir para o Catálogo e Ver Inventário", type="primary", use_container_width=True, key="btn_ir_cat_pos_arquivo"):
+                            voltar_ao_catalogo()
+        else:
+            st.warning("⚠️ Nenhuma HQ pôde ser interpretada do texto. Verifique se o formato segue `Título /Editora Valor: R$ XX,XX`.")
+
+    st.markdown("---")
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_import_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
+# -------------------------------------------------------------
+# PÁGINA DEDICADA: AUDITORIA E LIMPEZA DE DUPLICATAS
+# -------------------------------------------------------------
+def renderizar_pagina_auditoria_duplicatas():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("🔍 Auditoria & Limpeza de Duplicatas")
+        st.markdown("Identifique e remova edições duplicadas do seu catálogo selecionando as que deseja excluir na lista abaixo.")
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_auditoria_top"):
+            voltar_ao_catalogo()
+
+    if "cache_duplicatas" not in st.session_state or st.session_state.get("cache_duplicatas") is None:
+        with st.spinner("🔍 Buscando duplicatas no acervo..."):
+            st.session_state["cache_duplicatas"] = database.identificar_duplicatas_no_acervo()
+
+    grupos_dups = st.session_state.get("cache_duplicatas", [])
+
+    if not grupos_dups:
+        st.success(
+            "🎉 **Excelente! Nenhuma duplicata foi encontrada no seu acervo.**\n\n"
+            "Todos os títulos e volumes do catálogo estão únicos!",
+            icon="✨"
+        )
+    else:
+        # Monta lista plana para a grid simples e mapa de originais
+        linhas_grid = []
+        mapa_hqs_originais = {}
+        for grp in grupos_dups:
+            nome_grupo = f"{grp.get('titulo_base', '')} (Vol: {grp.get('edicao_base', '')})"
+            tipo_desc = "🔴 Exata" if grp.get("tipo") == "Exata" else "🟡 Similar"
+            for it in grp.get("hqs", []):
+                h_id = int(it.get("id"))
+                mapa_hqs_originais[h_id] = it
+                linhas_grid.append({
+                    "excluir": False,
+                    "id": h_id,
+                    "titulo": it.get("titulo") or "",
+                    "edicao": it.get("edicao") or "",
+                    "editora": it.get("editora") or "",
+                    "prateleira": it.get("prateleira") or "",
+                    "valor": float(it.get("valor") or 0.0),
+                    "estado_conservacao": it.get("estado_conservacao") or "Excelente",
+                    "lido": it.get("lido") or "Não Lido",
+                    "tipo_duplicata": tipo_desc,
+                    "grupo": nome_grupo
+                })
+
+        df_dups = pd.DataFrame(linhas_grid)
+        total_encontradas = len(df_dups)
+        total_grupos = len(grupos_dups)
+
+        col_m1, col_m2, col_btn_rescan = st.columns([2, 2, 1.5])
+        with col_m1:
+            st.metric("Total de Edições Duplicadas", total_encontradas)
+        with col_m2:
+            st.metric("Títulos / Obras Afetadas", total_grupos)
+        with col_btn_rescan:
+            st.write("")
+            if st.button("🔄 Recarregar Lista", use_container_width=True, key="btn_recarregar_dups"):
+                st.session_state["cache_duplicatas"] = None
+                st.rerun()
+
+        st.info(
+            "💡 **Instruções:** Você pode dar dois cliques em qualquer campo (**Nome**, **Volume**, **Editora**, **Prateleira**, etc.) para corrigir e clicar em **'💾 Salvar Alterações'**, ou marcar a caixa **'Excluir'** e clicar em **'🗑️ Excluir selecionadas'**.",
+            icon="✏️"
+        )
+
+        df_editado = st.data_editor(
+            df_dups,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            disabled=["id", "tipo_duplicata", "grupo"],
+            column_config={
+                "excluir": st.column_config.CheckboxColumn("Excluir", help="Marque para selecionar e excluir esta edição", default=False),
+                "titulo": st.column_config.TextColumn("Nome", required=True, width="large"),
+                "edicao": st.column_config.TextColumn("Volume", width="small"),
+                "editora": st.column_config.TextColumn("Editora", width="medium"),
+                "prateleira": st.column_config.TextColumn("Prateleira", width="medium"),
+                "valor": st.column_config.NumberColumn("Valor (R$)", format="R$ %.2f", min_value=0.0, step=0.5),
+                "estado_conservacao": st.column_config.SelectboxColumn("Estado", options=["Excelente", "Muito Bom", "Bom", "Regular", "Ruim", "Novo / Lacrado"], required=True, width="small"),
+                "lido": st.column_config.SelectboxColumn("Status", options=["Não Lido", "Lendo", "Lido"], required=True, width="small"),
+                "tipo_duplicata": st.column_config.TextColumn("Tipo", disabled=True, width="small"),
+                "grupo": st.column_config.TextColumn("Grupo Duplicado", disabled=True, width="medium"),
+                "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+            },
+            key="grid_auditoria_duplicatas"
+        )
+
+        # Detecção de edições nas linhas da tabela
+        df_editado_sem_sel = df_editado.drop(columns=["excluir"], errors="ignore")
+        df_dups_sem_sel = df_dups.drop(columns=["excluir"], errors="ignore")
+        houve_alteracao = not df_editado_sem_sel.equals(df_dups_sem_sel)
+
+        # Itens marcados para exclusão
+        selecionados_df = df_editado[df_editado["excluir"] == True]
+        qtd_selecionada = len(selecionados_df)
+
+        st.markdown("---")
+        col_act_save, col_act_del = st.columns([1.5, 1.5])
+        with col_act_save:
+            btn_salvar_edicoes = st.button(
+                "💾 Salvar Alterações da Grid",
+                type="primary" if houve_alteracao else "secondary",
+                use_container_width=True,
+                disabled=not houve_alteracao,
+                key="btn_salvar_dups_editadas"
+            )
+        with col_act_del:
+            texto_btn = f"🗑️ Excluir selecionadas ({qtd_selecionada})" if qtd_selecionada > 0 else "🗑️ Excluir selecionadas"
+            btn_excluir = st.button(
+                texto_btn,
+                type="primary" if qtd_selecionada > 0 else "secondary",
+                use_container_width=True,
+                disabled=(qtd_selecionada == 0),
+                key="btn_excluir_dups_selecionadas"
+            )
+
+        if btn_salvar_edicoes and houve_alteracao:
+            with st.spinner("💾 Salvando alterações nas edições..."):
+                atualizadas_count = 0
+                for _, row in df_editado.iterrows():
+                    hq_id = int(row["id"])
+                    orig = mapa_hqs_originais.get(hq_id, {})
+
+                    mudou = (
+                        str(row.get("titulo") or "").strip() != str(orig.get("titulo") or "").strip() or
+                        str(row.get("edicao") or "").strip() != str(orig.get("edicao") or "").strip() or
+                        str(row.get("editora") or "").strip() != str(orig.get("editora") or "").strip() or
+                        str(row.get("prateleira") or "").strip() != str(orig.get("prateleira") or "").strip() or
+                        float(row.get("valor") or 0.0) != float(orig.get("valor") or 0.0) or
+                        str(row.get("estado_conservacao") or "").strip() != str(orig.get("estado_conservacao") or "").strip() or
+                        str(row.get("lido") or "").strip() != str(orig.get("lido") or "").strip()
+                    )
+
+                    if mudou:
+                        database.atualizar_hq(
+                            hq_id=hq_id,
+                            titulo=str(row.get("titulo") or "").strip(),
+                            edicao=str(row.get("edicao") or "").strip(),
+                            editora=str(row.get("editora") or "").strip(),
+                            prateleira=str(row.get("prateleira") or orig.get("prateleira") or "").strip(),
+                            genero=orig.get("genero") or "Outro",
+                            escritor=orig.get("escritor") or "Não informado",
+                            ilustrador=orig.get("ilustrador") or "Não informado",
+                            lido=str(row.get("lido") or orig.get("lido") or "Não Lido"),
+                            avaliacao=int(orig.get("avaliacao") or 0),
+                            valor=float(row.get("valor") or 0.0),
+                            estado_conservacao=str(row.get("estado_conservacao") or orig.get("estado_conservacao") or "Excelente"),
+                            capa=orig.get("capa") or "",
+                            resenha=orig.get("resenha") or "",
+                            resumo=orig.get("resumo") or ""
+                        )
+                        atualizadas_count += 1
+
+            st.session_state["cache_duplicatas"] = None
+            st.success(f"🎉 **{atualizadas_count} HQ(s) atualizada(s) com sucesso!**", icon="✅")
+            st.rerun()
+
+        if btn_excluir and qtd_selecionada > 0:
+            ids_para_excluir = [int(r["id"]) for _, r in selecionados_df.iterrows()]
+            with st.spinner(f"🗑️ Excluindo {len(ids_para_excluir)} edições duplicadas..."):
+                excluidas_count = 0
+                for h_id in ids_para_excluir:
+                    if database.excluir_hq_por_id(h_id):
+                        excluidas_count += 1
+
+            st.session_state["cache_duplicatas"] = None
+            st.success(f"🎉 **{excluidas_count} HQ(s) duplicada(s) excluída(s) com sucesso!**", icon="✅")
+            st.rerun()
+
+    st.markdown("---")
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_auditoria_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
 # Controle de exibição de páginas dedicadas
 if st.query_params.get("pagina") == "editar_prateleiras" or st.session_state.get("pagina_atual") == "editar_prateleiras":
     renderizar_pagina_editar_prateleiras()
+    st.stop()
+
+if st.query_params.get("pagina") == "auditoria_duplicatas" or st.session_state.get("pagina_atual") == "auditoria_duplicatas":
+    renderizar_pagina_auditoria_duplicatas()
     st.stop()
 
 if st.query_params.get("pagina") == "em_leitura" or st.session_state.get("pagina_atual") == "em_leitura":
@@ -2041,6 +2579,10 @@ if st.query_params.get("pagina") == "quiz_acervo" or st.session_state.get("pagin
 
 if st.query_params.get("pagina") == "importacao_lote" or st.session_state.get("pagina_atual") == "importacao_lote":
     renderizar_pagina_importacao_lote()
+    st.stop()
+
+if st.query_params.get("pagina") == "importacao_arquivo" or st.session_state.get("pagina_atual") == "importacao_arquivo":
+    renderizar_pagina_importacao_arquivo()
     st.stop()
 
 
@@ -2086,19 +2628,24 @@ if hq_dia:
             legenda_capa = "Foto da Capa" if tem_capa else "Capa Padrão (Não cadastrada)"
             st.image(img_capa, caption=legenda_capa, use_container_width=True)
             
-            if st.button("🔍 Buscar Capa", key="btn_buscar_capa_dia", use_container_width=True, type="primary" if not tem_capa else "secondary", help="Procurar a capa desta HQ na internet"):
-                dialog_buscar_capa(int(hq_dia["id"]))
-                
+            col_btn_c1, col_btn_c2 = st.columns(2)
+            with col_btn_c1:
+                if st.button("🔍 Buscar Capa", key="btn_buscar_capa_dia", use_container_width=True, type="primary" if not tem_capa else "secondary", help="Procurar a capa desta HQ na internet"):
+                    dialog_buscar_capa(int(hq_dia["id"]))
+            with col_btn_c2:
+                if st.button("💰 Buscar Preço", key="btn_buscar_preco_capa_dia", use_container_width=True, help="Consultar e selecionar preços online desta HQ"):
+                    dialog_buscar_preco(int(hq_dia["id"]))
+
             if not tem_capa:
                 if st.button("📷 Enviar Foto", key="btn_add_capa_dia", use_container_width=True, help="Tire uma foto ou faça upload da capa desta edição"):
                     dialog_cadastrar_capa(int(hq_dia["id"]))
             else:
                 if st.button("📷 Alterar por Foto", key="btn_add_capa_dia", use_container_width=True, help="Tire uma nova foto para a capa"):
                     dialog_cadastrar_capa(int(hq_dia["id"]))
-                    
+
         with col_detalhes:
             st.subheader(f"📖 {hq_dia['titulo']}")
-            
+
             meta_itens = []
             if hq_dia.get("edicao"):
                 meta_itens.append(f"🔖 **Edição/Vol:** {hq_dia['edicao']}")
@@ -2110,27 +2657,33 @@ if hq_dia:
                 meta_itens.append(f"✍️ **Roteiro:** {hq_dia['escritor']}")
             if hq_dia.get("prateleira"):
                 meta_itens.append(f"📍 **Prateleira:** `{hq_dia['prateleira']}`")
-                
+
+            valor_dia = float(hq_dia.get("valor") or 0.0)
+            if valor_dia > 0:
+                meta_itens.append(f"💰 **Valor:** `R$ {valor_dia:.2f}`")
+            else:
+                meta_itens.append(f"💰 **Valor:** `Não informado`")
+
             if meta_itens:
                 st.markdown(" • ".join(meta_itens))
-                
+
             status_leitura = hq_dia.get("lido", "Não Lido")
             aval = int(hq_dia.get("avaliacao") or 0)
             aval_texto = ("⭐" * aval + f" ({aval}/5)") if aval > 0 else "⚪ Sem avaliação"
             st.caption(f"Status: **{status_leitura}** | Avaliação: **{aval_texto}**")
-            
+
             st.markdown("---")
-            
+
             st.markdown("#### 📝 Resumo")
             resumo_texto = (hq_dia.get("resumo") or "").strip()
             if resumo_texto:
                 st.markdown(f"> {resumo_texto}")
             else:
                 st.info("ℹ️ *Esta edição ainda não possui um resumo cadastrado. Você pode adicioná-lo editando a HQ pelo formulário ou tabela.*")
-                
+
             st.markdown("")
-            
-            col_b1, col_b2, col_b3, col_b4 = st.columns([1.5, 1.5, 1.5, 1.5])
+
+            col_b1, col_b2, col_b3 = st.columns([1.5, 1.5, 1.5])
             with col_b1:
                 if st.button("🎲 Sortear Outra", key="btn_sortear_outra_dia", use_container_width=True, help="Sortear aleatoriamente outro quadrinho da sua coleção sem repetir recentes"):
                     outra_hq = database.sortear_edicao_do_dia(excluir_id=int(hq_dia["id"]), data_destaque=data_hoje)
@@ -2143,62 +2696,11 @@ if hq_dia:
                     st.session_state["pagina_atual"] = "storyteller"
                     st.rerun()
             with col_b3:
-                if st.button("🔍 Buscar Capa", key="btn_buscar_capa_detalhes_dia", use_container_width=True, help="Buscar capa desta HQ na internet"):
-                    dialog_buscar_capa(int(hq_dia["id"]))
-            with col_b4:
                 if st.button("✏️ Editar HQ", key="btn_editar_hq_dia", use_container_width=True, help="Editar informações desta HQ"):
                     dialog_editar_hq(int(hq_dia["id"]))
 else:
     with st.container(border=True):
         st.info("📚 **Nenhuma edição cadastrada no momento.** Tire fotos da sua prateleira ou adicione títulos para ver a **Edição do Dia** em destaque aqui!", icon="✨")
-
-st.markdown("---")
-
-# -------------------------------------------------------------
-# CENTRAL DE SUPERPODERES DE IA
-# -------------------------------------------------------------
-st.markdown("### 🚀 Central de Inteligência Artificial do Acervo")
-c_card1, c_card2, c_card3, c_card4, c_card5 = st.columns(5)
-
-with c_card1:
-    with st.container(border=True):
-        st.markdown("#### 📦 Importação Lote")
-        st.caption("Cadastre coleções inteiras (ex: Salvat 1 a 64, mangás) com curadoria IA.")
-        if st.button("Importar Lote ➔", key="btn_card_lote", use_container_width=True, type="primary"):
-            st.session_state["pagina_atual"] = "importacao_lote"
-            st.rerun()
-
-with c_card2:
-    with st.container(border=True):
-        st.markdown("#### 🧭 Ordem de Leitura")
-        st.caption("Cronologia canônica de sagas e universos cruzando com seu acervo.")
-        if st.button("Abrir Guia ➔", key="btn_card_ordem", use_container_width=True, type="primary"):
-            st.session_state["pagina_atual"] = "ordem_leitura"
-            st.rerun()
-
-with c_card3:
-    with st.container(border=True):
-        st.markdown("#### 🔍 Detetive de Gaps")
-        st.caption("Diagnóstico do DNA da coleção e detecção de volumes faltantes.")
-        if st.button("Ver Diagnóstico ➔", key="btn_card_dna", use_container_width=True, type="primary"):
-            st.session_state["pagina_atual"] = "dna_colecao"
-            st.rerun()
-
-with c_card4:
-    with st.container(border=True):
-        st.markdown("#### 🎙️ Storyteller")
-        st.caption("Aquecimento narrativo dramático com narração por voz antes de ler.")
-        if st.button("Ouvir História ➔", key="btn_card_story", use_container_width=True, type="primary"):
-            st.session_state["pagina_atual"] = "storyteller"
-            st.rerun()
-
-with c_card5:
-    with st.container(border=True):
-        st.markdown("#### 🧠 Quiz do Acervo")
-        st.caption("Teste seu conhecimento com perguntas geradas das suas próprias HQs.")
-        if st.button("Jogar Quiz ➔", key="btn_card_quiz", use_container_width=True, type="primary"):
-            st.session_state["pagina_atual"] = "quiz_acervo"
-            st.rerun()
 
 st.markdown("---")
 
@@ -2544,6 +3046,19 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                 "escritor": st.column_config.TextColumn("Roteiro/Escritor"),
                 "ilustrador": st.column_config.TextColumn("Arte/Ilustrador"),
                 "prateleira": st.column_config.TextColumn("Prateleira", required=True),
+                "valor": st.column_config.NumberColumn(
+                    "Valor (R$)",
+                    help="Valor da HQ em Reais (R$)",
+                    min_value=0.0,
+                    step=0.5,
+                    format="R$ %.2f"
+                ),
+                "estado_conservacao": st.column_config.SelectboxColumn(
+                    "Estado de Conservação",
+                    help="Estado de conservação da HQ",
+                    options=["Excelente", "Muito Bom", "Bom", "Regular", "Ruim", "Novo / Lacrado"],
+                    required=True
+                ),
                 "lido": st.column_config.SelectboxColumn(
                     "Status de Leitura",
                     help="Status de leitura da edição",
@@ -2686,7 +3201,7 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                     orig_match = df_hqs[df_hqs["id"] == hq_id_val]
                     if not orig_match.empty:
                         orig = orig_match.iloc[0]
-                        campos = ["titulo", "edicao", "editora", "genero", "escritor", "ilustrador", "prateleira", "lido", "avaliacao", "capa", "resenha", "resumo"]
+                        campos = ["titulo", "edicao", "editora", "genero", "escritor", "ilustrador", "prateleira", "lido", "avaliacao", "valor", "estado_conservacao", "capa", "resenha", "resumo"]
                         if any(str(row_editada.get(c, "")) != str(orig.get(c, "")) for c in campos):
                             database.atualizar_hq(
                                 hq_id=hq_id_val,
@@ -2699,6 +3214,8 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                                 prateleira=str(row_editada["prateleira"] or ""),
                                 lido=str(row_editada["lido"] or "Não Lido"),
                                 avaliacao=int(row_editada.get("avaliacao") or 0),
+                                valor=float(row_editada.get("valor") or 0.0),
+                                estado_conservacao=str(row_editada.get("estado_conservacao") or "Excelente"),
                                 capa=str(row_editada.get("capa") or ""),
                                 resenha=str(row_editada.get("resenha") or ""),
                                 resumo=str(row_editada.get("resumo") or "")

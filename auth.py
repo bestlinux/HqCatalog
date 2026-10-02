@@ -45,6 +45,10 @@ def fazer_logout() -> None:
     """Encerra a sessão do usuário atual."""
     st.session_state["authenticated"] = False
     st.session_state["logged_user"] = None
+    st.session_state["pagina_atual"] = "principal"
+    st.session_state["cache_duplicatas"] = None
+    if "pagina" in st.query_params:
+        del st.query_params["pagina"]
     st.rerun()
 
 
@@ -86,6 +90,10 @@ def render_login_screen() -> None:
                 elif verificar_credenciais(usuario_input, senha_input):
                     st.session_state["authenticated"] = True
                     st.session_state["logged_user"] = usuario_input.strip()
+                    st.session_state["pagina_atual"] = "principal"
+                    st.session_state["cache_duplicatas"] = None
+                    if "pagina" in st.query_params:
+                        del st.query_params["pagina"]
                     st.success("✅ Login realizado com sucesso! Carregando acervo...")
                     st.rerun()
                 else:

@@ -1060,6 +1060,212 @@ class TestHqCatalog(unittest.TestCase):
         decisao_nova = jev_engine.decidir_duplicata_probabilistica(cand_nova, acervo)
         self.assertFalse(decisao_nova.is_duplicate)
 
+    def test_parsear_arquivo_texto_hqs(self):
+        sample_text = """1984 /Companhia das Letras Valor: R$ 84,90\tQuantidade: 1
+\tEstado: Excelente
+
+300 de Esparta, Os (2ª Edição) /Devir Valor: R$ 89,90\tQuantidade: 1
+\tEstado: Excelente
+
+52 /Panini Valor: R$ 90,80\tQuantidade: 13
+ nº 1\tEstado: Excelente \tStatus: Não li
+ nº 2\tEstado: Excelente
+ nº 3\tEstado: Excelente
+ nº 4\tEstado: Excelente
+ nº 5\tEstado: Excelente
+ nº 6\tEstado: Excelente
+ nº 7\tEstado: Excelente
+ nº 8\tEstado: Excelente
+ nº 9\tEstado: Excelente
+ nº 10\tEstado: Excelente
+ nº 11\tEstado: Excelente
+ nº 12\tEstado: Excelente
+ nº 13\tEstado: Excelente"""
+
+        hqs = gemini_service.parsear_arquivo_texto_hqs(sample_text)
+        # 1 (1984) + 1 (300 de Esparta) + 13 (52) = 15 HQs
+        self.assertEqual(len(hqs), 15)
+
+        # 1984
+        h1 = hqs[0]
+        self.assertEqual(h1["titulo"], "1984")
+        self.assertEqual(h1["editora"], "Companhia das Letras")
+        self.assertEqual(h1["edicao"], "Volume Único")
+        self.assertAlmostEqual(h1["valor"], 84.90)
+        self.assertEqual(h1["estado_conservacao"], "Excelente")
+        self.assertEqual(h1["lido"], "Não Lido")
+
+        # 300 de Esparta
+        h2 = hqs[1]
+        self.assertEqual(h2["titulo"], "300 de Esparta, Os")
+        self.assertEqual(h2["editora"], "Devir")
+        self.assertEqual(h2["edicao"], "2ª Edição")
+        self.assertAlmostEqual(h2["valor"], 89.90)
+        self.assertEqual(h2["estado_conservacao"], "Excelente")
+        self.assertEqual(h2["lido"], "Não Lido")
+
+        # 52 - Volume 1 (recebe o valor integral)
+        h3_vol1 = hqs[2]
+        self.assertEqual(h3_vol1["titulo"], "52")
+        self.assertEqual(h3_vol1["editora"], "Panini")
+        self.assertEqual(h3_vol1["edicao"], "1")
+        self.assertAlmostEqual(h3_vol1["valor"], 90.80)
+        self.assertEqual(h3_vol1["estado_conservacao"], "Excelente")
+        self.assertEqual(h3_vol1["lido"], "Não Lido")
+
+        # 52 - Volume 2 até 13 (valor zerado)
+        for i in range(3, 15):
+            vol_idx = i - 1  # 2 to 13
+            self.assertEqual(hqs[i]["titulo"], "52")
+            self.assertEqual(hqs[i]["editora"], "Panini")
+            self.assertEqual(hqs[i]["edicao"], str(vol_idx))
+            self.assertAlmostEqual(hqs[i]["valor"], 0.0)
+            self.assertEqual(hqs[i]["estado_conservacao"], "Excelente")
+            self.assertEqual(hqs[i]["lido"], "Não Lido")
+
+    def test_database_valor_e_estado_conservacao(self):
+        items = [
+            {
+                "titulo": "Batman: Silêncio",
+                "edicao": "Edição Definitiva",
+                "editora": "Panini",
+                "valor": 120.50,
+                "estado_conservacao": "Novo / Lacrado",
+                "lido": "Não Lido"
+            }
+        ]
+        inserted = database.salvar_hqs(items, "Estante Luxo", self.test_db)
+        self.assertEqual(inserted, 1)
+
+        hq = database.obter_hq_por_id(1, self.test_db)
+        self.assertIsNotNone(hq)
+        self.assertAlmostEqual(hq["valor"], 120.50)
+        self.assertEqual(hq["estado_conservacao"], "Novo / Lacrado")
+
+        # Teste de atualização
+        database.atualizar_hq(
+            hq_id=1,
+            titulo="Batman: Silêncio",
+            edicao="Edição Definitiva",
+            editora="Panini",
+            prateleira="Estante Luxo",
+            valor=135.00,
+            estado_conservacao="Excelente",
+            db_path=self.test_db
+        )
+
+        hq_atualizado = database.obter_hq_por_id(1, self.test_db)
+        self.assertAlmostEqual(hq_atualizado["valor"], 135.00)
+        self.assertEqual(hq_atualizado["estado_conservacao"], "Excelente")
+
+    def test_processar_de_para_local_hqs(self):
+        # 1. Cadastra uma HQ inicial no banco
+        database.salvar_hqs([{
+            "titulo": "Sandman",
+            "edicao": "1",
+            "editora": "Panini Comics",
+            "genero": "Fantasia Sombria",
+            "escritor": "Neil Gaiman",
+            "ilustrador": "Sam Kieth"
+        }], "Estante Vertigo", self.test_db)
+
+        # 2. Processa itens para importação
+        itens_para_importar = [
+            # Duplicata da edição 1
+            {"titulo": "Sandman", "edicao": "1", "editora": "Panini", "valor": 50.0, "estado_conservacao": "Excelente"},
+            # Nova edição 2 da mesma obra (deve reaproveitar gênero e autores do banco)
+            {"titulo": "Sandman", "edicao": "2", "editora": "Panini", "valor": 0.0, "estado_conservacao": "Muito Bom"},
+            # Obra completamente nova
+            {"titulo": "Monsters", "edicao": "Volume Único", "editora": "Todavia", "valor": 120.0, "estado_conservacao": "Novo / Lacrado"}
+        ]
+
+        resultado = gemini_service.processar_de_para_local_hqs(
+            itens_parseados=itens_para_importar,
+            prateleira_padrao="Estante Principal",
+            db_path=self.test_db
+        )
+
+        self.assertEqual(len(resultado), 3)
+
+        # Item 1: Duplicata detectada
+        self.assertFalse(resultado[0]["incluir"])
+        self.assertTrue(resultado[0]["ja_no_acervo"])
+        self.assertIn("Já no Acervo", resultado[0]["status_acervo"])
+
+        # Item 2: Nova edição com de x para reaproveitado do banco
+        self.assertTrue(resultado[1]["incluir"])
+        self.assertFalse(resultado[1]["ja_no_acervo"])
+        self.assertEqual(resultado[1]["genero"], "Fantasia")
+        self.assertEqual(resultado[1]["escritor"], "Neil Gaiman")
+        self.assertEqual(resultado[1]["lido"], "Não Lido")
+
+        # Item 3: Obra nova
+        self.assertTrue(resultado[2]["incluir"])
+        self.assertFalse(resultado[2]["ja_no_acervo"])
+        self.assertAlmostEqual(resultado[2]["valor"], 120.0)
+        self.assertEqual(resultado[2]["estado_conservacao"], "Novo / Lacrado")
+        self.assertEqual(resultado[2]["lido"], "Não Lido")
+
+    def test_auditoria_e_mesclagem_duplicatas(self):
+        # 1. Insere HQs intencionalmente duplicadas (desativando ignorar_duplicadas)
+        hqs = [
+            {"titulo": "Watchmen", "edicao": "Edição Definitiva", "editora": "Panini", "valor": 120.0, "lido": "Não Lido", "capa": "http://img.com/capa1.jpg"},
+            {"titulo": "Watchmen", "edicao": "Edição Definitiva", "editora": "Panini Comics", "valor": 0.0, "lido": "Lido", "avaliacao": 5, "resenha": "Obra-prima"}
+        ]
+        database.salvar_hqs(hqs, "Estante A", db_path=self.test_db, ignorar_duplicadas=False)
+
+        # 2. Executa a auditoria de duplicatas
+        dups = database.identificar_duplicatas_no_acervo(db_path=self.test_db)
+        self.assertEqual(len(dups), 1)
+        self.assertEqual(dups[0]["tipo"], "Exata")
+        self.assertEqual(len(dups[0]["hqs"]), 2)
+
+        id_1 = dups[0]["hqs"][0]["id"]
+        id_2 = dups[0]["hqs"][1]["id"]
+
+        # 3. Mescla as duas HQs (mantém ID 1 e remove ID 2)
+        sucesso_mescla = database.mesclar_hqs(hq_id_manter=id_1, hq_id_remover=id_2, db_path=self.test_db)
+        self.assertTrue(sucesso_mescla)
+
+        # 4. Confere se o registro mantido herdou as melhores informações
+        hq_mantida = database.obter_hq_por_id(id_1, db_path=self.test_db)
+        self.assertIsNotNone(hq_mantida)
+        self.assertEqual(hq_mantida["lido"], "Lido")
+        self.assertEqual(hq_mantida["avaliacao"], 5)
+        self.assertEqual(hq_mantida["resenha"], "Obra-prima")
+        self.assertEqual(hq_mantida["capa"], "http://img.com/capa1.jpg")
+        self.assertAlmostEqual(hq_mantida["valor"], 120.0)
+
+        # 5. Confere se o ID 2 foi removido
+        hq_removida = database.obter_hq_por_id(id_2, db_path=self.test_db)
+        self.assertIsNone(hq_removida)
+
+        # 6. Re-executa a auditoria: acervo agora deve estar 100% limpo
+        dups_pos = database.identificar_duplicatas_no_acervo(db_path=self.test_db)
+        self.assertEqual(len(dups_pos), 0)
+
+    def test_definir_valor_e_buscar_precos_online(self):
+        # 1. Testa definir_valor no database
+        database.salvar_hqs([{"titulo": "Sandman", "edicao": "Vol. 1", "editora": "Panini", "valor": 0.0}], "Estante 1", db_path=self.test_db)
+        hq = database.obter_hq_por_id(1, db_path=self.test_db)
+        self.assertEqual(hq["valor"], 0.0)
+
+        sucesso = database.definir_valor(1, 89.90, db_path=self.test_db)
+        self.assertTrue(sucesso)
+
+        hq_atualizada = database.obter_hq_por_id(1, db_path=self.test_db)
+        self.assertAlmostEqual(hq_atualizada["valor"], 89.90)
+
+        # 2. Testa filtro estrito de relevância de ofertas
+        self.assertTrue(gemini_service.eh_oferta_relevante_para_titulo("HQ Batman: O Retorno de Bruce Wayne (Panini)", "Batman: O Retorno de Bruce Wayne"))
+        self.assertFalse(gemini_service.eh_oferta_relevante_para_titulo("A Ressurreição da Fênix: O Retorno de Jean Grey", "Batman: O Retorno de Bruce Wayne"))
+        self.assertFalse(gemini_service.eh_oferta_relevante_para_titulo("Coleção Histórica Marvel: X-Men vol. 06", "Batman: O Retorno de Bruce Wayne"))
+        self.assertFalse(gemini_service.eh_oferta_relevante_para_titulo("A Morte de Thor vol. 01", "Batman: O Retorno de Bruce Wayne"))
+
+        # 3. Testa buscar_precos_online com fallback / busca segura
+        precos = gemini_service.buscar_precos_online("Watchmen", edicao="Edição Definitiva", editora="Panini", limite=5)
+        self.assertIsInstance(precos, list)
+
 
 if __name__ == "__main__":
     unittest.main()
