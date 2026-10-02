@@ -390,12 +390,23 @@ def dialog_buscar_preco(id_padrao: Optional[int] = None):
 
     if btn_pesquisar or session_res_key not in st.session_state:
         with st.spinner("🔍 Buscando cotações e preços online..."):
-            resultados = gemini_service.buscar_precos_online(
-                titulo=termo_busca,
-                edicao=hq_alvo.get("edicao") or "",
-                editora=hq_alvo.get("editora") or "",
-                api_key=st.session_state.get("gemini_api_key")
-            )
+            try:
+                if not hasattr(gemini_service, "buscar_precos_online"):
+                    import importlib
+                    importlib.reload(gemini_service)
+                fn_buscar = getattr(gemini_service, "buscar_precos_online", None)
+                if fn_buscar:
+                    resultados = fn_buscar(
+                        titulo=termo_busca,
+                        edicao=hq_alvo.get("edicao") or "",
+                        editora=hq_alvo.get("editora") or "",
+                        api_key=st.session_state.get("gemini_api_key")
+                    )
+                else:
+                    resultados = []
+            except Exception as e_busca:
+                st.warning(f"Não foi possível consultar cotações externas no momento ({e_busca}).")
+                resultados = []
             st.session_state[session_res_key] = resultados
 
     precos = st.session_state.get(session_res_key, [])
