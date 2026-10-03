@@ -943,10 +943,12 @@ def buscar_capas_online(
     limite: int = 8
 ) -> List[Dict[str, str]]:
     """
-    Busca capas de quadrinhos, mangás e graphic novels online em múltiplos serviços:
-    1. Apple Books / iTunes Search API (imagens oficiais em alta resolução)
-    2. OpenLibrary Covers API
-    3. SerpApi Google Images (se configurada)
+    Busca capas de quadrinhos, mangás e graphic novels online em múltiplos serviços,
+    priorizando em primeiro lugar o acervo oficial do Guia dos Quadrinhos (guiadosquadrinhos.com):
+    1. Guia dos Quadrinhos (guiadosquadrinhos.com via Google Images SerpApi) - PRIORIDADE MÁXIMA
+    2. SerpApi Google Images (Busca aberta de capas brasileiras)
+    3. Apple Books / iTunes Search API (imagens oficiais em alta resolução)
+    4. OpenLibrary Covers API
     Retorna uma lista de dicionários contendo {'url', 'titulo', 'fonte', 'thumbnail'}.
     """
     capas: List[Dict[str, str]] = []
@@ -968,23 +970,71 @@ def buscar_capas_online(
             "thumbnail": thumb or url
         })
 
-    # Construção de termos de busca inteligentes
-    termos = []
-    if edicao:
-        termos.append(f"{titulo} {edicao}".strip())
-    if editora:
-        termos.append(f"{titulo} {editora}".strip())
-    if escritor and escritor != "Não informado":
-        termos.append(f"{titulo} {escritor}".strip())
-    termos.append(titulo.strip())
+    # Construção de termo limpo sem duplicar palavras já presentes
+    termo_limpo = str(titulo).strip()
+    if edicao and edicao.lower() not in termo_limpo.lower():
+        termo_limpo += f" {edicao}"
+    if editora and editora.lower() not in termo_limpo.lower():
+        termo_limpo += f" {editora}"
 
-    termos_unicos = []
-    for t in termos:
-        if t and t not in termos_unicos:
-            termos_unicos.append(t)
+    serp_key = os.getenv("SERPAPI_API_KEY", "") or DEFAULT_SERPAPI_KEY or ""
 
-    # 1. Provedor Apple Books / iTunes
-    if requests is not None:
+    # 1. PROVEDOR 1 (PRIORIDADE MÁXIMA): Guia dos Quadrinhos (guiadosquadrinhos.com)
+    if serp_key:
+        try:
+            import serpapi
+            client = serpapi.Client(api_key=serp_key)
+            query_gq = f"site:guiadosquadrinhos.com {termo_limpo}".strip()
+            res_gq = client.search({
+                "engine": "google_images",
+                "q": query_gq,
+                "gl": "br",
+                "hl": "pt-br",
+                "num": 8
+            })
+            for img_it in res_gq.get("images_results", []):
+                if len(capas) >= limite:
+                    break
+                orig = img_it.get("original")
+                thumb = img_it.get("thumbnail")
+                tit_img = img_it.get("title") or termo_limpo
+                link_ref = img_it.get("link") or ""
+                # Prioriza imagens provenientes do Guia dos Quadrinhos
+                if "guiadosquadrinhos.com" in (orig or "") or "guiadosquadrinhos.com" in link_ref or "guiadosquadrinhos" in (orig or "").lower():
+                    add_capa(
+                        url=orig or thumb,
+                        tit=tit_img,
+                        fonte="Guia dos Quadrinhos (guiadosquadrinhos.com)",
+                        thumb=thumb or orig
+                    )
+                else:
+                    add_capa(
+                        url=orig or thumb,
+                        tit=tit_img,
+                        fonte="Guia dos Quadrinhos (Referência)",
+                        thumb=thumb or orig
+                    )
+        except Exception as ex_gq:
+            print(f"[Aviso SerpApi Guia dos Quadrinhos Capas: {ex_gq}]")
+
+    # 2. PROVEDOR 2: SerpApi Google Images Geral (Capas em alta resolução)
+    if serp_key and len(capas) < limite:
+        try:
+            import serpapi
+            client = serpapi.Client(api_key=serp_key)
+            query_img = f"{termo_limpo} capa".strip()
+            res = client.search({"engine": "google_images", "q": query_img, "gl": "br", "hl": "pt-br", "num": 5})
+            for img_it in res.get("images_results", []):
+                if len(capas) >= limite:
+                    break
+                orig = img_it.get("original") or img_it.get("thumbnail")
+                if orig:
+                    add_capa(orig, img_it.get("title", titulo), "Google Images", img_it.get("thumbnail"))
+        except Exception as ex:
+            print(f"[Aviso SerpApi Images: {ex}]")
+
+    # 3. PROVEDOR 3: Apple Books / iTunes
+    if requests is not None and len(capas) < limite:
         for termo in termos_unicos:
             if len(capas) >= limite:
                 break
@@ -1006,7 +1056,7 @@ def buscar_capas_online(
             except Exception as ex:
                 print(f"[Aviso iTunes search: {ex}]")
 
-    # 2. Provedor OpenLibrary
+    # 4. PROVEDOR 4: OpenLibrary
     if requests is not None and len(capas) < limite:
         for termo in termos_unicos[:2]:
             if len(capas) >= limite:
@@ -1029,21 +1079,6 @@ def buscar_capas_online(
                             add_capa(c_url, doc_tit, "OpenLibrary", c_thumb)
             except Exception as ex:
                 print(f"[Aviso OpenLibrary search: {ex}]")
-
-    # 3. Provedor SerpApi Google Images (se configurada)
-    serp_key = os.getenv("SERPAPI_API_KEY", "")
-    if serp_key and len(capas) < limite:
-        try:
-            import serpapi
-            client = serpapi.Client(api_key=serp_key)
-            query_img = f"{titulo} {edicao} {editora} capa".strip()
-            res = client.search({"engine": "google_images", "q": query_img, "gl": "br", "hl": "pt-br", "num": 5})
-            for img_it in res.get("images_results", []):
-                orig = img_it.get("original") or img_it.get("thumbnail")
-                if orig:
-                    add_capa(orig, img_it.get("title", titulo), "Google Images", img_it.get("thumbnail"))
-        except Exception as ex:
-            print(f"[Aviso SerpApi Images: {ex}]")
 
     return capas[:limite]
 
@@ -1459,10 +1494,10 @@ Retorne ESTRITAMENTE um array JSON contendo as edições oficiais lançadas no B
     return ofertas[:limite]
 
 
-def baixar_imagem_url_base64(url: str, max_dim: int = 800, quality: int = 85, timeout: int = 8) -> str:
+def baixar_imagem_url_base64(url: str, max_dim: int = 800, quality: int = 85, timeout: int = 8, fallback_url: Optional[str] = None) -> str:
     """
     Baixa uma imagem a partir de uma URL e converte em string base64 JPEG compacta.
-    Se não for possível baixar ou processar, retorna a própria URL original.
+    Se não for possível baixar ou processar, tenta a fallback_url ou retorna a própria URL original.
     """
     if not url or not (url.startswith("http://") or url.startswith("https://")):
         return url
@@ -1470,20 +1505,28 @@ def baixar_imagem_url_base64(url: str, max_dim: int = 800, quality: int = 85, ti
     if requests is None or Image is None:
         return url
 
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        r = requests.get(url, headers=headers, timeout=timeout)
-        if r.status_code == 200 and r.content:
-            img = Image.open(io.BytesIO(r.content))
-            img = img.convert("RGB")
-            if max(img.size) > max_dim:
-                img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
-            buffer = io.BytesIO()
-            img.save(buffer, format="JPEG", quality=quality, optimize=True)
-            b64_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
-            return f"data:image/jpeg;base64,{b64_str}"
-    except Exception as ex:
-        print(f"[Aviso ao baixar imagem {url}: {ex}]")
+    urls_para_tentar = [url]
+    if fallback_url and fallback_url != url:
+        urls_para_tentar.append(fallback_url)
+
+    for u in urls_para_tentar:
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://guiadosquadrinhos.com/"
+            }
+            r = requests.get(u, headers=headers, timeout=timeout)
+            if r.status_code == 200 and r.content:
+                img = Image.open(io.BytesIO(r.content))
+                img = img.convert("RGB")
+                if max(img.size) > max_dim:
+                    img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+                buffer = io.BytesIO()
+                img.save(buffer, format="JPEG", quality=quality, optimize=True)
+                b64_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                return f"data:image/jpeg;base64,{b64_str}"
+        except Exception as ex:
+            print(f"[Aviso ao baixar imagem {u}: {ex}]")
 
     return url
 
@@ -2481,15 +2524,15 @@ def consultar_visao_geral_ia_guia_quadrinhos(
 ) -> Dict[str, Any]:
     """
     Realiza uma consulta em tempo real no Google e no Guia dos Quadrinhos (guiadosquadrinhos.com)
-    utilizando SerpApi para capturar resultados ao vivo e o Gemini para gerar uma 'Visão Geral por IA'
-    completa com sinopse, arcos, histórias compiladas, roteiristas e ilustradores canônicos.
+    utilizando Google Search Grounding via Gemini e SerpApi para capturar a ficha técnica completa
+    e consolidar todos os roteiristas, ilustradores e sinopse fiel da edição.
     """
     if not titulo or not titulo.strip():
         return {}
 
     termo_consulta = f"{titulo} {edicao} {editora} guia dos quadrinhos".strip()
     
-    # 1. Busca no Google via SerpApi (se chave configurada)
+    # 1. Busca complementar no Google via SerpApi (se chave configurada)
     snippets = []
     serp_key = os.getenv("SERPAPI_API_KEY") or DEFAULT_SERPAPI_KEY or ""
     if serp_key:
@@ -2511,50 +2554,56 @@ def consultar_visao_geral_ia_guia_quadrinhos(
         except Exception as ex_s:
             print(f"[Aviso SerpApi Guia dos Quadrinhos: {ex_s}]")
 
-    contexto_web = "\n".join(snippets) if snippets else "Resultados web não disponíveis via SerpApi; utilize a base enciclopédica canônica."
+    contexto_web = "\n".join(snippets) if snippets else ""
 
-    # 2. Prompt no estilo Visão Geral do Google IA + Guia dos Quadrinhos
-    prompt = f"""Você é o maior especialista enciclopédico em catalogação de histórias em quadrinhos, mangás e graphic novels no Brasil, com foco no acervo do GUIA DOS QUADRINHOS (guiadosquadrinhos.com).
+    # 2. Prompt com foco em precisão catalográfica do Guia dos Quadrinhos
+    prompt = f"""Você é o especialista mestre na enciclopédia GUIA DOS QUADRINHOS (guiadosquadrinhos.com) e na catalogação de histórias em quadrinhos publicadas no Brasil.
 
-CONSULTA DO USUÁRIO:
-- Título da Obra: {titulo}
+CONSULTA:
+- Obra / Título: {titulo}
 - Edição / Volume / Número: {edicao or 'Edição padrão'}
-- Editora: {editora or 'Não informada'}
-- Roteirista / Autor de referência: {escritor or 'Não informado'}
+- Editora brasileira: {editora or 'Não informada'}
+- Roteirista de referência: {escritor or 'Não informado'}
 
-RESULTADOS DE BUSCA NA WEB / GUIA DOS QUADRINHOS:
-{contexto_web}
-
-Gere uma 'Visão Geral por IA' no mesmo padrão das visões gerais do Google IA, rica em dados catalográficos do Guia dos Quadrinhos:
-1. "resumo": Visão geral informativa e envolvente da edição (mencionando ano de lançamento no Brasil, formato, arcos principais compilados e o enredo central das histórias sem spoilers do desfecho).
-2. "escritor": Nome(s) do(s) Roteirista(s) / Escritor(es) creditados nesta edição brasileira.
-3. "ilustrador": Nome(s) do(s) Ilustrador(es) / Desenhista(s) / Arte creditados nesta edição brasileira.
-4. "detalhes": Histórias e edições americanas/originais compiladas neste volume (ex: Uncanny X-Men #475, New Mutants #97, etc.).
+{f'CONTEXTO WEB ADICIONAL:\n{contexto_web}\n' if contexto_web else ''}
+Acesse a página exata desta edição no Guia dos Quadrinhos (guiadosquadrinhos.com) através do Google Search e extraia os dados catalográficos com total fidelidade:
+1. "publicado_em": Mês e ano exatos de publicação no Brasil conforme indicado na ficha técnica da edição no Guia dos Quadrinhos (ex: "Setembro de 2013").
+2. "escritor": Liste TODOS os nomes de roteiristas (campo Roteiro) encontrados em todas as histórias que estão listadas nesta edição específica. Consolide todos os nomes únicos separados por vírgula (ex: "Geoff Johns").
+3. "ilustrador": Liste TODOS os nomes de desenhistas / ilustradores (campos Desenho / Arte / Arte-final) encontrados em todas as histórias que estão listadas nesta edição específica. Consolide todos os nomes únicos separados por vírgula (ex: "Ivan Reis, Paul Pelletier").
+4. "detalhes": Histórias compiladas na edição com títulos em português e edições norte-americanas/originais correspondentes.
+5. "resumo": Visão geral e sinopse detalhada e fiel dos arcos e histórias contidas nesta edição específica, mencionando a data de lançamento oficial (mês/ano) e o enredo central sem alucinações.
 
 Retorne ESTRITAMENTE um objeto JSON no formato:
 {{
-  "resumo": "Texto da Visão Geral da Edição...",
-  "escritor": "Nomes dos Roteiristas",
-  "ilustrador": "Nomes dos Ilustradores",
-  "detalhes": "Histórias compiladas / Contexto da publicação",
-  "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com) / Visão Geral IA"
+  "publicado_em": "Mês e Ano de publicação",
+  "escritor": "Nome(s) de todos os Roteiristas de todas as histórias da edição",
+  "ilustrador": "Nome(s) de todos os Ilustradores/Desenhistas de todas as histórias da edição",
+  "detalhes": "Histórias compiladas / Contexto das publicações originais",
+  "resumo": "Texto completo da sinopse e visão geral fiel da edição",
+  "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)"
 }}
 """
 
     try:
         client_g = get_gemini_client(api_key)
-        for mod in ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]:
+        modelos_disponiveis = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        for mod in modelos_disponiveis:
             try:
+                tools = [types.Tool(google_search=types.GoogleSearch())] if types else None
                 resp = client_g.models.generate_content(
                     model=mod,
                     contents=prompt,
                     config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
+                        tools=tools,
                         temperature=0.1
                     ) if types else None
                 )
                 if resp and resp.text:
                     txt = resp.text.strip()
+                    if "```json" in txt:
+                        txt = txt.split("```json")[1].split("```")[0].strip()
+                    elif "```" in txt:
+                        txt = txt.split("```")[1].split("```")[0].strip()
                     if "{" in txt and "}" in txt:
                         txt = txt[txt.find("{"):txt.rfind("}")+1]
                     parsed = json.loads(txt)
