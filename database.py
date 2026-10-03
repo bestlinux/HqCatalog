@@ -450,7 +450,7 @@ def verificar_hq_duplicada(
     params = [tit_clean]
 
     candidatos = []
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, params)
             if res.rows:
@@ -471,7 +471,7 @@ def verificar_hq_duplicada(
     # Se não encontrou candidatos com match exato case-insensitive de título, busca flexível
     if not candidatos:
         sql_todos = "SELECT id, titulo, edicao, editora, prateleira, criado_em FROM hqs ORDER BY id DESC"
-        if is_using_turso():
+        if is_using_turso() and db_path == DB_DEFAULT_PATH:
             try:
                 res = executar_turso_query(sql_todos, [])
                 if res.rows:
@@ -558,7 +558,7 @@ def buscar_hqs_por_titulo_ou_edicao(
         params_exata = [tit_clean]
 
     resultados_exata = []
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql_exata, params_exata)
             if res.rows:
@@ -588,7 +588,7 @@ def buscar_hqs_por_titulo_ou_edicao(
         ORDER BY id DESC
         """
         cands = []
-        if is_using_turso():
+        if is_using_turso() and db_path == DB_DEFAULT_PATH:
             try:
                 res = executar_turso_query(sql_tit_so, [tit_clean])
                 if res.rows:
@@ -630,7 +630,7 @@ def buscar_hqs_por_titulo_ou_edicao(
         """
         params_like = [termo_like]
 
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql_like, params_like)
             return [dict(zip(res.columns, r)) for r in res.rows] if res.rows else []
@@ -829,7 +829,7 @@ def salvar_hqs(
                 pass
 
         total_reg = len(registros_para_inserir)
-        if is_using_turso():
+        if is_using_turso() and db_path == DB_DEFAULT_PATH:
             # Inserção em lotes de 50 registros no Turso Cloud para máxima velocidade
             tamanho_lote = 50
             for i in range(0, total_reg, tamanho_lote):
@@ -919,7 +919,7 @@ def listar_todas_hqs(
     }
     query += mapa_ordenacao.get(ordem_por, " ORDER BY LOWER(TRIM(titulo)) ASC, id ASC")
 
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(query, params)
             rows = [dict(zip(res.columns, r)) for r in res.rows]
@@ -950,7 +950,7 @@ def cadastrar_prateleira(nome: str, db_path: str = DB_DEFAULT_PATH) -> bool:
     if not nome_limpo:
         return False
 
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             executar_turso_query("INSERT OR IGNORE INTO prateleiras (nome) VALUES (?)", [nome_limpo])
             return True
@@ -980,7 +980,7 @@ def obter_prateleiras(db_path: str = DB_DEFAULT_PATH) -> List[str]:
         SELECT DISTINCT prateleira as nome FROM hqs WHERE prateleira IS NOT NULL AND prateleira != ''
     ) ORDER BY LOWER(nome) ASC
     """
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql)
             return [r[0] for r in res.rows if r[0]]
@@ -1027,7 +1027,7 @@ def listar_prateleiras_detalhadas(db_path: str = DB_DEFAULT_PATH) -> List[Dict[s
         GROUP BY COALESCE(NULLIF(TRIM(prateleira), ''), 'Não especificada')
     ) ORDER BY LOWER(nome_prateleira) ASC
     """
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql)
             itens = []
@@ -1075,7 +1075,7 @@ def renomear_prateleira(nome_antigo: str, nome_novo: str, db_path: str = DB_DEFA
     if not antigo or not novo:
         return 0
 
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             executar_turso_query("INSERT OR IGNORE INTO prateleiras (nome) VALUES (?)", [novo])
             executar_turso_query("DELETE FROM prateleiras WHERE TRIM(nome) = ? OR nome = ?", [antigo, antigo])
@@ -1100,7 +1100,7 @@ def renomear_prateleira(nome_antigo: str, nome_novo: str, db_path: str = DB_DEFA
 def obter_generos(db_path: str = DB_DEFAULT_PATH) -> List[str]:
     """Retorna uma lista única de gêneros cadastrados."""
     sql = "SELECT DISTINCT genero FROM hqs WHERE genero IS NOT NULL AND genero != '' ORDER BY genero ASC"
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql)
             return [r[0] for r in res.rows if r[0]]
@@ -1138,7 +1138,7 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
         SELECT DISTINCT prateleira as nome FROM hqs WHERE prateleira IS NOT NULL AND prateleira != ''
     )
     """
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql_stats)
             res_p = executar_turso_query(sql_prats)
@@ -1198,7 +1198,7 @@ def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
 
 def deletar_hq(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> bool:
     """Exclui um registro específico por ID."""
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query("DELETE FROM hqs WHERE id = ?", [hq_id])
             return res.rows_affected > 0
@@ -1224,7 +1224,7 @@ def deletar_hqs_em_massa(hq_ids: List[int], db_path: str = DB_DEFAULT_PATH) -> i
     sql = f"DELETE FROM hqs WHERE id IN ({placeholders})"
     params = [int(i) for i in hq_ids]
 
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, params)
             return res.rows_affected if hasattr(res, "rows_affected") else len(hq_ids)
@@ -1258,7 +1258,7 @@ def atualizar_status_leitura_em_massa(hq_ids: List[int], novo_status: str, db_pa
     sql = f"UPDATE hqs SET lido = ? WHERE id IN ({placeholders})"
     params = [status_limpo] + [int(i) for i in hq_ids]
 
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, params)
             return res.rows_affected if hasattr(res, "rows_affected") else len(hq_ids)
@@ -1292,7 +1292,7 @@ def atualizar_prateleira_em_massa(hq_ids: List[int], nova_prateleira: str, db_pa
     sql = f"UPDATE hqs SET prateleira = ? WHERE id IN ({placeholders})"
     params = [prat_limpa] + [int(i) for i in hq_ids]
 
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, params)
             return res.rows_affected if hasattr(res, "rows_affected") else len(hq_ids)
@@ -1314,7 +1314,7 @@ def atualizar_prateleira_em_massa(hq_ids: List[int], nova_prateleira: str, db_pa
 def obter_hq_por_id(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict[str, Any]]:
     """Busca os dados de uma HQ específica pelo seu ID."""
     sql = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em FROM hqs WHERE id = ?"
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, [hq_id])
             if res.rows:
@@ -1345,7 +1345,7 @@ def sortear_edicao_do_dia(
     Evita HQs que foram destacadas recentemente para garantir variedade máxima e que todo
     o catálogo seja percorrido antes de haver repetições.
     """
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             # 1. Total de HQs
             res_total = executar_turso_query("SELECT COUNT(*) FROM hqs")
@@ -1495,7 +1495,7 @@ def obter_edicao_do_dia(data_str: Optional[str] = None, db_path: str = DB_DEFAUL
         data_str = datetime.now().strftime("%Y-%m-%d")
 
     hq_id_dia = None
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(
                 "SELECT hq_id FROM historico_destaques WHERE data_destaque = ? ORDER BY id DESC LIMIT 1",
@@ -1598,7 +1598,7 @@ def atualizar_hq(
         hq_id
     ]
 
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, params)
             return res.rows_affected > 0
@@ -1619,7 +1619,7 @@ def definir_capa(hq_id: int, capa: str, db_path: str = DB_DEFAULT_PATH) -> bool:
     """Salva diretamente a imagem/foto da capa de uma HQ."""
     sql = "UPDATE hqs SET capa = ? WHERE id = ?"
     url_clean = (capa or "").strip()
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, [url_clean, hq_id])
             return res.rows_affected > 0
@@ -1652,7 +1652,7 @@ def definir_valor(hq_id: int, valor: float, db_path: str = DB_DEFAULT_PATH) -> b
         val_num = 0.0
 
     sql = "UPDATE hqs SET valor = ? WHERE id = ?"
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, [val_num, hq_id])
             return res.rows_affected > 0
@@ -1682,7 +1682,7 @@ def definir_avaliacao(hq_id: int, avaliacao: int, db_path: str = DB_DEFAULT_PATH
         val_avaliacao = 0
 
     sql = "UPDATE hqs SET avaliacao = ? WHERE id = ?"
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, [val_avaliacao, hq_id])
             return res.rows_affected > 0
@@ -1703,7 +1703,7 @@ def definir_resenha(hq_id: int, resenha: str, db_path: str = DB_DEFAULT_PATH) ->
     """Atualiza diretamente a resenha/opinião de uma HQ."""
     sql = "UPDATE hqs SET resenha = ? WHERE id = ?"
     resenha_clean = (resenha or "").strip()
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, [resenha_clean, hq_id])
             return res.rows_affected > 0
@@ -1724,7 +1724,7 @@ def definir_resumo(hq_id: int, resumo: str, db_path: str = DB_DEFAULT_PATH) -> b
     """Atualiza diretamente o resumo/sinopse da história de uma HQ."""
     sql = "UPDATE hqs SET resumo = ? WHERE id = ?"
     resumo_clean = (resumo or "").strip()
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, [resumo_clean, hq_id])
             return res.rows_affected > 0
@@ -1735,6 +1735,28 @@ def definir_resumo(hq_id: int, resumo: str, db_path: str = DB_DEFAULT_PATH) -> b
         try:
             cursor = conn.cursor()
             cursor.execute(sql, (resumo_clean, hq_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+
+def definir_escritor_ilustrador(hq_id: int, escritor: str, ilustrador: str, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """Atualiza diretamente o escritor/roteirista e o ilustrador/arte de uma HQ."""
+    sql = "UPDATE hqs SET escritor = ?, ilustrador = ? WHERE id = ?"
+    escritor_clean = (escritor or "Não informado").strip()
+    ilustrador_clean = (ilustrador or "Não informado").strip()
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
+        try:
+            res = executar_turso_query(sql, [escritor_clean, ilustrador_clean, hq_id])
+            return res.rows_affected > 0
+        except Exception:
+            return False
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (escritor_clean, ilustrador_clean, hq_id))
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -1753,7 +1775,7 @@ def definir_status_leitura(hq_id: int, status: str, db_path: str = DB_DEFAULT_PA
         status_limpo = "Não Lido"
 
     sql = "UPDATE hqs SET lido = ? WHERE id = ?"
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, [status_limpo, hq_id])
             return res.rows_affected > 0
@@ -1774,7 +1796,7 @@ def definir_status_leitura(hq_id: int, status: str, db_path: str = DB_DEFAULT_PA
 def obter_hqs_em_leitura(db_path: str = DB_DEFAULT_PATH) -> List[Dict[str, Any]]:
     """Retorna a lista de todas as HQs com status 'Lendo' ordenadas pelas mais recentes."""
     sql = "SELECT id, capa, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, criado_em FROM hqs WHERE lido = 'Lendo' ORDER BY id DESC"
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql)
             hqs = []
@@ -1891,7 +1913,7 @@ def adicionar_item_lista_desejos(
     """
     params = [tit_clean, ed_clean, edit_clean, preco_val, loja_clean, link_clean, obs_clean]
 
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             executar_turso_query(sql, params)
             res_id = executar_turso_query("SELECT last_insert_rowid()").rows[0][0]
@@ -1913,7 +1935,7 @@ def adicionar_item_lista_desejos(
 def listar_lista_desejos(db_path: str = DB_DEFAULT_PATH) -> Any:
     """Retorna todos os itens da Lista de Desejos."""
     sql = "SELECT id, titulo, edicao, editora, melhor_preco, melhor_loja, link_oferta, observacoes, criado_em FROM lista_desejos ORDER BY id DESC"
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql)
             rows = [dict(zip(res.columns, r)) for r in res.rows]
@@ -1939,7 +1961,7 @@ def listar_lista_desejos(db_path: str = DB_DEFAULT_PATH) -> Any:
 def deletar_item_lista_desejos(item_id: int, db_path: str = DB_DEFAULT_PATH) -> bool:
     """Remove um item da Lista de Desejos."""
     sql = "DELETE FROM lista_desejos WHERE id = ?"
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, [item_id])
             return res.rows_affected > 0
@@ -1959,7 +1981,7 @@ def deletar_item_lista_desejos(item_id: int, db_path: str = DB_DEFAULT_PATH) -> 
 def obter_item_lista_desejos(item_id: int, db_path: str = DB_DEFAULT_PATH) -> Optional[Dict[str, Any]]:
     """Obtém um item específico da Lista de Desejos por ID."""
     sql = "SELECT id, titulo, edicao, editora, melhor_preco, melhor_loja, link_oferta, observacoes, criado_em FROM lista_desejos WHERE id = ?"
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, [item_id])
             if res.rows:
@@ -2025,7 +2047,7 @@ def atualizar_item_lista_desejos(
     valores.append(item_id)
     sql = f"UPDATE lista_desejos SET {', '.join(campos)} WHERE id = ?"
 
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(sql, valores)
             return res.rows_affected > 0
@@ -2050,7 +2072,7 @@ def excluir_hq_por_id(hq_id: int, db_path: str = DB_DEFAULT_PATH) -> bool:
     """Exclui permanentemente uma HQ do banco de dados e remove do histórico de destaques."""
     sql_del = "DELETE FROM hqs WHERE id = ?"
     sql_hist = "DELETE FROM historico_destaques WHERE hq_id = ?"
-    if is_using_turso():
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             executar_turso_query(sql_hist, [hq_id])
             res = executar_turso_query(sql_del, [hq_id])

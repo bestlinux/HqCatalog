@@ -20,6 +20,12 @@ try:
 except ImportError:
     BeautifulSoup = None
 try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+try:
     from PIL import Image
 except ImportError:
     Image = None
@@ -2461,6 +2467,246 @@ def enriquecer_hqs_importacao_arquivo(
 ) -> List[Dict[str, Any]]:
     """Alias para processamento direto sem IA."""
     return processar_de_para_local_hqs(itens_parseados, prateleira_padrao=prateleira_padrao)
+
+
+# =============================================================
+# CONSULTA ENCICLOPÉDICA E VISÃO GERAL POR IA (GUIA DOS QUADRINHOS)
+# =============================================================
+def consultar_visao_geral_ia_guia_quadrinhos(
+    titulo: str,
+    edicao: str = "",
+    editora: str = "",
+    escritor: str = "",
+    api_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Realiza uma consulta em tempo real no Google e no Guia dos Quadrinhos (guiadosquadrinhos.com)
+    utilizando SerpApi para capturar resultados ao vivo e o Gemini para gerar uma 'Visão Geral por IA'
+    completa com sinopse, arcos, histórias compiladas, roteiristas e ilustradores canônicos.
+    """
+    if not titulo or not titulo.strip():
+        return {}
+
+    termo_consulta = f"{titulo} {edicao} {editora} guia dos quadrinhos".strip()
+    
+    # 1. Busca no Google via SerpApi (se chave configurada)
+    snippets = []
+    serp_key = os.getenv("SERPAPI_API_KEY") or DEFAULT_SERPAPI_KEY or ""
+    if serp_key:
+        try:
+            import serpapi
+            client_s = serpapi.Client(api_key=serp_key)
+            res = client_s.search({
+                "engine": "google",
+                "q": termo_consulta,
+                "gl": "br",
+                "hl": "pt-br",
+                "num": 8
+            })
+            for org in res.get("organic_results", []):
+                tit_org = org.get("title") or ""
+                link_org = org.get("link") or ""
+                snip_org = org.get("snippet") or ""
+                snippets.append(f"- Título: {tit_org}\n  Link: {link_org}\n  Snippet: {snip_org}")
+        except Exception as ex_s:
+            print(f"[Aviso SerpApi Guia dos Quadrinhos: {ex_s}]")
+
+    contexto_web = "\n".join(snippets) if snippets else "Resultados web não disponíveis via SerpApi; utilize a base enciclopédica canônica."
+
+    # 2. Prompt no estilo Visão Geral do Google IA + Guia dos Quadrinhos
+    prompt = f"""Você é o maior especialista enciclopédico em catalogação de histórias em quadrinhos, mangás e graphic novels no Brasil, com foco no acervo do GUIA DOS QUADRINHOS (guiadosquadrinhos.com).
+
+CONSULTA DO USUÁRIO:
+- Título da Obra: {titulo}
+- Edição / Volume / Número: {edicao or 'Edição padrão'}
+- Editora: {editora or 'Não informada'}
+- Roteirista / Autor de referência: {escritor or 'Não informado'}
+
+RESULTADOS DE BUSCA NA WEB / GUIA DOS QUADRINHOS:
+{contexto_web}
+
+Gere uma 'Visão Geral por IA' no mesmo padrão das visões gerais do Google IA, rica em dados catalográficos do Guia dos Quadrinhos:
+1. "resumo": Visão geral informativa e envolvente da edição (mencionando ano de lançamento no Brasil, formato, arcos principais compilados e o enredo central das histórias sem spoilers do desfecho).
+2. "escritor": Nome(s) do(s) Roteirista(s) / Escritor(es) creditados nesta edição brasileira.
+3. "ilustrador": Nome(s) do(s) Ilustrador(es) / Desenhista(s) / Arte creditados nesta edição brasileira.
+4. "detalhes": Histórias e edições americanas/originais compiladas neste volume (ex: Uncanny X-Men #475, New Mutants #97, etc.).
+
+Retorne ESTRITAMENTE um objeto JSON no formato:
+{{
+  "resumo": "Texto da Visão Geral da Edição...",
+  "escritor": "Nomes dos Roteiristas",
+  "ilustrador": "Nomes dos Ilustradores",
+  "detalhes": "Histórias compiladas / Contexto da publicação",
+  "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com) / Visão Geral IA"
+}}
+"""
+
+    try:
+        client_g = get_gemini_client(api_key)
+        for mod in ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]:
+            try:
+                resp = client_g.models.generate_content(
+                    model=mod,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.1
+                    ) if types else None
+                )
+                if resp and resp.text:
+                    txt = resp.text.strip()
+                    if "{" in txt and "}" in txt:
+                        txt = txt[txt.find("{"):txt.rfind("}")+1]
+                    parsed = json.loads(txt)
+                    if isinstance(parsed, dict) and (parsed.get("resumo") or parsed.get("escritor")):
+                        return parsed
+            except Exception:
+                continue
+    except Exception as ex_g:
+        print(f"[Aviso Gemini Visão Geral: {ex_g}]")
+
+    return {}
+
+
+# =============================================================
+# BUSCA ONLINE DE RESUMO / SINOPSES (FOCO: GUIA DOS QUADRINHOS)
+# =============================================================
+def buscar_resumo_online(
+    titulo: str,
+    edicao: str = "",
+    editora: str = "",
+    escritor: str = "",
+    api_key: Optional[str] = None
+) -> List[Dict[str, str]]:
+    """
+    Busca sinopses e resumos para uma edição de HQ / Livro / Mangá com foco prioritário
+    no banco de dados e catalogação do Guia dos Quadrinhos (guiadosquadrinhos.com).
+    Retorna lista de opções: [{'resumo', 'fonte', 'tipo'}].
+    """
+    resultados: List[Dict[str, str]] = []
+    resumos_vistos = set()
+
+    if not titulo or not titulo.strip():
+        return []
+
+    def add_resumo(res: str, fonte: str, tipo: str = "Sinopse"):
+        if not res or not res.strip():
+            return
+        res_clean = re.sub(r"<[^>]+>", "", res).strip()
+        if len(res_clean) < 25:
+            return
+        chave = res_clean[:70].lower()
+        if chave in resumos_vistos:
+            return
+        resumos_vistos.add(chave)
+        resultados.append({
+            "resumo": res_clean,
+            "fonte": fonte,
+            "tipo": tipo
+        })
+
+    # 1. Visão Geral por IA + Guia dos Quadrinhos (Prioridade Máxima)
+    dados_ia = consultar_visao_geral_ia_guia_quadrinhos(
+        titulo=titulo,
+        edicao=edicao,
+        editora=editora,
+        escritor=escritor,
+        api_key=api_key
+    )
+    if dados_ia and dados_ia.get("resumo"):
+        fonte_ia = dados_ia.get("fonte") or "Guia dos Quadrinhos / Google IA"
+        add_resumo(dados_ia["resumo"], fonte_ia, "Visão Geral por IA")
+
+    # 2. Google Books API (Catálogo complementar)
+    if requests is not None:
+        try:
+            params = {"q": f"{titulo} {edicao}".strip(), "langRestrict": "pt", "maxResults": 2}
+            r = requests.get("https://www.googleapis.com/books/v1/volumes", params=params, timeout=5)
+            if r.status_code == 200:
+                dados = r.json()
+                for item in dados.get("items", []):
+                    vol_info = item.get("volumeInfo", {})
+                    desc = vol_info.get("description") or ""
+                    if desc:
+                        add_resumo(desc, "Google Books", "Catálogo Editorial")
+        except Exception as ex:
+            print(f"[Aviso Google Books Resumo: {ex}]")
+
+    return resultados
+
+
+# =============================================================
+# BUSCA ONLINE DE ROTEIRISTA E ILUSTRADOR (FOCO: GUIA DOS QUADRINHOS)
+# =============================================================
+def buscar_autores_online(
+    titulo: str,
+    edicao: str = "",
+    editora: str = "",
+    api_key: Optional[str] = None
+) -> List[Dict[str, str]]:
+    """
+    Busca o Roteirista e Ilustrador de uma HQ com foco prioritário na ficha técnica
+    e créditos do Guia dos Quadrinhos (guiadosquadrinhos.com).
+    Retorna lista de sugestões: [{'escritor', 'ilustrador', 'fonte', 'detalhes'}].
+    """
+    sugestoes: List[Dict[str, str]] = []
+    vistos = set()
+
+    if not titulo or not titulo.strip():
+        return []
+
+    def add_sugestao(esc: str, ilus: str, fonte: str, detalhes: str = ""):
+        esc_c = (esc or "Não informado").strip()
+        ilus_c = (ilus or "Não informado").strip()
+        if (not esc_c or esc_c == "Não informado") and (not ilus_c or ilus_c == "Não informado"):
+            return
+        chave = f"{esc_c.lower()}_{ilus_c.lower()}"
+        if chave in vistos:
+            return
+        vistos.add(chave)
+        sugestoes.append({
+            "escritor": esc_c,
+            "ilustrador": ilus_c,
+            "fonte": fonte,
+            "detalhes": detalhes or f"Roteiro: {esc_c} • Arte: {ilus_c}"
+        })
+
+    # 1. Visão Geral por IA + Guia dos Quadrinhos (Prioridade Máxima)
+    dados_ia = consultar_visao_geral_ia_guia_quadrinhos(
+        titulo=titulo,
+        edicao=edicao,
+        editora=editora,
+        api_key=api_key
+    )
+    if dados_ia and (dados_ia.get("escritor") or dados_ia.get("ilustrador")):
+        add_sugestao(
+            esc=dados_ia.get("escritor") or "Não informado",
+            ilus=dados_ia.get("ilustrador") or "Não informado",
+            fonte=dados_ia.get("fonte") or "Guia dos Quadrinhos / Google IA",
+            detalhes=dados_ia.get("detalhes") or ""
+        )
+
+    # 2. Google Books API (Complementar)
+    if requests is not None:
+        try:
+            params = {"q": f"{titulo} {edicao}".strip(), "maxResults": 2}
+            r = requests.get("https://www.googleapis.com/books/v1/volumes", params=params, timeout=5)
+            if r.status_code == 200:
+                dados = r.json()
+                for item in dados.get("items", []):
+                    vol_info = item.get("volumeInfo", {})
+                    authors = vol_info.get("authors", [])
+                    if authors:
+                        autores_str = ", ".join(authors)
+                        if len(authors) == 1:
+                            add_sugestao(authors[0], authors[0], "Google Books", f"Autor principal: {authors[0]}")
+                        elif len(authors) >= 2:
+                            add_sugestao(authors[0], authors[1], "Google Books", f"Autores creditados: {autores_str}")
+        except Exception as ex:
+            print(f"[Aviso Google Books Autores: {ex}]")
+
+    return sugestoes
+
 
 
 

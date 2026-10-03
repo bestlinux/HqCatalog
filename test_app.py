@@ -1266,6 +1266,40 @@ class TestHqCatalog(unittest.TestCase):
         precos = gemini_service.buscar_precos_online("Watchmen", edicao="Edição Definitiva", editora="Panini", limite=5)
         self.assertIsInstance(precos, list)
 
+    def test_definir_escritor_ilustrador_e_busca_autores_resumo(self):
+        # 1. Testa definir_escritor_ilustrador e definir_resumo
+        database.salvar_hqs([{
+            "titulo": "Watchmen",
+            "edicao": "Edição Definitiva",
+            "editora": "Panini",
+            "escritor": "Não informado",
+            "ilustrador": "Não informado",
+            "resumo": ""
+        }], "Estante 1", self.test_db)
+
+        hq = database.obter_hq_por_id(1, self.test_db)
+        self.assertEqual(hq["escritor"], "Não informado")
+
+        # Atualiza autores
+        ok_autores = database.definir_escritor_ilustrador(1, "Alan Moore", "Dave Gibbons", db_path=self.test_db)
+        self.assertTrue(ok_autores)
+
+        # Atualiza resumo
+        ok_resumo = database.definir_resumo(1, "Sinopse clássica da investigação de Rorschach.", db_path=self.test_db)
+        self.assertTrue(ok_resumo)
+
+        hq_atual = database.obter_hq_por_id(1, db_path=self.test_db)
+        self.assertEqual(hq_atual["escritor"], "Alan Moore")
+        self.assertEqual(hq_atual["ilustrador"], "Dave Gibbons")
+        self.assertEqual(hq_atual["resumo"], "Sinopse clássica da investigação de Rorschach.")
+
+        # 2. Testa chamadas das funções de busca online
+        resumos = gemini_service.buscar_resumo_online("Watchmen", edicao="Edição Definitiva", editora="Panini")
+        self.assertIsInstance(resumos, list)
+
+        autores = gemini_service.buscar_autores_online("Watchmen", edicao="Edição Definitiva", editora="Panini")
+        self.assertIsInstance(autores, list)
+
 
 if __name__ == "__main__":
     unittest.main()

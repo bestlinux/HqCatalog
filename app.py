@@ -461,6 +461,193 @@ def dialog_buscar_preco(id_padrao: Optional[int] = None):
         st.rerun()
 
 
+@st.dialog("📝 Buscar Resumo no Guia dos Quadrinhos", width="large")
+def dialog_buscar_resumo(id_padrao: Optional[int] = None):
+    val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
+    id_para_resumo = st.number_input("Informe o ID da HQ:", min_value=1, step=1, value=val_id, key=f"dlg_input_buscar_resumo_id_{id_padrao or 'padrao'}")
+    hq_alvo = database.obter_hq_por_id(int(id_para_resumo))
+    if not hq_alvo:
+        st.warning(f"Quadrinho com ID #{id_para_resumo} não encontrado.")
+        if st.button("❌ Fechar", key="btn_close_busca_resumo_empty", use_container_width=True):
+            st.rerun()
+        return
+
+    st.markdown(f"#### 📖 {hq_alvo['titulo']}")
+    detalhes_str = []
+    if hq_alvo.get("edicao"):
+        detalhes_str.append(f"**Edição:** {hq_alvo['edicao']}")
+    if hq_alvo.get("editora"):
+        detalhes_str.append(f"**Editora:** {hq_alvo['editora']}")
+    if hq_alvo.get("escritor") and hq_alvo["escritor"] != "Não informado":
+        detalhes_str.append(f"**Roteiro:** {hq_alvo['escritor']}")
+    if detalhes_str:
+        st.caption(" • ".join(detalhes_str))
+
+    resumo_atual = (hq_alvo.get("resumo") or "").strip()
+    if resumo_atual:
+        with st.expander("📖 Resumo / Sinopse Atual Cadastrada", expanded=False):
+            st.info(resumo_atual)
+
+    termo_default = f"{hq_alvo['titulo']} {hq_alvo.get('edicao') or ''} {hq_alvo.get('editora') or ''}".strip()
+
+    col_t1, col_t2 = st.columns([3.5, 1.2])
+    with col_t1:
+        termo_busca = st.text_input("Termo de busca no Guia dos Quadrinhos:", value=termo_default, key=f"dlg_termo_resumo_{hq_alvo['id']}")
+    with col_t2:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        btn_pesquisar = st.button("🔎 Pesquisar", key=f"dlg_btn_pesquisar_resumo_{hq_alvo['id']}", use_container_width=True, type="primary")
+
+    session_res_key = f"resumos_encontrados_{hq_alvo['id']}"
+
+    if btn_pesquisar or session_res_key not in st.session_state:
+        with st.spinner("🔍 Consultando sinopse oficial no acervo do Guia dos Quadrinhos (guiadosquadrinhos.com)..."):
+            try:
+                fn_buscar = getattr(gemini_service, "buscar_resumo_online", None)
+                if fn_buscar:
+                    resultados = fn_buscar(
+                        titulo=termo_busca,
+                        edicao=hq_alvo.get("edicao") or "",
+                        editora=hq_alvo.get("editora") or "",
+                        escritor=hq_alvo.get("escritor") or "",
+                        api_key=st.session_state.get("gemini_api_key")
+                    )
+                else:
+                    resultados = []
+            except Exception as e_busca:
+                st.warning(f"Não foi possível consultar resumos externos no momento ({e_busca}).")
+                resultados = []
+            st.session_state[session_res_key] = resultados
+
+    resumos = st.session_state.get(session_res_key, [])
+
+    if resumos:
+        st.markdown(f"**Sinopses Encontradas ({len(resumos)}):** *Escolha a opção desejada e clique em **Salvar este Resumo**.*")
+        for idx, item in enumerate(resumos):
+            with st.container(border=True):
+                st.caption(f"✨ Fonte: **{item.get('fonte', 'Guia dos Quadrinhos')}** ({item.get('tipo', 'Sinopse')})")
+                st.markdown(f"> {item['resumo']}")
+                if st.button("✅ Salvar este Resumo", key=f"btn_salvar_resumo_opt_{hq_alvo['id']}_{idx}", use_container_width=True, type="primary"):
+                    if database.definir_resumo(int(hq_alvo["id"]), item["resumo"]):
+                        st.success("🎉 Resumo atualizado com sucesso!")
+                        if session_res_key in st.session_state:
+                            del st.session_state[session_res_key]
+                        st.rerun()
+                    else:
+                        st.error("Não foi possível salvar o resumo no banco de dados.")
+    else:
+        st.info("ℹ️ Nenhum resumo retornado automaticamente. Você pode digitar ou editar o resumo manualmente abaixo.")
+
+    st.markdown("---")
+    with st.expander("✍️ Inserir ou editar resumo manualmente"):
+        novo_resumo_man = st.text_area(
+            "Texto do Resumo / Sinopse:",
+            value=resumo_atual,
+            height=120,
+            key=f"dlg_input_resumo_manual_{hq_alvo['id']}"
+        )
+        if st.button("💾 Salvar Resumo Manual", key=f"btn_salvar_resumo_man_{hq_alvo['id']}", type="primary", use_container_width=True):
+            if database.definir_resumo(int(hq_alvo["id"]), novo_resumo_man):
+                st.success("🎉 Resumo salvo com sucesso!")
+                if session_res_key in st.session_state:
+                    del st.session_state[session_res_key]
+                st.rerun()
+
+    if st.button("❌ Fechar / Cancelar", key=f"dlg_btn_close_busca_resumo_{hq_alvo['id']}", use_container_width=True):
+        st.rerun()
+
+
+@st.dialog("✍️ Buscar Roteirista e Ilustrador no Guia dos Quadrinhos", width="large")
+def dialog_buscar_autores(id_padrao: Optional[int] = None):
+    val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
+    id_para_autores = st.number_input("Informe o ID da HQ:", min_value=1, step=1, value=val_id, key=f"dlg_input_buscar_autores_id_{id_padrao or 'padrao'}")
+    hq_alvo = database.obter_hq_por_id(int(id_para_autores))
+    if not hq_alvo:
+        st.warning(f"Quadrinho com ID #{id_para_autores} não encontrado.")
+        if st.button("❌ Fechar", key="btn_close_busca_autores_empty", use_container_width=True):
+            st.rerun()
+        return
+
+    st.markdown(f"#### 📖 {hq_alvo['titulo']}")
+    detalhes_str = []
+    if hq_alvo.get("edicao"):
+        detalhes_str.append(f"**Edição:** {hq_alvo['edicao']}")
+    if hq_alvo.get("editora"):
+        detalhes_str.append(f"**Editora:** {hq_alvo['editora']}")
+    escritor_atual = str(hq_alvo.get("escritor") or "Não informado").strip()
+    ilustrador_atual = str(hq_alvo.get("ilustrador") or "Não informado").strip()
+    detalhes_str.append(f"**Roteirista Atual:** `{escritor_atual}`")
+    detalhes_str.append(f"**Ilustrador Atual:** `{ilustrador_atual}`")
+    st.caption(" • ".join(detalhes_str))
+
+    termo_default = f"{hq_alvo['titulo']} {hq_alvo.get('edicao') or ''} {hq_alvo.get('editora') or ''}".strip()
+
+    col_t1, col_t2 = st.columns([3.5, 1.2])
+    with col_t1:
+        termo_busca = st.text_input("Termo de busca no Guia dos Quadrinhos:", value=termo_default, key=f"dlg_termo_autores_{hq_alvo['id']}")
+    with col_t2:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        btn_pesquisar = st.button("🔎 Pesquisar", key=f"dlg_btn_pesquisar_autores_{hq_alvo['id']}", use_container_width=True, type="primary")
+
+    session_res_key = f"autores_encontrados_{hq_alvo['id']}"
+
+    if btn_pesquisar or session_res_key not in st.session_state:
+        with st.spinner("🔍 Consultando ficha técnica (Roteirista e Ilustrador) no Guia dos Quadrinhos (guiadosquadrinhos.com)..."):
+            try:
+                fn_buscar = getattr(gemini_service, "buscar_autores_online", None)
+                if fn_buscar:
+                    resultados = fn_buscar(
+                        titulo=termo_busca,
+                        edicao=hq_alvo.get("edicao") or "",
+                        editora=hq_alvo.get("editora") or "",
+                        api_key=st.session_state.get("gemini_api_key")
+                    )
+                else:
+                    resultados = []
+            except Exception as e_busca:
+                st.warning(f"Não foi possível consultar autores no momento ({e_busca}).")
+                resultados = []
+            st.session_state[session_res_key] = resultados
+
+    sugestoes = st.session_state.get(session_res_key, [])
+
+    if sugestoes:
+        st.markdown(f"**Autores Encontrados ({len(sugestoes)}):** *Clique em **Aplicar Autores** para salvar na HQ.*")
+        for idx, item in enumerate(sugestoes):
+            with st.container(border=True):
+                col_i1, col_i2 = st.columns([3, 1.5], gap="medium")
+                with col_i1:
+                    st.markdown(f"✍️ **Roteirista:** `{item['escritor']}`")
+                    st.markdown(f"🎨 **Ilustrador:** `{item['ilustrador']}`")
+                    if item.get("detalhes"):
+                        st.caption(f"✨ *{item['detalhes']}* (Fonte: **{item.get('fonte', 'Guia dos Quadrinhos')}**)")
+                with col_i2:
+                    st.write("")
+                    if st.button("✅ Aplicar Autores", key=f"btn_salvar_autores_opt_{hq_alvo['id']}_{idx}", use_container_width=True, type="primary"):
+                        if database.definir_escritor_ilustrador(int(hq_alvo["id"]), item["escritor"], item["ilustrador"]):
+                            st.success("🎉 Roteirista e Ilustrador atualizados com sucesso!")
+                            if session_res_key in st.session_state:
+                                del st.session_state[session_res_key]
+                            st.rerun()
+                        else:
+                            st.error("Não foi possível salvar os autores no banco de dados.")
+    else:
+        st.info("ℹ️ Nenhum autor retornado automaticamente. Você pode preencher manualmente abaixo.")
+
+    st.markdown("---")
+    with st.expander("✍️ Inserir ou ajustar Roteirista e Ilustrador manualmente"):
+        esc_man = st.text_input("Roteirista / Escritor:", value=escritor_atual if escritor_atual != "Não informado" else "", key=f"dlg_input_esc_man_{hq_alvo['id']}")
+        ilus_man = st.text_input("Ilustrador / Arte:", value=ilustrador_atual if ilustrador_atual != "Não informado" else "", key=f"dlg_input_ilus_man_{hq_alvo['id']}")
+        if st.button("💾 Salvar Autores Manuais", key=f"btn_salvar_autores_man_{hq_alvo['id']}", type="primary", use_container_width=True):
+            if database.definir_escritor_ilustrador(int(hq_alvo["id"]), esc_man or "Não informado", ilus_man or "Não informado"):
+                st.success("🎉 Autores atualizados com sucesso!")
+                if session_res_key in st.session_state:
+                    del st.session_state[session_res_key]
+                st.rerun()
+
+    if st.button("❌ Fechar / Cancelar", key=f"dlg_btn_close_busca_autores_{hq_alvo['id']}", use_container_width=True):
+        st.rerun()
+
+
 @st.dialog("✍️ Resenha / O que achou da HQ")
 def dialog_resenha(id_padrao: Optional[int] = None):
     val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
@@ -2647,6 +2834,14 @@ if hq_dia:
                 if st.button("💰 Buscar Preço", key="btn_buscar_preco_capa_dia", use_container_width=True, help="Consultar e selecionar preços online desta HQ"):
                     dialog_buscar_preco(int(hq_dia["id"]))
 
+            col_btn_c3, col_btn_c4 = st.columns(2)
+            with col_btn_c3:
+                if st.button("📝 Buscar Resumo", key="btn_buscar_resumo_dia", use_container_width=True, help="Buscar resumo e sinopse da história online via IA"):
+                    dialog_buscar_resumo(int(hq_dia["id"]))
+            with col_btn_c4:
+                if st.button("✍️ Buscar Roteirista e Ilustrador", key="btn_buscar_autores_dia", use_container_width=True, help="Buscar e identificar Roteirista e Ilustrador online via IA"):
+                    dialog_buscar_autores(int(hq_dia["id"]))
+
             if not tem_capa:
                 if st.button("📷 Enviar Foto", key="btn_add_capa_dia", use_container_width=True, help="Tire uma foto ou faça upload da capa desta edição"):
                     dialog_cadastrar_capa(int(hq_dia["id"]))
@@ -2664,8 +2859,17 @@ if hq_dia:
                 meta_itens.append(f"🏢 **Editora:** {hq_dia['editora']}")
             if hq_dia.get("genero"):
                 meta_itens.append(f"🏷️ **Gênero:** {hq_dia['genero']}")
-            if hq_dia.get("escritor") and hq_dia["escritor"] != "Não informado":
-                meta_itens.append(f"✍️ **Roteiro:** {hq_dia['escritor']}")
+            escritor_dia = str(hq_dia.get("escritor") or "").strip()
+            if escritor_dia and escritor_dia.lower() not in ["não informado", "nao informado", "none", "null", "-"]:
+                meta_itens.append(f"✍️ **Roteirista:** {escritor_dia}")
+            else:
+                meta_itens.append("✍️ **Roteirista:** `Não informado`")
+
+            ilustrador_dia = str(hq_dia.get("ilustrador") or "").strip()
+            if ilustrador_dia and ilustrador_dia.lower() not in ["não informado", "nao informado", "none", "null", "-"]:
+                meta_itens.append(f"🎨 **Ilustrador:** {ilustrador_dia}")
+            else:
+                meta_itens.append("🎨 **Ilustrador:** `Não informado`")
             if hq_dia.get("prateleira"):
                 meta_itens.append(f"📍 **Prateleira:** `{hq_dia['prateleira']}`")
 
