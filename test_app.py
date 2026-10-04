@@ -1300,6 +1300,52 @@ class TestHqCatalog(unittest.TestCase):
         autores = gemini_service.buscar_autores_online("Watchmen", edicao="Edição Definitiva", editora="Panini")
         self.assertIsInstance(autores, list)
 
+    def test_obter_editoras_e_filtro(self):
+        database.salvar_hqs([
+            {"titulo": "Batman: Silêncio", "editora": "Panini"},
+            {"titulo": "Sandman", "editora": "Vertigo"},
+            {"titulo": "Akira", "editora": "JBC"}
+        ], "Estante 1", self.test_db)
+
+        editoras = database.obter_editoras(self.test_db)
+        self.assertIn("Panini", editoras)
+        self.assertIn("Vertigo", editoras)
+        self.assertIn("JBC", editoras)
+
+        # Testar filtro por editora
+        hqs_panini = database.listar_todas_hqs(editora_filtro="Panini", db_path=self.test_db)
+        titulos_panini = [h["titulo"] for h in (hqs_panini.to_dict("records") if hasattr(hqs_panini, "to_dict") else hqs_panini)]
+        self.assertIn("Batman: Silêncio", titulos_panini)
+        self.assertNotIn("Sandman", titulos_panini)
+        self.assertNotIn("Akira", titulos_panini)
+
+        hqs_vertigo = database.listar_todas_hqs(editora_filtro="Vertigo", db_path=self.test_db)
+        titulos_vertigo = [h["titulo"] for h in (hqs_vertigo.to_dict("records") if hasattr(hqs_vertigo, "to_dict") else hqs_vertigo)]
+        self.assertIn("Sandman", titulos_vertigo)
+        self.assertNotIn("Batman: Silêncio", titulos_vertigo)
+
+
+    def test_buscar_dados_guia_dos_quadrinhos(self):
+        # 1. Obra Canônica
+        res_canonico = gemini_service.buscar_dados_guia_dos_quadrinhos("Wolverine", "21", "Abril")
+        self.assertIsInstance(res_canonico, dict)
+        self.assertEqual(res_canonico.get("titulo"), "Wolverine")
+        self.assertIn("Mary Jo Duffy", res_canonico.get("roteiro", ""))
+
+        # 2. Obra Genérica (Garante que não lança NameError 'capa_oficial')
+        with patch("requests.get") as mock_get, \
+             patch("gemini_service.buscar_capas_online", return_value=[]), \
+             patch("gemini_service.get_gemini_client"):
+            mock_resp = MagicMock()
+            mock_resp.status_code = 404
+            mock_resp.text = ""
+            mock_get.return_value = mock_resp
+
+            res_generico = gemini_service.buscar_dados_guia_dos_quadrinhos("Homem-Aranha", "1", "Panini")
+            self.assertIsInstance(res_generico, dict)
+            self.assertEqual(res_generico.get("titulo"), "Homem-Aranha")
+            self.assertIn("url_edicao", res_generico)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -225,6 +225,8 @@ def init_db(db_path: str = DB_DEFAULT_PATH, force: bool = False) -> None:
                 cursor.execute("ALTER TABLE hqs ADD COLUMN resenha TEXT DEFAULT ''")
             if "resumo" not in columns:
                 cursor.execute("ALTER TABLE hqs ADD COLUMN resumo TEXT DEFAULT ''")
+            if "link_edicao" not in columns:
+                cursor.execute("ALTER TABLE hqs ADD COLUMN link_edicao TEXT DEFAULT ''")
 
             conn.commit()
         finally:
@@ -878,6 +880,7 @@ def listar_todas_hqs(
     status_leitura_filtro: Optional[str] = None,
     avaliacao_filtro: Optional[int] = None,
     ordem_por: str = "titulo_asc",
+    editora_filtro: Optional[str] = None,
     db_path: str = DB_DEFAULT_PATH
 ) -> Any:
     """
@@ -889,6 +892,10 @@ def listar_todas_hqs(
     if prateleira_filtro and prateleira_filtro != "Todas":
         query += " AND prateleira = ?"
         params.append(prateleira_filtro)
+
+    if editora_filtro and editora_filtro != "Todas":
+        query += " AND editora = ?"
+        params.append(editora_filtro)
 
     if genero_filtro and genero_filtro != "Todos":
         query += " AND genero = ?"
@@ -1116,6 +1123,28 @@ def obter_generos(db_path: str = DB_DEFAULT_PATH) -> List[str]:
             return [row["genero"] for row in rows]
         finally:
             conn.close()
+
+
+def obter_editoras(db_path: str = DB_DEFAULT_PATH) -> List[str]:
+    """Retorna uma lista única de editoras cadastradas."""
+    sql = "SELECT DISTINCT editora FROM hqs WHERE editora IS NOT NULL AND TRIM(editora) != '' ORDER BY LOWER(TRIM(editora)) ASC"
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
+        try:
+            res = executar_turso_query(sql)
+            return [r[0] for r in res.rows if r[0] and str(r[0]).strip()]
+        except Exception as ex:
+            print(f"Aviso Turso obter_editoras: {ex}")
+            return []
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            return [row["editora"] for row in rows if row["editora"] and str(row["editora"]).strip()]
+        finally:
+            conn.close()
+
 
 
 def obter_estatisticas(db_path: str = DB_DEFAULT_PATH) -> Dict[str, Any]:
@@ -1757,6 +1786,27 @@ def definir_escritor_ilustrador(hq_id: int, escritor: str, ilustrador: str, db_p
         try:
             cursor = conn.cursor()
             cursor.execute(sql, (escritor_clean, ilustrador_clean, hq_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+
+def definir_link_edicao(hq_id: int, link_edicao: str, db_path: str = DB_DEFAULT_PATH) -> bool:
+    """Atualiza diretamente a URL oficial da página da edição no Guia dos Quadrinhos."""
+    sql = "UPDATE hqs SET link_edicao = ? WHERE id = ?"
+    link_clean = (link_edicao or "").strip()
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
+        try:
+            res = executar_turso_query(sql, [link_clean, int(hq_id)])
+            return res.rows_affected > 0
+        except Exception:
+            return False
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (link_clean, int(hq_id)))
             conn.commit()
             return cursor.rowcount > 0
         finally:

@@ -5,6 +5,8 @@ Aplicativo Streamlit para Catalogação de Coleção de HQs via Câmera e Gemini
 import io
 import base64
 import os
+import time
+import urllib.parse
 from datetime import datetime
 from typing import Optional, Any
 import streamlit as st
@@ -65,8 +67,10 @@ st.set_page_config(
 # -------------------------------------------------------------
 auth.verificar_autenticacao()
 
-# Inicializa o banco de dados SQLite
-database.init_db()
+# Inicializa o banco de dados apenas na primeira carga da sessão
+if "db_inicializado" not in st.session_state:
+    database.init_db()
+    st.session_state["db_inicializado"] = True
 
 # Inicialização de variáveis de estado de sessão
 if "prateleira_atual" not in st.session_state:
@@ -260,14 +264,14 @@ def dialog_cadastrar_capa(id_padrao: Optional[int] = None):
         st.info(f"Nenhum quadrinho com o ID #{id_para_capa} encontrado.");
         if st.button("❌ Fechar", key="dlg_btn_close_capa_empty", use_container_width=True): st.rerun()
 
-@st.dialog("🔍 Buscar Capa da HQ Online", width="large")
-def dialog_buscar_capa(id_padrao: Optional[int] = None):
+@st.dialog("🔍 Buscar Dados (Guia dos Quadrinhos)", width="large")
+def dialog_buscar_dados(id_padrao: Optional[int] = None):
     val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
-    id_para_capa = st.number_input("Informe o ID da HQ:", min_value=1, step=1, value=val_id, key=f"dlg_input_buscar_capa_id_{id_padrao or 'padrao'}")
-    hq_alvo = database.obter_hq_por_id(int(id_para_capa))
+    id_para_busca = st.number_input("Informe o ID da HQ:", min_value=1, step=1, value=val_id, key=f"dlg_input_buscar_dados_id_{id_padrao or 'padrao'}")
+    hq_alvo = database.obter_hq_por_id(int(id_para_busca))
     if not hq_alvo:
-        st.warning(f"Quadrinho com ID #{id_para_capa} não encontrado.")
-        if st.button("❌ Fechar", key="btn_close_busca_empty", use_container_width=True):
+        st.warning(f"Quadrinho com ID #{id_para_busca} não encontrado.")
+        if st.button("❌ Fechar", key="btn_close_busca_dados_empty", use_container_width=True):
             st.rerun()
         return
 
@@ -277,84 +281,250 @@ def dialog_buscar_capa(id_padrao: Optional[int] = None):
         detalhes_str.append(f"**Edição:** {hq_alvo['edicao']}")
     if hq_alvo.get("editora"):
         detalhes_str.append(f"**Editora:** {hq_alvo['editora']}")
-    if hq_alvo.get("escritor") and hq_alvo["escritor"] != "Não informado":
-        detalhes_str.append(f"**Roteiro:** {hq_alvo['escritor']}")
+    if hq_alvo.get("escritor") and str(hq_alvo["escritor"]).lower() not in ["não informado", "nao informado", ""]:
+        detalhes_str.append(f"**Roteiro Atual:** `{hq_alvo['escritor']}`")
+    if hq_alvo.get("ilustrador") and str(hq_alvo["ilustrador"]).lower() not in ["não informado", "nao informado", ""]:
+        detalhes_str.append(f"**Desenho Atual:** `{hq_alvo['ilustrador']}`")
+    if hq_alvo.get("valor") and float(hq_alvo["valor"]) > 0:
+        detalhes_str.append(f"**Preço Atual:** `R$ {float(hq_alvo['valor']):.2f}`".replace(".", ","))
     if detalhes_str:
         st.caption(" • ".join(detalhes_str))
 
-    termo_default = f"{hq_alvo['titulo']} {hq_alvo.get('edicao') or ''} {hq_alvo.get('editora') or ''}".strip()
-    
-    col_t1, col_t2 = st.columns([3.5, 1.2])
-    with col_t1:
-        termo_busca = st.text_input("Termo de busca da capa na web:", value=termo_default, key=f"dlg_termo_capa_{hq_alvo['id']}")
-    with col_t2:
-        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        btn_pesquisar = st.button("🔎 Pesquisar", key=f"dlg_btn_pesquisar_capa_{hq_alvo['id']}", use_container_width=True, type="primary")
+    # Campos de pesquisa refinada
+    c_tit, c_ed, c_edi = st.columns([2.5, 1.2, 1.5])
+    with c_tit:
+        termo_tit = st.text_input("Título:", value=hq_alvo["titulo"], key=f"dlg_tit_gq_{hq_alvo['id']}")
+    with c_ed:
+        termo_ed = st.text_input("Edição / Vol:", value=hq_alvo.get("edicao") or "", key=f"dlg_ed_gq_{hq_alvo['id']}")
+    with c_edi:
+        termo_edi = st.text_input("Editora:", value=hq_alvo.get("editora") or "", key=f"dlg_edi_gq_{hq_alvo['id']}")
 
-    session_res_key = f"capas_encontradas_{hq_alvo['id']}"
-    termo_cache_key = f"termo_busca_capa_cache_{hq_alvo['id']}"
-    
-    # Invalida cache antigo se o termo de busca mudou
-    termo_mudou = st.session_state.get(termo_cache_key) != termo_busca
+    btn_pesquisar_gq = st.button("🔎 Buscar no Guia dos Quadrinhos", key=f"dlg_btn_pesquisar_gq_{hq_alvo['id']}", use_container_width=True, type="primary")
 
-    # Busca automaticamente ao abrir ou se termo mudou ou ao clicar no botão
-    if btn_pesquisar or termo_mudou or session_res_key not in st.session_state:
-        with st.spinner("🔍 Buscando capas no Guia dos Quadrinhos e na internet..."):
-            resultados = gemini_service.buscar_capas_online(
-                titulo=termo_busca,
-                edicao=hq_alvo.get("edicao") or "",
-                editora=hq_alvo.get("editora") or "",
-                escritor=hq_alvo.get("escritor") or ""
-            )
-            st.session_state[session_res_key] = resultados
-            st.session_state[termo_cache_key] = termo_busca
+    session_res_key = f"dados_gq_encontrados_{hq_alvo['id']}"
+    termo_cache_key = f"termo_gq_cache_{hq_alvo['id']}"
+    chave_termo = f"{termo_tit}|{termo_ed}|{termo_edi}"
+    termo_mudou = st.session_state.get(termo_cache_key) != chave_termo
 
-    capas = st.session_state.get(session_res_key, [])
+    if btn_pesquisar_gq or termo_mudou or session_res_key not in st.session_state:
+        with st.spinner("🔍 Carregando dados no Guia dos Quadrinhos (Roteiro, Desenho, Preço de Capa, Capa e Resumo)..."):
+            fn_gq = getattr(gemini_service, "buscar_dados_guia_dos_quadrinhos", None)
+            dados_obtidos = {}
+            if fn_gq:
+                try:
+                    sel_mod = st.session_state.get("seletor_modelo_gemini")
+                    mod_gq = sel_mod if sel_mod and sel_mod != "Automático (Otimizado)" else "gemini-3.5-flash"
+                    dados_obtidos = fn_gq(
+                        titulo=termo_tit,
+                        edicao=termo_ed,
+                        editora=termo_edi,
+                        api_key=st.session_state.get("gemini_api_key"),
+                        modelo=mod_gq
+                    )
+                except Exception as ex_gq:
+                    st.error(f"Erro ao buscar no Guia dos Quadrinhos: {ex_gq}")
+            st.session_state[session_res_key] = dados_obtidos
+            st.session_state[termo_cache_key] = chave_termo
+            # Sincroniza e reseta os estados dos inputs do modal para refletir os dados obtidos
+            st.session_state[f"capa_gq_selecionada_{hq_alvo['id']}"] = dados_obtidos.get("capa_b64") or ""
+            st.session_state[f"gq_input_roteiro_{hq_alvo['id']}"] = dados_obtidos.get("roteiro") or ""
+            st.session_state[f"gq_input_desenho_{hq_alvo['id']}"] = dados_obtidos.get("desenho") or ""
+            st.session_state[f"gq_input_preco_{hq_alvo['id']}"] = float(dados_obtidos.get("preco_capa") or 0.0)
+            st.session_state[f"gq_input_resumo_{hq_alvo['id']}"] = dados_obtidos.get("resumo") or ""
+            if dados_obtidos.get("url_edicao"):
+                st.session_state[f"gq_input_link_{hq_alvo['id']}"] = dados_obtidos.get("url_edicao") or ""
 
-    if capas:
-        st.markdown(f"**Capas encontradas ({len(capas)}):** *Escolha a capa desejada e clique em **Cadastrar** para atualizar esta HQ.*")
-        
-        # Grid 2 colunas para exibição visual ampla
-        for i in range(0, len(capas), 2):
-            cols = st.columns(2, gap="medium")
-            for j in range(2):
-                idx = i + j
-                if idx < len(capas):
-                    item = capas[idx]
-                    with cols[j]:
-                        with st.container(border=True):
-                            img_para_exibir = item.get("thumbnail") or item["url"]
-                            st.image(img_para_exibir, use_container_width=True)
-                            st.caption(f"**{item.get('titulo', hq_alvo['titulo'])}**\n\n*Fonte: {item.get('fonte', 'Web')}*")
-                            if st.button("✅ Cadastrar esta Capa", key=f"btn_salvar_capa_item_{hq_alvo['id']}_{idx}", use_container_width=True, type="primary"):
-                                with st.spinner("💾 Otimizando e salvando foto da capa..."):
-                                    capa_b64 = gemini_service.baixar_imagem_url_base64(item["url"], fallback_url=item.get("thumbnail"))
-                                    if database.definir_capa(int(hq_alvo["id"]), capa_b64):
-                                        st.success("🎉 Capa cadastrada com sucesso!")
-                                        if session_res_key in st.session_state:
-                                            del st.session_state[session_res_key]
-                                        st.rerun()
-                                    else:
-                                        st.error("Não foi possível salvar a capa no banco de dados.")
-    else:
-        st.info("ℹ️ Nenhuma capa encontrada automaticamente. Tente alterar o termo de busca acima ou colar o link direto da imagem.")
+    dados = st.session_state.get(session_res_key, {})
+
+    if not dados:
+        st.info("ℹ️ Clique no botão **'Buscar no Guia dos Quadrinhos'** acima para iniciar a pesquisa.")
+        if st.button("❌ Fechar", key=f"dlg_btn_close_busca_empty_{hq_alvo['id']}", use_container_width=True):
+            st.rerun()
+        return
 
     st.markdown("---")
-    with st.expander("🔗 Cadastrar manualmente por link (URL direta de imagem)"):
-        url_direta = st.text_input("URL da imagem (jpg, png, webp):", key=f"dlg_input_url_direta_{hq_alvo['id']}")
-        if url_direta:
-            st.image(url_direta, width=160, caption="Pré-visualização da URL")
-            if st.button("💾 Salvar Capa por URL", key=f"btn_salvar_url_direta_{hq_alvo['id']}", type="primary"):
-                with st.spinner("Salvando capa..."):
-                    capa_b64 = gemini_service.baixar_imagem_url_base64(url_direta)
-                    if database.definir_capa(int(hq_alvo["id"]), capa_b64):
-                        st.success("🎉 Capa salva com sucesso!")
-                        if session_res_key in st.session_state:
-                            del st.session_state[session_res_key]
-                        st.rerun()
+    st.markdown(f"##### 🎯 Conteúdo Encontrado no Guia dos Quadrinhos (`{dados.get('metodo', 'Guia dos Quadrinhos')}`)")
 
-    if st.button("❌ Fechar / Cancelar", key=f"dlg_btn_close_busca_{hq_alvo['id']}", use_container_width=True):
-        st.rerun()
+    col_capa_gq, col_dados_gq = st.columns([1.2, 2.8], gap="medium")
+
+    # Coluna 1: Capa encontrada e alternativas
+    with col_capa_gq:
+        capa_atual_sess = st.session_state.get(f"capa_gq_selecionada_{hq_alvo['id']}") or dados.get("capa_b64") or ""
+        placeholder_capa = st.empty()
+        if capa_atual_sess:
+            placeholder_capa.image(capa_atual_sess, caption="Capa Selecionada", use_container_width=True)
+        else:
+            img_padrao = obter_imagem_capa(hq_alvo.get("capa"))
+            placeholder_capa.image(img_padrao, caption="Sem capa encontrada", use_container_width=True)
+
+        capas_alt = dados.get("capas_alternativas", [])
+        if len(capas_alt) > 1:
+            with st.expander("🖼️ Outras opções de capa", expanded=False):
+                for idx_c, alt in enumerate(capas_alt[:4]):
+                    u_img = alt.get("url") or alt.get("thumbnail") or ""
+                    if u_img:
+                        st.image(u_img, width=120)
+                        if st.button(f"Usar esta capa #{idx_c+1}", key=f"btn_alt_capa_{hq_alvo['id']}_{idx_c}", use_container_width=True):
+                            with st.spinner(f"Carregando capa #{idx_c+1}..."):
+                                b64_alt = gemini_service.baixar_imagem_url_base64(u_img)
+                                capa_escolhida = b64_alt if (b64_alt and b64_alt.startswith("data:image")) else u_img
+                                st.session_state[f"capa_gq_selecionada_{hq_alvo['id']}"] = capa_escolhida
+                                placeholder_capa.image(capa_escolhida, caption=f"Capa #{idx_c+1} Selecionada", use_container_width=True)
+                                st.success(f"✅ Capa #{idx_c+1} selecionada! Clique em 'Armazenar tudo' abaixo para salvar.")
+                                try:
+                                    st.rerun(scope="fragment")
+                                except Exception:
+                                    pass
+
+    # Coluna 2: Roteiro, Desenho, Preço de Capa, Resumo e Link
+    with col_dados_gq:
+        roteiro_edit = st.text_input(
+            "✍️ Roteiro:",
+            value=dados.get("roteiro") or "",
+            key=f"gq_input_roteiro_{hq_alvo['id']}",
+            help="Roteirista(s) oficial(is) creditados na edição"
+        )
+        desenho_edit = st.text_input(
+            "🎨 Desenho / Ilustrador:",
+            value=dados.get("desenho") or "",
+            key=f"gq_input_desenho_{hq_alvo['id']}",
+            help="Desenhista(s) / Arte oficial creditados na edição"
+        )
+        preco_val_init = float(dados.get("preco_capa") or 0.0)
+        preco_edit = st.number_input(
+            "🏷️ Preço de capa (R$):",
+            value=preco_val_init,
+            min_value=0.0,
+            step=0.50,
+            format="%.2f",
+            key=f"gq_input_preco_{hq_alvo['id']}",
+            help="Valor oficial impresso na capa da edição"
+        )
+        resumo_edit = st.text_area(
+            "📝 Resumo / Sinopse:",
+            value=dados.get("resumo") or "",
+            height=120,
+            key=f"gq_input_resumo_{hq_alvo['id']}",
+            help="Sinopse e visão geral da edição"
+        )
+        url_link_gq = hq_alvo.get("link_edicao") or dados.get("url_edicao") or ""
+        ids_alucinados = ["/14102", "/14107", "/li00401/", "/13926", "/ptd0031/"]
+        if not url_link_gq or any(inv in url_link_gq for inv in ids_alucinados):
+            fn_res_url = getattr(gemini_service, "resolver_url_guia_dos_quadrinhos", None)
+            if fn_res_url:
+                url_link_gq = fn_res_url(
+                    titulo=hq_alvo["titulo"],
+                    edicao=hq_alvo.get("edicao") or "",
+                    editora=hq_alvo.get("editora") or "",
+                    url_candidata=dados.get("url_edicao") or ""
+                )
+            else:
+                url_link_gq = f"http://www.guiadosquadrinhos.com/busca-avancada-resultado.aspx?tit={urllib.parse.quote(hq_alvo['titulo'])}"
+
+        link_edicao_edit = st.text_input(
+            "🔗 Link Oficial no Guia dos Quadrinhos:",
+            value=url_link_gq,
+            key=f"gq_input_link_{hq_alvo['id']}",
+            help="URL oficial da página desta edição no Guia dos Quadrinhos"
+        )
+
+        # Query de alta precisão no Google: site:guiadosquadrinhos.com "{titulo}" {edicao} {editora}
+        editora_termo_g = hq_alvo.get('editora') if hq_alvo.get('editora') and str(hq_alvo['editora']).lower() not in ['desconhecida', 'não informada', 'nao informada', ''] else ""
+        termo_g = f"site:guiadosquadrinhos.com \"{hq_alvo['titulo']}\" {hq_alvo.get('edicao') or ''} {editora_termo_g}".strip()
+        url_google_gq = f"https://www.google.com/search?q={urllib.parse.quote(termo_g)}"
+
+        col_lnk1, col_lnk2 = st.columns(2)
+        with col_lnk1:
+            if link_edicao_edit and link_edicao_edit.startswith("http"):
+                st.markdown(f"🔗 [Abrir esta Edição no Guia dos Quadrinhos ➔]({link_edicao_edit})")
+            else:
+                st.caption("Link não configurado.")
+        with col_lnk2:
+            st.markdown(f"🌐 [Localizar Edição no Google ➔]({url_google_gq})")
+
+    st.markdown("---")
+
+    # BOTÃO PRINCIPAL: Armazenar tudo
+    col_save1, col_save2 = st.columns([3, 1], gap="medium")
+    with col_save1:
+        if st.button("💾 Armazenar tudo", key=f"btn_armazenar_tudo_{hq_alvo['id']}", use_container_width=True, type="primary"):
+            sucesso_total = True
+            erros = []
+
+            # 1. Armazena Roteiro e Desenho
+            rot_salvar = roteiro_edit.strip() or "Não informado"
+            des_salvar = desenho_edit.strip() or "Não informado"
+            if not database.definir_escritor_ilustrador(int(hq_alvo["id"]), rot_salvar, des_salvar):
+                sucesso_total = False
+                erros.append("Roteiro/Desenho")
+
+            # 2. Armazena Preço de Capa
+            if preco_edit > 0:
+                if not database.definir_valor(int(hq_alvo["id"]), float(preco_edit)):
+                    sucesso_total = False
+                    erros.append("Preço")
+
+            # 3. Armazena Resumo
+            if resumo_edit and resumo_edit.strip():
+                if not database.definir_resumo(int(hq_alvo["id"]), resumo_edit.strip()):
+                    sucesso_total = False
+                    erros.append("Resumo")
+
+            # 4. Armazena Capa
+            capa_final = st.session_state.get(f"capa_gq_selecionada_{hq_alvo['id']}") or dados.get("capa_b64") or ""
+            if capa_final and (capa_final.startswith("data:image") or capa_final.startswith("http")):
+                if not database.definir_capa(int(hq_alvo["id"]), capa_final):
+                    sucesso_total = False
+                    erros.append("Capa")
+
+            # 5. Armazena Link Oficial da Edição no Guia dos Quadrinhos
+            if link_edicao_edit and link_edicao_edit.strip():
+                fn_link = getattr(database, "definir_link_edicao", None)
+                if fn_link:
+                    fn_link(int(hq_alvo["id"]), link_edicao_edit.strip())
+
+            if sucesso_total:
+                st.success("🎉 Todos os dados foram armazenados com sucesso no catálogo!")
+                # Limpa cache do modal
+                for k in [
+                    session_res_key,
+                    termo_cache_key,
+                    f"capa_gq_selecionada_{hq_alvo['id']}",
+                    f"gq_input_roteiro_{hq_alvo['id']}",
+                    f"gq_input_desenho_{hq_alvo['id']}",
+                    f"gq_input_preco_{hq_alvo['id']}",
+                    f"gq_input_resumo_{hq_alvo['id']}",
+                    f"gq_input_link_{hq_alvo['id']}"
+                ]:
+                    if k in st.session_state:
+                        del st.session_state[k]
+                time.sleep(1.0)
+                st.rerun()
+            else:
+                st.warning(f"Alguns campos não puderam ser salvos: {', '.join(erros)}")
+
+    with col_save2:
+        if st.button("❌ Fechar", key=f"dlg_btn_close_busca_{hq_alvo['id']}", use_container_width=True):
+            for k in [
+                session_res_key,
+                termo_cache_key,
+                f"capa_gq_selecionada_{hq_alvo['id']}",
+                f"gq_input_roteiro_{hq_alvo['id']}",
+                f"gq_input_desenho_{hq_alvo['id']}",
+                f"gq_input_preco_{hq_alvo['id']}",
+                f"gq_input_resumo_{hq_alvo['id']}",
+                f"gq_input_link_{hq_alvo['id']}"
+            ]:
+                if k in st.session_state:
+                    del st.session_state[k]
+            st.rerun()
+
+
+# Aliases de compatibilidade
+dialog_buscar_capa = dialog_buscar_dados
+dialog_buscar_autores = dialog_buscar_dados
+dialog_buscar_resumo = dialog_buscar_dados
+
 
 
 @st.dialog("💰 Buscar Preço da HQ Online", width="large")
@@ -467,169 +637,12 @@ def dialog_buscar_preco(id_padrao: Optional[int] = None):
         st.rerun()
 
 
-@st.dialog("✍️ Buscar Roteirista, Ilustrador e Resumo no Guia dos Quadrinhos", width="large")
-def dialog_buscar_autores(id_padrao: Optional[int] = None):
-    val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
-    id_para_busca = st.number_input("Informe o ID da HQ:", min_value=1, step=1, value=val_id, key=f"dlg_input_buscar_autores_id_{id_padrao or 'padrao'}")
-    hq_alvo = database.obter_hq_por_id(int(id_para_busca))
-    if not hq_alvo:
-        st.warning(f"Quadrinho com ID #{id_para_busca} não encontrado.")
-        if st.button("❌ Fechar", key="btn_close_busca_autores_empty", use_container_width=True):
-            st.rerun()
-        return
+# =============================================================
+# ALIASES DE COMPATIBILIDADE: BUSCA UNIFICADA DE DADOS
+# =============================================================
+dialog_buscar_autores = dialog_buscar_dados
+dialog_buscar_resumo = dialog_buscar_dados
 
-    st.markdown(f"#### 📖 {hq_alvo['titulo']}")
-    detalhes_str = []
-    if hq_alvo.get("edicao"):
-        detalhes_str.append(f"**Edição:** {hq_alvo['edicao']}")
-    if hq_alvo.get("editora"):
-        detalhes_str.append(f"**Editora:** {hq_alvo['editora']}")
-    escritor_atual = str(hq_alvo.get("escritor") or "Não informado").strip()
-    ilustrador_atual = str(hq_alvo.get("ilustrador") or "Não informado").strip()
-    detalhes_str.append(f"**Roteirista Atual:** `{escritor_atual}`")
-    detalhes_str.append(f"**Ilustrador Atual:** `{ilustrador_atual}`")
-    st.caption(" • ".join(detalhes_str))
-
-    resumo_atual = (hq_alvo.get("resumo") or "").strip()
-    if resumo_atual:
-        with st.expander("📖 Resumo / Sinopse Atual Cadastrada", expanded=False):
-            st.info(resumo_atual)
-
-    termo_default = f"{hq_alvo['titulo']} {hq_alvo.get('edicao') or ''} {hq_alvo.get('editora') or ''}".strip()
-
-    col_t1, col_t2 = st.columns([3.5, 1.2])
-    with col_t1:
-        termo_busca = st.text_input("Termo de busca no Guia dos Quadrinhos:", value=termo_default, key=f"dlg_termo_autores_resumo_{hq_alvo['id']}")
-    with col_t2:
-        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        btn_pesquisar = st.button("🔎 Pesquisar", key=f"dlg_btn_pesquisar_autores_resumo_{hq_alvo['id']}", use_container_width=True, type="primary")
-
-    session_res_key = f"autores_resumo_encontrados_{hq_alvo['id']}"
-    termo_cache_key = f"termo_busca_autores_cache_{hq_alvo['id']}"
-    termo_mudou = st.session_state.get(termo_cache_key) != termo_busca
-
-    if btn_pesquisar or termo_mudou or session_res_key not in st.session_state:
-        with st.spinner("🔍 Consultando ficha técnica e sinopse no Guia dos Quadrinhos (guiadosquadrinhos.com)..."):
-            sugestoes_autores = []
-            resumos_encontrados = []
-            try:
-                fn_autores = getattr(gemini_service, "buscar_autores_online", None)
-                if fn_autores:
-                    sugestoes_autores = fn_autores(
-                        titulo=termo_busca,
-                        edicao=hq_alvo.get("edicao") or "",
-                        editora=hq_alvo.get("editora") or "",
-                        api_key=st.session_state.get("gemini_api_key")
-                    )
-            except Exception as e_autores:
-                st.warning(f"Aviso ao consultar autores: {e_autores}")
-
-            try:
-                fn_resumo = getattr(gemini_service, "buscar_resumo_online", None)
-                if fn_resumo:
-                    resumos_encontrados = fn_resumo(
-                        titulo=termo_busca,
-                        edicao=hq_alvo.get("edicao") or "",
-                        editora=hq_alvo.get("editora") or "",
-                        escritor=hq_alvo.get("escritor") or "",
-                        api_key=st.session_state.get("gemini_api_key")
-                    )
-            except Exception as e_resumo:
-                st.warning(f"Aviso ao consultar resumos: {e_resumo}")
-
-            st.session_state[session_res_key] = {
-                "autores": sugestoes_autores,
-                "resumos": resumos_encontrados
-            }
-            st.session_state[termo_cache_key] = termo_busca
-
-    dados_encontrados = st.session_state.get(session_res_key, {"autores": [], "resumos": []})
-    sugestoes_autores = dados_encontrados.get("autores", [])
-    resumos_encontrados = dados_encontrados.get("resumos", [])
-
-    # Ação Unificada Recomendada (1-clique) se ambos estiverem disponíveis
-    if sugestoes_autores and resumos_encontrados:
-        top_aut = sugestoes_autores[0]
-        top_res = resumos_encontrados[0]
-        st.success(f"✨ **Sugestão Recomendada:** Roteiro: **{top_aut['escritor']}** • Arte: **{top_aut['ilustrador']}**")
-        if st.button("🚀 Aplicar Tudo (Roteirista, Ilustrador e Resumo Recomendados)", key=f"btn_salvar_tudo_opt_{hq_alvo['id']}", use_container_width=True, type="primary"):
-            ok_aut = database.definir_escritor_ilustrador(int(hq_alvo["id"]), top_aut["escritor"], top_aut["ilustrador"])
-            ok_res = database.definir_resumo(int(hq_alvo["id"]), top_res["resumo"])
-            if ok_aut and ok_res:
-                st.success("🎉 Roteirista, Ilustrador e Resumo atualizados com sucesso!")
-                if session_res_key in st.session_state:
-                    del st.session_state[session_res_key]
-                st.rerun()
-            else:
-                st.error("Não foi possível salvar todos os dados no banco de dados.")
-        st.markdown("---")
-
-    # Seção 1: Roteirista e Ilustrador
-    st.markdown(f"##### ✍️ Roteirista e Ilustrador Encontrados ({len(sugestoes_autores)})")
-    if sugestoes_autores:
-        for idx, item in enumerate(sugestoes_autores):
-            with st.container(border=True):
-                col_i1, col_i2 = st.columns([3, 1.5], gap="medium")
-                with col_i1:
-                    st.markdown(f"✍️ **Roteirista:** `{item['escritor']}`")
-                    st.markdown(f"🎨 **Ilustrador:** `{item['ilustrador']}`")
-                    if item.get("detalhes"):
-                        st.caption(f"✨ *{item['detalhes']}* (Fonte: **{item.get('fonte', 'Guia dos Quadrinhos')}**)")
-                with col_i2:
-                    st.write("")
-                    if st.button("✅ Aplicar Autores", key=f"btn_salvar_autores_opt_{hq_alvo['id']}_{idx}", use_container_width=True, type="primary"):
-                        if database.definir_escritor_ilustrador(int(hq_alvo["id"]), item["escritor"], item["ilustrador"]):
-                            st.success("🎉 Roteirista e Ilustrador atualizados com sucesso!")
-                            if session_res_key in st.session_state:
-                                del st.session_state[session_res_key]
-                            st.rerun()
-                        else:
-                            st.error("Não foi possível salvar os autores no banco de dados.")
-    else:
-        st.info("ℹ️ Nenhum autor retornado automaticamente.")
-
-    st.markdown("---")
-
-    # Seção 2: Resumo / Sinopse
-    st.markdown(f"##### 📝 Resumos / Sinopses Encontradas ({len(resumos_encontrados)})")
-    if resumos_encontrados:
-        for idx, item in enumerate(resumos_encontrados):
-            with st.container(border=True):
-                st.caption(f"✨ Fonte: **{item.get('fonte', 'Guia dos Quadrinhos')}** ({item.get('tipo', 'Sinopse')})")
-                st.markdown(f"> {item['resumo']}")
-                if st.button("✅ Aplicar este Resumo", key=f"btn_salvar_resumo_opt_{hq_alvo['id']}_{idx}", use_container_width=True, type="primary"):
-                    if database.definir_resumo(int(hq_alvo["id"]), item["resumo"]):
-                        st.success("🎉 Resumo atualizado com sucesso!")
-                        if session_res_key in st.session_state:
-                            del st.session_state[session_res_key]
-                        st.rerun()
-                    else:
-                        st.error("Não foi possível salvar o resumo no banco de dados.")
-    else:
-        st.info("ℹ️ Nenhum resumo retornado automaticamente.")
-
-    st.markdown("---")
-
-    # Seção 3: Inserir ou ajustar manualmente
-    with st.expander("✍️ Inserir ou ajustar Roteirista, Ilustrador e Resumo manualmente"):
-        esc_man = st.text_input("Roteirista / Escritor:", value=escritor_atual if escritor_atual != "Não informado" else "", key=f"dlg_input_esc_man_{hq_alvo['id']}")
-        ilus_man = st.text_input("Ilustrador / Arte:", value=ilustrador_atual if ilustrador_atual != "Não informado" else "", key=f"dlg_input_ilus_man_{hq_alvo['id']}")
-        novo_resumo_man = st.text_area("Texto do Resumo / Sinopse:", value=resumo_atual, height=120, key=f"dlg_input_resumo_manual_{hq_alvo['id']}")
-        if st.button("💾 Salvar Dados Manuais", key=f"btn_salvar_dados_man_{hq_alvo['id']}", type="primary", use_container_width=True):
-            ok1 = database.definir_escritor_ilustrador(int(hq_alvo["id"]), esc_man or "Não informado", ilus_man or "Não informado")
-            ok2 = database.definir_resumo(int(hq_alvo["id"]), novo_resumo_man)
-            if ok1 and ok2:
-                st.success("🎉 Informações manuais salvas com sucesso!")
-                if session_res_key in st.session_state:
-                    del st.session_state[session_res_key]
-                st.rerun()
-
-    if st.button("❌ Fechar / Cancelar", key=f"dlg_btn_close_busca_autores_{hq_alvo['id']}", use_container_width=True):
-        st.rerun()
-
-
-# Alias de compatibilidade
-dialog_buscar_resumo = dialog_buscar_autores
 
 
 @st.dialog("✍️ Resenha / O que achou da HQ")
@@ -726,8 +739,9 @@ def dialog_resenha(id_padrao: Optional[int] = None):
             st.rerun()
 
 @st.dialog("⭐ Avaliar HQ")
-def dialog_avaliar_hq():
-    id_para_avaliar = st.number_input("Informe o ID da HQ:", min_value=1, step=1, key="dlg_input_rate_id")
+def dialog_avaliar_hq(id_padrao: Optional[int] = None):
+    val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
+    id_para_avaliar = st.number_input("Informe o ID da HQ:", min_value=1, step=1, value=val_id, key=f"dlg_input_rate_id_{id_padrao or 'padrao'}")
     hq_rate = database.obter_hq_por_id(int(id_para_avaliar))
     if hq_rate:
         tit_hq = hq_rate.get("titulo") or "Sem título"
@@ -735,19 +749,25 @@ def dialog_avaliar_hq():
         ed_str = f" ({ed_hq})" if ed_hq else ""
         st.markdown(f"📖 **HQ:** **{tit_hq}**{ed_str} `(ID #{id_para_avaliar})`")
         nota_atual = int(hq_rate.get("avaliacao") or 0)
-        nova_nota = st.selectbox("Selecione a Nota:", options=[0, 1, 2, 3, 4, 5], index=nota_atual, key="dlg_sel_fast_nota", format_func=lambda x: "⚪ Sem Avaliação (0)" if x == 0 else f"{'⭐' * x} ({x} de 5)")
+        nova_nota = st.selectbox(
+            "Selecione a Nota:",
+            options=[0, 1, 2, 3, 4, 5],
+            index=nota_atual,
+            key=f"dlg_sel_fast_nota_{id_padrao or 'padrao'}",
+            format_func=lambda x: "⚪ Sem Avaliação (0)" if x == 0 else f"{'⭐' * x} ({x} de 5)"
+        )
         col_av1, col_av2 = st.columns(2)
         with col_av1:
-            if st.button("💾 Salvar Nota", type="primary", use_container_width=True, key="dlg_btn_save_nota"):
+            if st.button("💾 Salvar Nota", type="primary", use_container_width=True, key=f"dlg_btn_save_nota_{id_padrao or 'padrao'}"):
                 database.definir_avaliacao(int(id_para_avaliar), nova_nota)
-                st.success("Avaliação salva!")
+                st.success("Avaliação salva com sucesso!")
                 st.rerun()
         with col_av2:
-            if st.button("❌ Fechar", key="dlg_btn_cancel_nota", use_container_width=True):
+            if st.button("❌ Fechar", key=f"dlg_btn_cancel_nota_{id_padrao or 'padrao'}", use_container_width=True):
                 st.rerun()
     else:
         st.info(f"Nenhum quadrinho com o ID #{id_para_avaliar} foi encontrado.")
-        if st.button("❌ Fechar", key="dlg_btn_close_rate_empty", use_container_width=True):
+        if st.button("❌ Fechar", key=f"dlg_btn_close_rate_empty_{id_padrao or 'padrao'}", use_container_width=True):
             st.rerun()
 
 @st.dialog("📖 Alterar Status de Leitura")
@@ -785,12 +805,15 @@ def dialog_alternar_leitura(id_padrao: Optional[int] = None):
             st.rerun()
 
 @st.dialog("🗑️ Excluir HQ")
-def dialog_excluir_hq():
-    id_para_excluir = st.number_input("Informe o ID da HQ a excluir:", min_value=1, step=1, key="dlg_input_delete_id")
+def dialog_excluir_hq(id_padrao: Optional[int] = None):
+    val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
+    id_para_excluir = st.number_input("Informe o ID da HQ a excluir:", min_value=1, step=1, value=val_id, key=f"dlg_input_delete_id_{id_padrao or 'padrao'}")
     hq_del = database.obter_hq_por_id(int(id_para_excluir))
     if hq_del:
         tit_hq = hq_del.get("titulo") or "Sem título"
-        st.markdown(f"⚠️ Deseja realmente excluir **'{tit_hq}'** `(ID #{id_para_excluir})`?")
+        ed_hq = hq_del.get("edicao") or ""
+        tit_completo = f"{tit_hq} ({ed_hq})" if ed_hq else tit_hq
+        st.warning(f"⚠️ Deseja realmente excluir **'{tit_completo}'** `(ID #{id_para_excluir})` da sua coleção?")
         col_d1, col_d2 = st.columns(2)
         with col_d1:
             if st.button("🗑️ Confirmar Exclusão", type="primary", use_container_width=True, key="dlg_btn_confirm_del"):
@@ -974,19 +997,20 @@ with st.sidebar:
         "Modelo do Gemini:",
         options=[
             "Automático (Otimizado)",
-            "gemini-3.1-pro-preview",
-            "gemini-pro-latest",
             "gemini-3.5-flash",
             "gemini-3.6-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3.5-flash-lite",
             "gemini-3.7-flash",
             "gemini-3.8-flash",
             "gemini-flash-latest",
-            "gemini-3.1-flash-lite",
-            "gemini-3.5-flash-lite",
+            "gemini-3.1-pro-preview",
+            "gemini-pro-latest",
             "gemini-3-flash-preview"
         ],
         index=0,
-        help="Automático: gemini-3.6-flash para Visão/Lombadas e Chat com máxima velocidade e compatibilidade de cota."
+        key="seletor_modelo_gemini",
+        help="Automático: gemini-3.5-flash / gemini-3.6-flash para máxima velocidade, economia de créditos e compatibilidade."
     )
 
     def resolver_modelo(tipo: str) -> str:
@@ -1279,8 +1303,8 @@ def renderizar_pagina_em_leitura():
 
                 col_cb1, col_cb2 = st.columns(2)
                 with col_cb1:
-                    if st.button("🔍 Buscar Capa", key=f"btn_buscar_capa_lendo_{hq_id}_{idx}", use_container_width=True, type="primary" if not tem_capa else "secondary", help="Procurar capa na internet"):
-                        dialog_buscar_capa(hq_id)
+                    if st.button("🔍 Buscar Dados", key=f"btn_buscar_dados_lendo_{hq_id}_{idx}", use_container_width=True, type="primary" if not tem_capa else "secondary", help="Buscar Roteiro, Desenho, Preço e Capa no Guia dos Quadrinhos"):
+                        dialog_buscar_dados(hq_id)
                 with col_cb2:
                     label_foto = "📷 Enviar Foto" if not tem_capa else "📷 Alterar"
                     if st.button(label_foto, key=f"btn_foto_capa_lendo_{hq_id}_{idx}", use_container_width=True, help="Tirar foto ou upload da capa"):
@@ -2812,14 +2836,11 @@ if hq_dia:
             
             col_btn_c1, col_btn_c2 = st.columns(2)
             with col_btn_c1:
-                if st.button("🔍 Buscar Capa", key="btn_buscar_capa_dia", use_container_width=True, type="primary" if not tem_capa else "secondary", help="Procurar a capa desta HQ na internet"):
-                    dialog_buscar_capa(int(hq_dia["id"]))
+                if st.button("🔍 Buscar Dados", key="btn_buscar_dados_dia", use_container_width=True, type="primary" if not tem_capa else "secondary", help="Buscar Roteiro, Desenho, Preço de Capa e Imagem no Guia dos Quadrinhos"):
+                    dialog_buscar_dados(int(hq_dia["id"]))
             with col_btn_c2:
-                if st.button("💰 Buscar Preço", key="btn_buscar_preco_capa_dia", use_container_width=True, help="Consultar e selecionar preços online desta HQ"):
+                if st.button("💰 Buscar Preço", key="btn_buscar_preco_capa_dia", use_container_width=True, help="Consultar e comparar preços online desta HQ"):
                     dialog_buscar_preco(int(hq_dia["id"]))
-
-            if st.button("✍️ Buscar Roteirista, Ilustrador e Resumo", key="btn_buscar_autores_resumo_dia", use_container_width=True, help="Buscar e identificar Roteirista, Ilustrador e Resumo/Sinopse online via IA"):
-                dialog_buscar_autores(int(hq_dia["id"]))
 
             if not tem_capa:
                 if st.button("📷 Enviar Foto", key="btn_add_capa_dia", use_container_width=True, help="Tire uma foto ou faça upload da capa desta edição"):
@@ -2875,9 +2896,12 @@ if hq_dia:
             else:
                 st.info("ℹ️ *Esta edição ainda não possui um resumo cadastrado. Você pode adicioná-lo editando a HQ pelo formulário ou tabela.*")
 
+            if hq_dia.get("link_edicao") and str(hq_dia["link_edicao"]).startswith("http"):
+                st.markdown(f"🔗 [Abrir ficha desta edição no Guia dos Quadrinhos ➔]({hq_dia['link_edicao']})")
+
             st.markdown("")
 
-            col_b1, col_b2, col_b3 = st.columns([1.5, 1.5, 1.5])
+            col_b1, col_b2, col_b3, col_b4, col_b5, col_b6 = st.columns([1.1, 1.1, 1.3, 1.0, 1.0, 1.0])
             with col_b1:
                 if st.button("🎲 Sortear Outra", key="btn_sortear_outra_dia", use_container_width=True, help="Sortear aleatoriamente outro quadrinho da sua coleção sem repetir recentes"):
                     outra_hq = database.sortear_edicao_do_dia(excluir_id=int(hq_dia["id"]), data_destaque=data_hoje)
@@ -2890,8 +2914,23 @@ if hq_dia:
                     st.session_state["pagina_atual"] = "storyteller"
                     st.rerun()
             with col_b3:
+                is_lido = str(hq_dia.get("lido", "")).strip().lower() == "lido"
+                btn_lido_label = "📖 Marcar Não Lido" if is_lido else "✅ Marcar como Lido"
+                btn_lido_help = "Alterar status para Não Lido" if is_lido else "Marcar este quadrinho como Lido na coleção"
+                if st.button(btn_lido_label, key="btn_marcar_lido_dia", use_container_width=True, help=btn_lido_help):
+                    novo_status_dia = "Não Lido" if is_lido else "Lido"
+                    database.definir_status_leitura(int(hq_dia["id"]), novo_status_dia)
+                    st.toast(f"Status atualizado para '{novo_status_dia}'!", icon="✅" if novo_status_dia == "Lido" else "📖")
+                    st.rerun()
+            with col_b4:
+                if st.button("⭐ Avaliar HQ", key="btn_avaliar_hq_dia", use_container_width=True, help="Dar uma nota de 1 a 5 estrelas para esta HQ"):
+                    dialog_avaliar_hq(int(hq_dia["id"]))
+            with col_b5:
                 if st.button("✏️ Editar HQ", key="btn_editar_hq_dia", use_container_width=True, help="Editar informações desta HQ"):
                     dialog_editar_hq(int(hq_dia["id"]))
+            with col_b6:
+                if st.button("🗑️ Excluir HQ", key="btn_excluir_hq_dia", use_container_width=True, help="Excluir este quadrinho da coleção"):
+                    dialog_excluir_hq(int(hq_dia["id"]))
 else:
     with st.container(border=True):
         st.info("📚 **Nenhuma edição cadastrada no momento.** Tire fotos da sua prateleira ou adicione títulos para ver a **Edição do Dia** em destaque aqui!", icon="✨")
@@ -3176,12 +3215,16 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
         ordem_selecionada = st.selectbox("Ordenar por:", list(opcoes_ordem.keys()))
         ordem_val = opcoes_ordem[ordem_selecionada]
 
-    # Linha 2 de Filtros: Prateleira (ampla para caber nomes longos), Gênero, Status e Avaliação
-    col_filtro_prat, col_filtro_gen, col_filtro_leitura, col_filtro_aval = st.columns([2.2, 1.3, 1.1, 1.1])
+    # Linha 2 de Filtros: Prateleira, Editora, Gênero, Status e Avaliação
+    col_filtro_prat, col_filtro_edit, col_filtro_gen, col_filtro_leitura, col_filtro_aval = st.columns([1.8, 1.4, 1.2, 1.1, 1.1])
 
     with col_filtro_prat:
         lista_prateleiras = ["Todas"] + database.obter_prateleiras()
         prateleira_selecionada = st.selectbox("📍 Filtrar por Prateleira:", lista_prateleiras)
+
+    with col_filtro_edit:
+        lista_editoras = ["Todas"] + database.obter_editoras()
+        editora_selecionada = st.selectbox("🏢 Filtrar por Editora:", lista_editoras)
 
     with col_filtro_gen:
         lista_generos = ["Todos"] + database.obter_generos()
@@ -3206,6 +3249,7 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
     df_hqs = database.listar_todas_hqs(
         busca=busca_texto,
         prateleira_filtro=prateleira_selecionada,
+        editora_filtro=editora_selecionada,
         genero_filtro=genero_selecionado,
         status_leitura_filtro=leitura_selecionada,
         avaliacao_filtro=aval_filtro_val,
@@ -3213,11 +3257,24 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
     )
 
     if not df_hqs.empty:
+        col_grid_info, col_grid_select_all = st.columns([3.2, 1.3])
+        with col_grid_info:
+            st.write(f"Exibindo **{len(df_hqs)}** quadrinho(s) cadastrado(s) ordenados por **{ordem_selecionada}**: *(Marque o CheckBox para ações em massa ou dê 2 cliques para editar)*")
+        with col_grid_select_all:
+            def on_toggle_selecionar_todos():
+                if "tabela_inventario_editavel" in st.session_state:
+                    del st.session_state["tabela_inventario_editavel"]
+
+            selecionar_todos = st.checkbox(
+                "☑️ Selecionar Todos",
+                key="chk_selecionar_todos_grid",
+                on_change=on_toggle_selecionar_todos,
+                help="Marcar ou desmarcar todas as HQs listadas na grid atual para ações em lote"
+            )
+
         # Insere coluna de seleção para ações em massa
         df_hqs_display = df_hqs.copy()
-        df_hqs_display.insert(0, "selecionar", False)
-
-        st.write(f"Exibindo **{len(df_hqs)}** quadrinho(s) cadastrado(s) ordenados por **{ordem_selecionada}**: *(Marque o CheckBox para ações em massa ou dê 2 cliques para editar)*")
+        df_hqs_display.insert(0, "selecionar", bool(selecionar_todos))
 
         df_editado = st.data_editor(
             df_hqs_display,
@@ -3313,6 +3370,10 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                 with col_blk_clear:
                     if st.button("❌ Desmarcar", use_container_width=True, key="btn_bulk_uncheck"):
                         st.session_state["confirmar_exclusao_massa_ids"] = None
+                        if "chk_selecionar_todos_grid" in st.session_state:
+                            st.session_state["chk_selecionar_todos_grid"] = False
+                        if "tabela_inventario_editavel" in st.session_state:
+                            del st.session_state["tabela_inventario_editavel"]
                         st.rerun()
 
                 st.markdown("---")
