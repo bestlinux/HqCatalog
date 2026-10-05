@@ -1508,7 +1508,7 @@ Se não encontrar anúncios reais com preços confirmados, retorne []."""
     return ofertas[:limite]
 
 
-def baixar_imagem_url_base64(url: str, max_dim: int = 1000, quality: int = 90, timeout: int = 10, fallback_url: Optional[str] = None) -> str:
+def baixar_imagem_url_base64(url: str, max_dim: int = 1000, quality: int = 90, timeout: int = 4, fallback_url: Optional[str] = None) -> str:
     """
     Baixa uma imagem a partir de uma URL e converte em string base64 JPEG compacta em alta definição.
     Se não for possível baixar ou processar, tenta a fallback_url ou retorna a própria URL original.
@@ -3143,15 +3143,13 @@ Retorne ESTRITAMENTE um JSON com as chaves:
   "capa_url": "..."
 }}
 """
-            modelo_base = str(modelo).strip() if modelo and str(modelo).strip() else "gemini-3.5-flash"
+            modelo_base = str(modelo).strip() if modelo and str(modelo).strip() else "gemini-3.1-flash-lite"
             candidatos = [
                 modelo_base,
-                "gemini-3.5-flash",
-                "gemini-3.6-flash",
                 "gemini-3.1-flash-lite",
-                "gemini-3.5-flash-lite",
-                "gemini-3.7-flash",
-                "gemini-3.8-flash"
+                "gemini-3.8-flash",
+                "gemini-flash-latest",
+                "gemini-3.5-flash"
             ]
             modelos_para_tentar = []
             for m in candidatos:
