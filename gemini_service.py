@@ -10,6 +10,7 @@ import io
 import base64
 import time
 import urllib.parse
+import unicodedata
 from typing import List, Dict, Any, Optional
 try:
     import requests
@@ -989,7 +990,9 @@ def buscar_capas_online(
             import serpapi
             client = serpapi.Client(api_key=serp_key)
             editora_termo_busca = editora.strip() if editora and editora.lower() not in ["desconhecida", "não informada", "nao informada", ""] else ""
-            query_gq = f'site:guiadosquadrinhos.com "{titulo.strip()}" {edicao.strip()} {editora_termo_busca}'.strip()
+            num_num_c = re.sub(r"[^\d]", "", edicao.strip() or "")
+            ed_termo_busca = f'"nº {num_num_c}"' if num_num_c else (f'"{edicao.strip()}"' if edicao.strip() else "")
+            query_gq = f'site:guiadosquadrinhos.com "{titulo.strip()}" {ed_termo_busca} {editora_termo_busca}'.strip()
             res_gq = client.search({
                 "engine": "google_images",
                 "q": query_gq,
@@ -1020,6 +1023,15 @@ def buscar_capas_online(
                 if "x-men" not in palavras_tit_busca and "xmen" not in palavras_tit_busca:
                     if "x-men" in tit_img_norm or "x-men" in link_ref_norm or "xmen" in tit_img_norm:
                         continue
+
+                # Validação de número de edição para evitar capas de edições completamente diferentes
+                if num_num_c:
+                    m_num_img = re.search(r"n[º°o]?\s*(\d+)", tit_img_norm)
+                    if m_num_img:
+                        num_enc = m_num_img.group(1).lstrip("0") or "0"
+                        num_esp = num_num_c.lstrip("0") or "0"
+                        if num_enc != num_esp:
+                            continue
 
                 # O servidor do Guia dos Quadrinhos bloqueia 403 requisições externas diretas ao ShowImage.aspx
                 # Por isso, a URL de CDN segura e nítida (360x550+) é o thumbnail do Google
@@ -2882,6 +2894,57 @@ MAPA_CANONICO_DADOS_GUIA_QUADRINHOS = {
             "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)",
             "metodo": "Ficha Oficial Guia dos Quadrinhos"
         }
+    },
+    "universo dc - 3ª série": {
+        "0": {
+            "titulo": "Universo DC 3ª Série",
+            "edicao": "0",
+            "editora": "Panini",
+            "roteiro": "Geoff Johns, James Robinson, Joseph \"Joe\" Harris, Dan Didio, Tony Bedard, Rob Liefeld, Mark Poulton, Paul Levitz, Brian Azzarello",
+            "desenho": "Ivan Reis, Joe Prado, Tomás Giorello, Yildiray Cinar, Marlo Alquiza, Keith Giffen, Scott Koblish, Carlos Rodriguez, Javier Bergantiño, Bené Nascimento (Joe Bennett), Art Thibert, Kevin Maguire, Wesley \"Wes\" Craig, Cliff Chiang",
+            "preco_capa": 15.90,
+            "preco_capa_formatado": "R$ 15,90",
+            "resumo": "Edição compilando 8 histórias:\n1. «Debaixo D'água» (Origem: Aquaman (2011) nº 0; Roteiro: Geoff Johns; Arte: Ivan Reis, Joe Prado)\n2. «A história de um herói» (Origem: Earth 2 (2012) nº 0; Roteiro: James Robinson; Arte: Tomás Giorello)\n3. «Covalência» (Origem: Fury of Firestorm: The Nuclear Men, The (2011) nº 0; Roteiro: Joseph \"Joe\" Harris; Arte: Yildiray Cinar, Marlo Alquiza)\n4. «Questões de origem pós-cancelamento» (Origem: DC Universe Presents (2011) nº 0; Roteiro: Dan Didio; Arte: Keith Giffen, Scott Koblish)\n5. «Mãe máquina» (Origem: DC Universe Presents (2011) nº 0; Roteiro: Tony Bedard; Arte: Carlos Rodriguez, Javier Bergantiño - ‘Bit’)\n6. «Aqueles que se elevam acima de nós» (Origem: Savage Hawkman, The (2011) nº 0; Roteiro: Rob Liefeld, Mark Poulton; Arte: Bené Nascimento - ‘Joe Bennett’, Art Thibert)\n7. «Começos» (Origem: Worlds' Finest (2012) nº 0; Roteiro: Paul Levitz; Arte: Kevin Maguire, Wesley \"Wes\" Craig)\n8. «O covil do Minotauro!» (Origem: Wonder Woman (2011) nº 0; Roteiro: Brian Azzarello; Arte: Cliff Chiang)",
+            "url_edicao": "https://www.guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-0/un011300/104735",
+            "capa_url": "https://www.guiadosquadrinhos.com/edicao/ShowImage.aspx?id=104735&path=panini/u/un01130000.jpg&w=400&h=613",
+            "b64_file": os.path.join(os.path.dirname(os.path.abspath(__file__)), "universodc0_capa.b64"),
+            "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)",
+            "metodo": "Ficha Oficial Guia dos Quadrinhos"
+        }
+    },
+    "universo dc 3ª série": {
+        "0": {
+            "titulo": "Universo DC 3ª Série",
+            "edicao": "0",
+            "editora": "Panini",
+            "roteiro": "Geoff Johns, James Robinson, Joseph \"Joe\" Harris, Dan Didio, Tony Bedard, Rob Liefeld, Mark Poulton, Paul Levitz, Brian Azzarello",
+            "desenho": "Ivan Reis, Joe Prado, Tomás Giorello, Yildiray Cinar, Marlo Alquiza, Keith Giffen, Scott Koblish, Carlos Rodriguez, Javier Bergantiño, Bené Nascimento (Joe Bennett), Art Thibert, Kevin Maguire, Wesley \"Wes\" Craig, Cliff Chiang",
+            "preco_capa": 15.90,
+            "preco_capa_formatado": "R$ 15,90",
+            "resumo": "Edição compilando 8 histórias:\n1. «Debaixo D'água» (Origem: Aquaman (2011) nº 0; Roteiro: Geoff Johns; Arte: Ivan Reis, Joe Prado)\n2. «A história de um herói» (Origem: Earth 2 (2012) nº 0; Roteiro: James Robinson; Arte: Tomás Giorello)\n3. «Covalência» (Origem: Fury of Firestorm: The Nuclear Men, The (2011) nº 0; Roteiro: Joseph \"Joe\" Harris; Arte: Yildiray Cinar, Marlo Alquiza)\n4. «Questões de origem pós-cancelamento» (Origem: DC Universe Presents (2011) nº 0; Roteiro: Dan Didio; Arte: Keith Giffen, Scott Koblish)\n5. «Mãe máquina» (Origem: DC Universe Presents (2011) nº 0; Roteiro: Tony Bedard; Arte: Carlos Rodriguez, Javier Bergantiño - ‘Bit’)\n6. «Aqueles que se elevam acima de nós» (Origem: Savage Hawkman, The (2011) nº 0; Roteiro: Rob Liefeld, Mark Poulton; Arte: Bené Nascimento - ‘Joe Bennett’, Art Thibert)\n7. «Começos» (Origem: Worlds' Finest (2012) nº 0; Roteiro: Paul Levitz; Arte: Kevin Maguire, Wesley \"Wes\" Craig)\n8. «O covil do Minotauro!» (Origem: Wonder Woman (2011) nº 0; Roteiro: Brian Azzarello; Arte: Cliff Chiang)",
+            "url_edicao": "https://www.guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-0/un011300/104735",
+            "capa_url": "https://www.guiadosquadrinhos.com/edicao/ShowImage.aspx?id=104735&path=panini/u/un01130000.jpg&w=400&h=613",
+            "b64_file": os.path.join(os.path.dirname(os.path.abspath(__file__)), "universodc0_capa.b64"),
+            "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)",
+            "metodo": "Ficha Oficial Guia dos Quadrinhos"
+        }
+    },
+    "universo dc 3a serie": {
+        "0": {
+            "titulo": "Universo DC 3ª Série",
+            "edicao": "0",
+            "editora": "Panini",
+            "roteiro": "Geoff Johns, James Robinson, Joseph \"Joe\" Harris, Dan Didio, Tony Bedard, Rob Liefeld, Mark Poulton, Paul Levitz, Brian Azzarello",
+            "desenho": "Ivan Reis, Joe Prado, Tomás Giorello, Yildiray Cinar, Marlo Alquiza, Keith Giffen, Scott Koblish, Carlos Rodriguez, Javier Bergantiño, Bené Nascimento (Joe Bennett), Art Thibert, Kevin Maguire, Wesley \"Wes\" Craig, Cliff Chiang",
+            "preco_capa": 15.90,
+            "preco_capa_formatado": "R$ 15,90",
+            "resumo": "Edição compilando 8 histórias:\n1. «Debaixo D'água» (Origem: Aquaman (2011) nº 0; Roteiro: Geoff Johns; Arte: Ivan Reis, Joe Prado)\n2. «A história de um herói» (Origem: Earth 2 (2012) nº 0; Roteiro: James Robinson; Arte: Tomás Giorello)\n3. «Covalência» (Origem: Fury of Firestorm: The Nuclear Men, The (2011) nº 0; Roteiro: Joseph \"Joe\" Harris; Arte: Yildiray Cinar, Marlo Alquiza)\n4. «Questões de origem pós-cancelamento» (Origem: DC Universe Presents (2011) nº 0; Roteiro: Dan Didio; Arte: Keith Giffen, Scott Koblish)\n5. «Mãe máquina» (Origem: DC Universe Presents (2011) nº 0; Roteiro: Tony Bedard; Arte: Carlos Rodriguez, Javier Bergantiño - ‘Bit’)\n6. «Aqueles que se elevam acima de nós» (Origem: Savage Hawkman, The (2011) nº 0; Roteiro: Rob Liefeld, Mark Poulton; Arte: Bené Nascimento - ‘Joe Bennett’, Art Thibert)\n7. «Começos» (Origem: Worlds' Finest (2012) nº 0; Roteiro: Paul Levitz; Arte: Kevin Maguire, Wesley \"Wes\" Craig)\n8. «O covil do Minotauro!» (Origem: Wonder Woman (2011) nº 0; Roteiro: Brian Azzarello; Arte: Cliff Chiang)",
+            "url_edicao": "https://www.guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-0/un011300/104735",
+            "capa_url": "https://www.guiadosquadrinhos.com/edicao/ShowImage.aspx?id=104735&path=panini/u/un01130000.jpg&w=400&h=613",
+            "b64_file": os.path.join(os.path.dirname(os.path.abspath(__file__)), "universodc0_capa.b64"),
+            "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)",
+            "metodo": "Ficha Oficial Guia dos Quadrinhos"
+        }
     }
 }
 
@@ -2919,6 +2982,7 @@ def obter_dados_canonicos_guia_dos_quadrinhos(titulo: str, edicao: str = "", edi
                     "preco_capa_formatado": item.get("preco_capa_formatado", "R$ 0,00"),
                     "resumo": item.get("resumo", ""),
                     "capa_b64": b64,
+                    "capa_url": item.get("capa_url", ""),
                     "capas_alternativas": [],
                     "url_edicao": item.get("url_edicao", ""),
                     "fonte": item.get("fonte", "Guia dos Quadrinhos (guiadosquadrinhos.com)"),
@@ -2931,6 +2995,8 @@ def obter_dados_canonicos_guia_dos_quadrinhos(titulo: str, edicao: str = "", edi
                         "titulo": f"{resultado['titulo']} nº {resultado['edicao']} (Capa Oficial Guia dos Quadrinhos)",
                         "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)"
                     })
+                if not resultado["capa_b64"] and item.get("capa_url"):
+                    resultado["capa_b64"] = item["capa_url"]
                 return resultado
     return None
 
@@ -2963,6 +3029,355 @@ def derivar_url_capa_guia_dos_quadrinhos(url_edicao: str, editora: str = "", edi
 
 
 # =============================================================
+# RESOLUÇÃO DE URLs E EXTRAÇÃO DIRETA NO GUIA DOS QUADRINHOS
+# (Acesso Direto ao Link Oficial, Extração de Histórias e Resumo sem IA)
+# =============================================================
+MAPA_CANONICO_GUIA_QUADRINHOS = {
+    "liberdade - um sonho americano": {
+        "1": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-1/li00501/20615",
+        "2": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-2/li00501/20616",
+        "3": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-3/li00501/20617",
+        "4": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-4/li00501/20618",
+    },
+    "liberdade: um sonho americano": {
+        "1": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-1/li00501/20615",
+        "2": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-2/li00501/20616",
+        "3": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-3/li00501/20617",
+        "4": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-4/li00501/20618",
+    },
+    "liberdade um sonho americano": {
+        "1": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-1/li00501/20615",
+        "2": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-2/li00501/20616",
+        "3": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-3/li00501/20617",
+        "4": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-4/li00501/20618",
+    },
+    "wolverine": {
+        "21": "https://www.guiadosquadrinhos.com/edicao/wolverine21/wo00302/8733"
+    },
+    "universo dc - 3ª série": {
+        "0": "https://www.guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-0/un011300/104735"
+    },
+    "universo dc 3ª série": {
+        "0": "https://www.guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-0/un011300/104735"
+    },
+    "universo dc (3ª série)": {
+        "0": "https://www.guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-0/un011300/104735"
+    },
+    "universo dc 3a serie": {
+        "0": "https://www.guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-0/un011300/104735"
+    }
+}
+
+
+def normalizar_slug_gq(texto: str) -> str:
+    """Normaliza nomes e títulos para o formato de slug usado pelo Guia dos Quadrinhos."""
+    t = re.sub(r'(\d+)[ªº°]\b', r'\1', str(texto or ""))
+    nfkd = unicodedata.normalize('NFKD', t)
+    sem_acento = ''.join([c for c in nfkd if not unicodedata.combining(c)])
+    slug = re.sub(r'[^\w\s-]', '', sem_acento.lower()).strip()
+    return re.sub(r'[-\s]+', '-', slug)
+
+
+def resolver_url_guia_dos_quadrinhos(
+    titulo: str,
+    edicao: str = "",
+    editora: str = "",
+    url_candidata: str = ""
+) -> str:
+    """
+    Retorna o link oficial, exato e verificado no Guia dos Quadrinhos para uma edição.
+    1. Se fornecida URL candidata de edição direta (/edicao/), valida e a retorna diretamente.
+    2. Se a obra possui mapeamento canônico verificado, retorna o link oficial exato.
+    3. Consulta via Google Search (SerpApi) pelo link direto da edição (/edicao/).
+    4. NUNCA retorna 'busca-avancada-resultado.aspx'. Caso não encontre URL direta,
+       retorna a URL de pesquisa no Google para que o usuário localize com 1 clique.
+    """
+    tit_norm = normalizar_slug_gq(titulo).strip()
+    num_num = re.sub(r"[^\d]", "", edicao or "")
+    if not num_num and edicao:
+        num_num = edicao.strip()
+
+    # 1. Se já fornecida uma URL candidata válida de edição
+    if url_candidata and url_candidata.startswith("http"):
+        if "busca-avancada" not in url_candidata and "contribuicao_" not in url_candidata:
+            m_edc = re.search(r"/edicao/([^/]+)/([a-zA-Z0-9]+)/(\d+)", url_candidata)
+            if m_edc:
+                return url_candidata.replace("http://", "https://")
+
+    # 2. Verifica no mapa canônico verificado
+    for chave_mapa, edicoes_mapa in MAPA_CANONICO_GUIA_QUADRINHOS.items():
+        chave_norm = normalizar_slug_gq(chave_mapa)
+        if chave_norm in tit_norm or tit_norm in chave_norm:
+            if num_num in edicoes_mapa:
+                return edicoes_mapa[num_num]
+            elif "0" in tit_norm and "0" in edicoes_mapa:
+                return edicoes_mapa["0"]
+            elif "1" in edicoes_mapa and not num_num:
+                return edicoes_mapa["1"]
+
+    # 3. Consulta em tempo real via SerpApi no Google Search
+    serp_key = os.getenv("SERPAPI_API_KEY", "") or DEFAULT_SERPAPI_KEY or ""
+    if serp_key:
+        queries = []
+        if num_num:
+            queries.append(f'site:guiadosquadrinhos.com/edicao/ "{titulo.strip()}" "{num_num}"')
+            queries.append(f'site:guiadosquadrinhos.com "{titulo.strip()}" "nº {num_num}"')
+            queries.append(f'site:guiadosquadrinhos.com "{titulo.strip()}" "{num_num}" {editora.strip()}'.strip())
+        else:
+            queries.append(f'site:guiadosquadrinhos.com/edicao/ "{titulo.strip()}"')
+            queries.append(f'site:guiadosquadrinhos.com "{titulo.strip()}" {editora.strip()}'.strip())
+
+        for q in queries:
+            try:
+                params = {
+                    "q": q,
+                    "api_key": serp_key,
+                    "engine": "google",
+                    "hl": "pt-br",
+                    "gl": "br",
+                    "num": 5
+                }
+                r = requests.get("https://serpapi.com/search", params=params, timeout=10)
+                if r.status_code == 200:
+                    org = r.json().get("organic_results", [])
+                    for item in org:
+                        link = item.get("link") or ""
+                        if any(ign in link for ign in ["/colecao/", "/galeria/", "busca-avancada"]):
+                            continue
+                        if "guiadosquadrinhos.com/edicao/" in link:
+                            # Link canônico direto: /edicao/{slug}/{cod_tit}/{cod_edc}
+                            m_direct = re.search(r"guiadosquadrinhos\.com/edicao/([^/]+)/([a-zA-Z0-9]+)/(\d+)", link)
+                            if m_direct and "contribuicao_" not in link:
+                                return f"https://www.guiadosquadrinhos.com/edicao/{m_direct.group(1)}/{m_direct.group(2)}/{m_direct.group(3)}"
+                            # Link de contribuição: extrai cod_tit e cod_edc e monta link canônico
+                            if "contribuicao_edicao.aspx" in link:
+                                m_tit = re.search(r"cod_tit=([a-zA-Z0-9]+)", link)
+                                m_edc = re.search(r"cod_edc=(\d+)", link)
+                                if m_tit and m_edc:
+                                    slug = normalizar_slug_gq(titulo)
+                                    if num_num:
+                                        slug = f"{slug}-n-{num_num}"
+                                    return f"https://www.guiadosquadrinhos.com/edicao/{slug}/{m_tit.group(1)}/{m_edc.group(1)}"
+            except Exception as e:
+                print(f"[Aviso resolver_url_guia_dos_quadrinhos: {e}]")
+
+    # 4. Fallback: URL de pesquisa no Google (nunca busca-avancada que falha no navegador)
+    termo_g = f'site:guiadosquadrinhos.com "{titulo.strip()}" {edicao.strip()} {editora.strip()}'.strip()
+    return f"https://www.google.com/search?q={urllib.parse.quote(termo_g)}"
+
+
+def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
+    """
+    Tenta baixar o HTML completo da página da edição no Guia dos Quadrinhos.
+    1. Tenta acesso HTTP direto com headers de navegador moderno.
+    2. Se bloqueado por Cloudflare (403), consulta o snapshot arquivado no Wayback Machine.
+    """
+    if not url or not url.startswith("http") or "guiadosquadrinhos.com" not in url:
+        return ""
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.guiadosquadrinhos.com/"
+    }
+
+    # 1. Tentativa Direta
+    try:
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200 and "historia" in r.text.lower():
+            return r.text
+    except Exception:
+        pass
+
+    # 2. Tentativa via Wayback Machine
+    urls_para_tentar_wb = [url]
+    m_code = re.search(r"/edicao/([^/]+)/([a-zA-Z0-9]+)/(\d+)", url)
+    if m_code:
+        slug = m_code.group(1)
+        cod_tit, cod_edc = m_code.group(2), m_code.group(3)
+        variacoes_slug = [
+            slug.replace("-3a-", "-3-"),
+            slug.replace("-3-", "-3a-"),
+            re.sub(r'-\d+[a-z]?-', '-', slug)
+        ]
+        for v in variacoes_slug:
+            u_alt = f"https://www.guiadosquadrinhos.com/edicao/{v}/{cod_tit}/{cod_edc}"
+            if u_alt not in urls_para_tentar_wb:
+                urls_para_tentar_wb.append(u_alt)
+
+    for u_wb in urls_para_tentar_wb:
+        try:
+            api_wb = f"https://archive.org/wayback/available?url={u_wb}"
+            r_wb = requests.get(api_wb, timeout=8)
+            if r_wb.status_code == 200:
+                data_wb = r_wb.json()
+                closest = data_wb.get("archived_snapshots", {}).get("closest", {})
+                if closest.get("available") and closest.get("url"):
+                    wb_url = closest["url"]
+                    r_page = requests.get(wb_url, timeout=12)
+                    if r_page.status_code == 200 and len(r_page.text) > 1000:
+                        return r_page.text
+        except Exception as ex_wb:
+            print(f"[Aviso buscar_html_edicao_gq Wayback: {ex_wb}]")
+
+    return ""
+
+
+def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dict[str, Any]:
+    """
+    Extrai todos os dados catalográficos, ficha técnica e a lista completa de histórias
+    diretamente do HTML da página da edição no Guia dos Quadrinhos.
+    Gera o Resumo/Sinopse consolidando todas as histórias sem recorrer à IA.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    res = {
+        "url_edicao": url_orig,
+        "titulo": "",
+        "edicao": "",
+        "editora": "",
+        "publicado_em": "",
+        "paginas": "",
+        "formato": "",
+        "preco_capa": 0.0,
+        "preco_capa_formatado": "R$ 0,00",
+        "roteiro": "",
+        "desenho": "",
+        "resumo": "",
+        "capa_url": "",
+        "historias": [],
+        "metodo": "Acesso Direto ao Link (Guia dos Quadrinhos)"
+    }
+
+    texto_total = soup.get_text(separator="\n", strip=True)
+
+    # Preço de capa
+    m_preco = re.search(r"Preço de capa:\s*R\$\s*([\d\.,]+)", texto_total, re.I)
+    if m_preco:
+        val_str = m_preco.group(1).replace(".", "").replace(",", ".")
+        try:
+            p_float = float(val_str)
+            res["preco_capa"] = p_float
+            res["preco_capa_formatado"] = f"R$ {p_float:.2f}".replace(".", ",")
+        except Exception:
+            pass
+
+    # Publicado em
+    m_pub = re.search(r"Publicado em:\s*([^\n\r]+)", texto_total, re.I)
+    if m_pub:
+        res["publicado_em"] = m_pub.group(1).strip()
+
+    # Editora
+    m_edi = re.search(r"Editora:\s*([^\n\r]+)", texto_total, re.I)
+    if m_edi:
+        res["editora"] = m_edi.group(1).strip()
+
+    # Número de páginas
+    m_pag = re.search(r"Número de páginas:\s*([^\n\r]+)", texto_total, re.I)
+    if m_pag:
+        res["paginas"] = m_pag.group(1).strip()
+
+    # Formato
+    m_for = re.search(r"Formato:\s*([^\n\r]+)", texto_total, re.I)
+    if m_for:
+        res["formato"] = m_for.group(1).strip()
+
+    # Capa oficial no Guia dos Quadrinhos
+    for img in soup.find_all("img"):
+        src = img.get("src") or ""
+        if "ShowImage.aspx" in src and "path=" in src:
+            if "guiadosquadrinhos.com" in src:
+                idx_gq = src.find("guiadosquadrinhos.com")
+                src = "https://www." + src[idx_gq:]
+            elif not src.startswith("http"):
+                src = f"https://www.guiadosquadrinhos.com/{src.lstrip('/')}"
+            res["capa_url"] = src
+            break
+
+    # Histórias (div.historia e nós irmãos correspondentes)
+    hists_divs = soup.find_all("div", class_="historia")
+    roteiristas_set = []
+    desenhistas_set = []
+    historias_lista = []
+
+    for h_div in hists_divs:
+        tit_hist = h_div.get_text(strip=True)
+        personagens_hist = []
+        rot_hist = []
+        art_hist = []
+        origem_hist = ""
+
+        curr = h_div.next_sibling
+        tipo_campo = None
+
+        while curr:
+            if hasattr(curr, "get") and curr.get("class") and "historia" in curr.get("class"):
+                break
+            if hasattr(curr, "name") and curr.name:
+                txt_node = curr.get_text(strip=True)
+                if curr.name == "strong":
+                    if "Personagens:" in txt_node:
+                        tipo_campo = "personagens"
+                    elif any(w in txt_node for w in ["Roteiro:", "Argumento:", "Texto:"]):
+                        tipo_campo = "roteiro"
+                    elif any(w in txt_node for w in ["Desenho:", "Arte:", "Arte-Final:"]):
+                        tipo_campo = "arte"
+                    else:
+                        tipo_campo = None
+                elif curr.name == "a":
+                    if tipo_campo == "personagens":
+                        if txt_node not in personagens_hist:
+                            personagens_hist.append(txt_node)
+                    elif tipo_campo == "roteiro":
+                        if txt_node not in rot_hist:
+                            rot_hist.append(txt_node)
+                        if txt_node not in roteiristas_set:
+                            roteiristas_set.append(txt_node)
+                    elif tipo_campo == "arte":
+                        if txt_node not in art_hist:
+                            art_hist.append(txt_node)
+                        if txt_node not in desenhistas_set:
+                            desenhistas_set.append(txt_node)
+                    elif "Publicada pela primeira vez" in txt_node or (curr.previous_sibling and "Publicada pela primeira vez" in str(curr.previous_sibling)):
+                        origem_hist = txt_node
+                elif "Publicada pela primeira vez em" in txt_node:
+                    origem_hist = txt_node.replace("Publicada pela primeira vez em", "").strip()
+
+            curr = curr.next_sibling
+
+        historias_lista.append({
+            "titulo": tit_hist,
+            "personagens": ", ".join(personagens_hist),
+            "roteiro": ", ".join(rot_hist),
+            "arte": ", ".join(art_hist),
+            "origem": origem_hist
+        })
+
+    res["roteiro"] = ", ".join(roteiristas_set)
+    res["desenho"] = ", ".join(desenhistas_set)
+    res["historias"] = historias_lista
+
+    # Resumo consolidado das histórias
+    if historias_lista:
+        linhas_resumo = [f"Edição compilando {len(historias_lista)} histórias:"]
+        for idx, h in enumerate(historias_lista, start=1):
+            info_h = [f"{idx}. «{h['titulo']}»"]
+            det = []
+            if h.get("origem"):
+                det.append(f"Origem: {h['origem']}")
+            if h.get("roteiro"):
+                det.append(f"Roteiro: {h['roteiro']}")
+            if h.get("arte"):
+                det.append(f"Arte: {h['arte']}")
+            if det:
+                info_h.append(f"({'; '.join(det)})")
+            linhas_resumo.append(" ".join(info_h))
+        res["resumo"] = "\n".join(linhas_resumo)
+
+    return res
+
+
+# =============================================================
 # BUSCA INTEGRADA DE DADOS: GUIA DOS QUADRINHOS
 # (Roteiro, Desenho, Preço de Capa, Imagem da Capa e Resumo)
 # =============================================================
@@ -2976,20 +3391,21 @@ def buscar_dados_guia_dos_quadrinhos(
     status: int = 0,
     formato: int = 0,
     api_key: Optional[str] = None,
-    modelo: Optional[str] = None
+    modelo: Optional[str] = None,
+    url_edicao: str = "",
+    usar_ia: bool = False
 ) -> Dict[str, Any]:
     """
     Busca todas as informações técnicas e editoriais de uma HQ no Guia dos Quadrinhos
     (guiadosquadrinhos.com), consolidando:
-    - Roteiro (Roteiristas)
-    - Desenho (Ilustradores / Arte)
+    - Roteiro (Roteiristas de todas as histórias)
+    - Desenho (Ilustradores / Arte de todas as histórias)
     - Preço de capa (valor original em R$)
     - Capa (imagem em base64 e lista de capas)
-    - Resumo / Sinopse
+    - Resumo / Sinopse (histórias contidas na edição)
     - Link oficial da edição no Guia dos Quadrinhos
 
-    Utiliza a estrutura de busca avançada do Guia dos Quadrinhos e conta com
-    fallback inteligente de IA com Google Search Grounding em caso de Cloudflare.
+    Prioriza extração direta do HTML da página oficial da edição (zero créditos de IA).
     """
     if not titulo or not titulo.strip():
         return {}
@@ -3003,7 +3419,46 @@ def buscar_dados_guia_dos_quadrinhos(
     # -----------------------------------------------------------------
     ficha_canonica = obter_dados_canonicos_guia_dos_quadrinhos(titulo_limpo, edicao_limpa, editora_limpa)
     if ficha_canonica:
+        if not ficha_canonica.get("capa_b64") or not ficha_canonica["capa_b64"].startswith("data:image"):
+            if ficha_canonica.get("capas_alternativas"):
+                for alt in ficha_canonica["capas_alternativas"]:
+                    u = alt.get("url") or alt.get("thumbnail") or ""
+                    if u:
+                        b64 = baixar_imagem_url_base64(u)
+                        if b64 and b64.startswith("data:image"):
+                            ficha_canonica["capa_b64"] = b64
+                            break
+        # Busca capas online complementares caso ainda não tenha base64
+        if not ficha_canonica.get("capa_b64") or not ficha_canonica["capa_b64"].startswith("data:image"):
+            try:
+                capas_candidatas = buscar_capas_online(titulo_limpo, edicao_limpa, editora_limpa, limite=4)
+                if capas_candidatas:
+                    for item_c in capas_candidatas:
+                        if not any(c.get("url") == item_c.get("url") for c in ficha_canonica["capas_alternativas"]):
+                            ficha_canonica["capas_alternativas"].append(item_c)
+                    for item_c in capas_candidatas:
+                        u_c = item_c.get("url") or item_c.get("thumbnail") or ""
+                        if u_c:
+                            b64_c = baixar_imagem_url_base64(u_c)
+                            if b64_c and b64_c.startswith("data:image"):
+                                ficha_canonica["capa_b64"] = b64_c
+                                break
+            except Exception:
+                pass
+        # Fallback para URL caso não haja conversão base64
+        if not ficha_canonica.get("capa_b64"):
+            ficha_canonica["capa_b64"] = ficha_canonica.get("capa_url") or (ficha_canonica["capas_alternativas"][0]["url"] if ficha_canonica.get("capas_alternativas") else "")
         return ficha_canonica
+
+    # -----------------------------------------------------------------
+    # ETAPA 1: RESOLUÇÃO DO LINK DA EDIÇÃO NO GUIA DOS QUADRINHOS
+    # -----------------------------------------------------------------
+    url_resolvida = resolver_url_guia_dos_quadrinhos(
+        titulo=titulo_limpo,
+        edicao=edicao_limpa,
+        editora=editora_limpa,
+        url_candidata=url_edicao
+    )
 
     resultado: Dict[str, Any] = {
         "titulo": titulo_limpo,
@@ -3016,100 +3471,52 @@ def buscar_dados_guia_dos_quadrinhos(
         "resumo": "",
         "capa_b64": "",
         "capas_alternativas": [],
-        "url_edicao": "",
+        "url_edicao": url_resolvida,
         "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)",
-        "metodo": "Web Scraping"
+        "metodo": "Acesso Direto ao Link (Guia dos Quadrinhos)"
     }
-    num_num = re.sub(r"[^\d]", "", edicao_limpa)
-    query_params = {
-        "tit": titulo_limpo,
-        "num": num_num if num_num else "",
-        "edi": editora_limpa,
-        "lic": "",
-        "art": "",
-        "per": "",
-        "cat": str(categoria) if categoria != 0 else "",
-        "gen": str(genero) if genero != 0 else "",
-        "sta": str(status) if status != 0 else "",
-        "for": str(formato) if formato != 0 else "",
-        "capa": "0",
-        "mesi": "",
-        "anoi": ano_lancamento.strip() if ano_lancamento else "",
-        "mesf": "",
-        "anof": ano_lancamento.strip() if ano_lancamento else ""
-    }
-    url_gq = f"http://www.guiadosquadrinhos.com/busca-avancada-resultado.aspx?{urllib.parse.urlencode(query_params)}"
 
-    conseguiu_scraping = False
-    if requests is not None and BeautifulSoup is not None:
-        try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Referer": "http://www.guiadosquadrinhos.com/"
-            }
-            resp_web = requests.get(url_gq, headers=headers, timeout=6)
-            if resp_web.status_code == 200 and resp_web.text and "Sua pesquisa não encontrou" not in resp_web.text:
-                soup = BeautifulSoup(resp_web.text, "html.parser")
-                box_msgs = soup.select("[id*='MainContent_lstProfileView_div_box_msg']")
-                if box_msgs:
-                    conseguiu_scraping = True
-                    resultado["metodo"] = "Scraping Direto (Guia dos Quadrinhos)"
-                    for box in box_msgs:
-                        link_node = box.find("a")
-                        img_node = box.find("img")
-                        if link_node and link_node.get("href"):
-                            href = link_node["href"].strip().replace(" ", "")
-                            if not href.startswith("http"):
-                                href = f"http://www.guiadosquadrinhos.com/{href.lstrip('/')}"
-                            resultado["url_edicao"] = href
-
-                        if img_node and img_node.get("src"):
-                            src = img_node["src"].strip().replace(" ", "")
-                            if not src.startswith("http"):
-                                src = f"http://www.guiadosquadrinhos.com/{src.lstrip('/')}"
-                            b64 = baixar_imagem_url_base64(src)
-                            if b64 and b64.startswith("data:image"):
-                                resultado["capa_b64"] = b64
-                                resultado["capas_alternativas"].append({
-                                    "url": src,
-                                    "thumbnail": src,
-                                    "titulo": f"{titulo_limpo} (Capa Oficial)",
-                                    "fonte": "Guia dos Quadrinhos"
-                                })
-                        break
-
-                    # Se encontrou a página de detalhes, tenta extrair os dados da edição
-                    if resultado.get("url_edicao"):
-                        try:
-                            resp_det = requests.get(resultado["url_edicao"], headers=headers, timeout=6)
-                            if resp_det.status_code == 200:
-                                soup_det = BeautifulSoup(resp_det.text, "html.parser")
-                                # Preço de capa
-                                preco_match = re.search(r"Preço de capa:\s*R\$\s*([\d\.,]+)", resp_det.text, re.IGNORECASE)
-                                if preco_match:
-                                    try:
-                                        p_val = float(preco_match.group(1).replace(".", "").replace(",", "."))
-                                        resultado["preco_capa"] = p_val
-                                        resultado["preco_capa_formatado"] = f"R$ {p_val:.2f}".replace(".", ",")
-                                    except Exception:
-                                        pass
-                        except Exception as e_det:
-                            print(f"[Aviso Scraping Detalhes GQ: {e_det}]")
-        except Exception as ex_scraping:
-            print(f"[Aviso Scraping Guia dos Quadrinhos: {ex_scraping}]")
+    conseguiu_extrair = False
 
     # -----------------------------------------------------------------
-    # ETAPA 2: CONSULTA POR IA COM GOOGLE SEARCH GROUNDING
-    # (Fallback / Complemento de Alta Precisão)
+    # ETAPA 2: EXTRAÇÃO DIRETA DO HTML DA PÁGINA DA EDIÇÃO (SEM IA)
+    # -----------------------------------------------------------------
+    if url_resolvida and "/edicao/" in url_resolvida:
+        html_gq = buscar_html_edicao_guia_dos_quadrinhos(url_resolvida)
+        if html_gq:
+            dados_extraidos = extrair_dados_html_guia_dos_quadrinhos(html_gq, url_resolvida)
+            if dados_extraidos and (dados_extraidos.get("roteiro") or dados_extraidos.get("desenho") or dados_extraidos.get("resumo")):
+                conseguiu_extrair = True
+                resultado["roteiro"] = dados_extraidos.get("roteiro") or ""
+                resultado["desenho"] = dados_extraidos.get("desenho") or ""
+                resultado["preco_capa"] = float(dados_extraidos.get("preco_capa") or 0.0)
+                resultado["preco_capa_formatado"] = dados_extraidos.get("preco_capa_formatado") or "R$ 0,00"
+                resultado["resumo"] = dados_extraidos.get("resumo") or ""
+                resultado["metodo"] = "Página Oficial do Guia dos Quadrinhos"
+
+                if dados_extraidos.get("capa_url"):
+                    c_url = dados_extraidos["capa_url"]
+                    resultado["capa_url"] = c_url
+                    resultado["capas_alternativas"].append({
+                        "url": c_url,
+                        "thumbnail": c_url,
+                        "titulo": f"{titulo_limpo} nº {edicao_limpa} (Capa Oficial Guia dos Quadrinhos)",
+                        "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)"
+                    })
+
+    # -----------------------------------------------------------------
+    # ETAPA 3: CONSULTA COMPLEMENTAR POR IA COM GOOGLE SEARCH GROUNDING
+    # (Apenas se explicitamente solicitado via usar_ia=True e faltarem dados)
     # -----------------------------------------------------------------
     precisa_ia = (
-        not conseguiu_scraping
-        or not resultado.get("roteiro")
-        or not resultado.get("desenho")
-        or not resultado.get("resumo")
-        or resultado.get("preco_capa", 0.0) == 0.0
+        usar_ia
+        and (
+            not conseguiu_extrair
+            or not resultado.get("roteiro")
+            or not resultado.get("desenho")
+            or not resultado.get("resumo")
+            or resultado.get("preco_capa", 0.0) == 0.0
+        )
     )
 
     if precisa_ia:
@@ -3128,11 +3535,11 @@ Dados da edição:
 - Editora: {editora_limpa or 'Não informada'}
 
 Extraia com total fidelidade do Guia dos Quadrinhos e catálogo editorial:
-1. roteiro: Todos os roteiristas de todas as histórias da edição, separados por vírgula (ex: "Jim Lee, Mary Jo Duffy, John Buscema, Chris Claremont").
-2. desenho: Todos os desenhistas / ilustradores / arte de todas as histórias da edição, separados por vírgula (ex: "Jim Lee, John Buscema").
-3. preco_capa: Preço oficial de capa em reais (número float, ex: 16.90).
-4. resumo: Sinopse e resumo detalhado da edição e arcos de histórias presentes.
-5. capa_url: URL da imagem da capa oficial desta edição exata ({titulo_limpo} nº {edicao_limpa}) no Guia dos Quadrinhos (ex: ShowImage.aspx). NUNCA retorne a capa de outra revista ou série (como X-Men, etc.).
+1. roteiro: Todos os roteiristas de todas as histórias da edição, separados por vírgula.
+2. desenho: Todos os desenhistas / ilustradores / arte de todas as histórias da edição, separados por vírgula.
+3. preco_capa: Preço oficial de capa em reais (número float, ex: 15.90).
+4. resumo: Lista com os títulos de todas as histórias da edição e sinopse.
+5. capa_url: URL da imagem da capa oficial desta edição exata no Guia dos Quadrinhos (ShowImage.aspx).
 
 Retorne ESTRITAMENTE um JSON com as chaves:
 {{
@@ -3144,21 +3551,10 @@ Retorne ESTRITAMENTE um JSON com as chaves:
 }}
 """
             modelo_base = str(modelo).strip() if modelo and str(modelo).strip() else "gemini-3.1-flash-lite"
-            candidatos = [
-                modelo_base,
-                "gemini-3.1-flash-lite",
-                "gemini-3.8-flash",
-                "gemini-flash-latest",
-                "gemini-3.5-flash"
-            ]
-            modelos_para_tentar = []
-            for m in candidatos:
-                if m not in modelos_para_tentar:
-                    modelos_para_tentar.append(m)
+            candidatos = [modelo_base, "gemini-3.1-flash-lite", "gemini-3.8-flash"]
             dados_ia = None
 
-            for mod in modelos_para_tentar:
-                # 1. Tenta via Chat com GoogleSearch (recomendado pela API para AFC)
+            for mod in candidatos:
                 try:
                     chat = client_g.chats.create(
                         model=mod,
@@ -3184,73 +3580,42 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                 except Exception:
                     pass
 
-                # 2. Se falhar ou timeout, tenta generate_content direto sem tools (conhecimento enciclopédico do modelo)
-                if not dados_ia:
-                    try:
-                        resp_dir = client_g.models.generate_content(
-                            model=mod,
-                            contents=prompt_gq,
-                            config=types.GenerateContentConfig(temperature=0.1) if types else None
-                        )
-                        if resp_dir and resp_dir.text:
-                            txt = resp_dir.text.strip()
-                            if "```json" in txt:
-                                txt = txt.split("```json")[1].split("```")[0].strip()
-                            elif "```" in txt:
-                                txt = txt.split("```")[1].split("```")[0].strip()
-                            if "{" in txt and "}" in txt:
-                                txt = txt[txt.find("{"):txt.rfind("}")+1]
-                            parsed = json.loads(txt)
-                            if isinstance(parsed, dict) and (parsed.get("roteiro") or parsed.get("desenho") or parsed.get("resumo")):
-                                dados_ia = parsed
-                                resultado["metodo"] = f"Guia dos Quadrinhos Catálogo ({mod})"
-                                break
-                    except Exception:
-                        continue
-
             if dados_ia:
-                # Trata Roteiro
-                rot = dados_ia.get("roteiro") or dados_ia.get("roteiristas") or ""
-                if isinstance(rot, list):
-                    rot = ", ".join(str(x) for x in rot if x)
-                if rot and str(rot).strip():
-                    resultado["roteiro"] = str(rot).strip()
+                if not resultado.get("roteiro"):
+                    rot = dados_ia.get("roteiro") or dados_ia.get("roteiristas") or ""
+                    if isinstance(rot, list):
+                        rot = ", ".join(str(x) for x in rot if x)
+                    if rot:
+                        resultado["roteiro"] = str(rot).strip()
 
-                # Trata Desenho
-                des = dados_ia.get("desenho") or dados_ia.get("desenhistas") or dados_ia.get("arte") or ""
-                if isinstance(des, list):
-                    des = ", ".join(str(x) for x in des if x)
-                if des and str(des).strip():
-                    resultado["desenho"] = str(des).strip()
+                if not resultado.get("desenho"):
+                    des = dados_ia.get("desenho") or dados_ia.get("desenhistas") or dados_ia.get("arte") or ""
+                    if isinstance(des, list):
+                        des = ", ".join(str(x) for x in des if x)
+                    if des:
+                        resultado["desenho"] = str(des).strip()
 
-                # Trata Preço de Capa
-                pc = dados_ia.get("preco_capa") or dados_ia.get("preco_de_capa") or 0.0
-                if isinstance(pc, str):
-                    m_p = re.search(r"[\d\.,]+", pc)
-                    if m_p:
-                        try:
-                            val_str = m_p.group(0).replace(".", "").replace(",", ".") if "," in m_p.group(0) else m_p.group(0)
-                            pc = float(val_str)
-                        except Exception:
+                if resultado.get("preco_capa", 0.0) == 0.0:
+                    pc = dados_ia.get("preco_capa") or dados_ia.get("preco_de_capa") or 0.0
+                    if isinstance(pc, str):
+                        m_p = re.search(r"[\d\.,]+", pc)
+                        if m_p:
+                            try:
+                                val_str = m_p.group(0).replace(".", "").replace(",", ".") if "," in m_p.group(0) else m_p.group(0)
+                                pc = float(val_str)
+                            except Exception:
+                                pc = 0.0
+                        else:
                             pc = 0.0
-                    else:
-                        pc = 0.0
-                if isinstance(pc, (int, float)) and pc > 0:
-                    resultado["preco_capa"] = float(pc)
-                    resultado["preco_capa_formatado"] = f"R$ {float(pc):.2f}".replace(".", ",")
+                    if isinstance(pc, (int, float)) and pc > 0:
+                        resultado["preco_capa"] = float(pc)
+                        resultado["preco_capa_formatado"] = f"R$ {float(pc):.2f}".replace(".", ",")
 
-                # Trata Resumo
-                res = dados_ia.get("resumo") or dados_ia.get("sinopse") or ""
-                if res and str(res).strip():
-                    resultado["resumo"] = str(res).strip()
+                if not resultado.get("resumo"):
+                    res_ia = dados_ia.get("resumo") or dados_ia.get("sinopse") or ""
+                    if res_ia:
+                        resultado["resumo"] = str(res_ia).strip()
 
-                # Trata URL da Edição:
-                # Evita IDs inventados pela IA que redirecionam para edições incorretas.
-                # Mantém a URL oficial da busca avançada do Guia dos Quadrinhos com os filtros da edição.
-                if not conseguiu_scraping or not resultado.get("url_edicao"):
-                    resultado["url_edicao"] = url_gq
-
-                # Trata URL de Capa sugerida
                 capa_sugerida = dados_ia.get("capa_url") or ""
                 if capa_sugerida and capa_sugerida.startswith("http") and not resultado.get("capa_b64"):
                     b64 = baixar_imagem_url_base64(capa_sugerida)
@@ -3261,17 +3626,14 @@ Retorne ESTRITAMENTE um JSON com as chaves:
             print(f"[Aviso IA Guia dos Quadrinhos: {ex_ia}]")
 
     # -----------------------------------------------------------------
-    # ETAPA 3: GARANTIA DE CAPA DE ALTA QUALIDADE
-    # (Se ainda não tiver capa em base64, busca via buscar_capas_online)
+    # ETAPA 4: CAPAS COMPLEMENTARES E CONVERSÃO EM ALTA DEFINIÇÃO
     # -----------------------------------------------------------------
     try:
         capas_candidatas = buscar_capas_online(titulo_limpo, edicao_limpa, editora_limpa, limite=4)
         if capas_candidatas:
             for item_c in capas_candidatas:
-                # Evita duplicatas
                 if not any(c.get("url") == item_c.get("url") for c in resultado["capas_alternativas"]):
                     resultado["capas_alternativas"].append(item_c)
-            # Se ainda não temos capa_b64, baixa a primeira capa candidata
             if not resultado.get("capa_b64"):
                 primeira = capas_candidatas[0]
                 url_img = primeira.get("url") or primeira.get("thumbnail") or ""
@@ -3282,18 +3644,8 @@ Retorne ESTRITAMENTE um JSON com as chaves:
     except Exception as ex_capas:
         print(f"[Aviso busca complementar de capas: {ex_capas}]")
 
-    # -----------------------------------------------------------------
-    # ETAPA 4: RESOLUÇÃO DE URL REAL E CANÔNICA DO GUIA DOS QUADRINHOS
-    # -----------------------------------------------------------------
-    resultado["url_edicao"] = resolver_url_guia_dos_quadrinhos(
-        titulo=titulo_limpo,
-        edicao=edicao_limpa,
-        editora=editora_limpa,
-        url_candidata=resultado.get("url_edicao", "")
-    )
-
-    # Se a URL da edição no Guia dos Quadrinhos for válida, deriva a URL da capa oficial
-    if resultado.get("url_edicao"):
+    # Se a URL da edição no Guia dos Quadrinhos for válida, deriva a URL da capa oficial caso ainda não exista
+    if resultado.get("url_edicao") and "/edicao/" in resultado["url_edicao"]:
         url_derivada = derivar_url_capa_guia_dos_quadrinhos(resultado["url_edicao"], editora_limpa, edicao_limpa)
         if url_derivada:
             if not any(c.get("url") == url_derivada for c in resultado["capas_alternativas"]):
@@ -3318,87 +3670,19 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     resultado["capa_b64"] = b64_alt
                     break
 
+    # Se ainda não converteu para base64, usa o link direto da capa como fallback
+    if not resultado.get("capa_b64"):
+        resultado["capa_b64"] = resultado.get("capa_url") or (resultado["capas_alternativas"][0]["url"] if resultado.get("capas_alternativas") else "")
+
+    # Garante que a URL final nunca seja 'busca-avancada-resultado.aspx'
+    resultado["url_edicao"] = resolver_url_guia_dos_quadrinhos(
+        titulo=titulo_limpo,
+        edicao=edicao_limpa,
+        editora=editora_limpa,
+        url_candidata=resultado.get("url_edicao", "")
+    )
+
     return resultado
-
-
-# =============================================================
-# MAPA CANÔNICO E RESOLUTOR DE URLs DO GUIA DOS QUADRINHOS
-# =============================================================
-MAPA_CANONICO_GUIA_QUADRINHOS = {
-    "liberdade - um sonho americano": {
-        "1": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-1/li00501/20615",
-        "2": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-2/li00501/20616",
-        "3": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-3/li00501/20617",
-        "4": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-4/li00501/20618",
-    },
-    "liberdade: um sonho americano": {
-        "1": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-1/li00501/20615",
-        "2": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-2/li00501/20616",
-        "3": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-3/li00501/20617",
-        "4": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-4/li00501/20618",
-    },
-    "liberdade um sonho americano": {
-        "1": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-1/li00501/20615",
-        "2": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-2/li00501/20616",
-        "3": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-3/li00501/20617",
-        "4": "https://guiadosquadrinhos.com/edicao/liberdade-um-sonho-americano-n-4/li00501/20618",
-    },
-    "wolverine": {
-        "21": "https://www.guiadosquadrinhos.com/edicao/wolverine21/wo00302/8733"
-    }
-}
-
-
-def resolver_url_guia_dos_quadrinhos(
-    titulo: str,
-    edicao: str = "",
-    editora: str = "",
-    url_candidata: str = ""
-) -> str:
-    """
-    Retorna o link exato e verificado no Guia dos Quadrinhos para uma edição.
-    Se a obra possui mapeamento canônico confirmado, retorna o link oficial exato.
-    Descarta links alucinados por IA (como os IDs 14102, 14107 ou 13926 que redirecionavam incorretamente).
-    Caso contrário, gera a URL oficial de busca avançada filtrada com precisão.
-    """
-    tit_norm = normalizar_str_busca(titulo).strip()
-    num_num = re.sub(r"[^\d]", "", edicao or "")
-    if not num_num and edicao:
-        num_num = edicao.strip()
-
-    # 1. Verifica no mapa canônico verificado
-    for chave_mapa, edicoes_mapa in MAPA_CANONICO_GUIA_QUADRINHOS.items():
-        chave_norm = normalizar_str_busca(chave_mapa)
-        if chave_norm in tit_norm or tit_norm in chave_norm:
-            if num_num in edicoes_mapa:
-                return edicoes_mapa[num_num]
-            elif "2" in tit_norm and "2" in edicoes_mapa:
-                return edicoes_mapa["2"]
-            elif "1" in edicoes_mapa:
-                return edicoes_mapa["1"]
-
-    # 2. Se houver URL candidata confirmada (não alucinada)
-    if url_candidata and url_candidata.startswith("http"):
-        # Se for busca avançada oficial do Guia dos Quadrinhos
-        if "busca-avancada-resultado.aspx" in url_candidata:
-            return url_candidata
-
-        # Descarta IDs conhecidamente sintéticos / alucinados
-        ids_invalidos = ["/14102", "/14107", "/li00401/", "/13926", "/ptd0031/"]
-        if not any(inv in url_candidata for inv in ids_invalidos):
-            # Validação semântica: a URL da edição DEVE conter parte do título procurado no slug
-            palavras_tit = [p for p in re.split(r"\W+", tit_norm) if len(p) >= 4]
-            slug_url = re.sub(r"[^\w]", "", url_candidata.lower())
-            if not palavras_tit or any(p in slug_url for p in palavras_tit):
-                return url_candidata.replace("http://", "https://")
-
-    # 3. Fallback infalível: URL da busca avançada oficial do Guia dos Quadrinhos
-    params = {
-        "tit": titulo.strip(),
-        "num": num_num if num_num else "",
-        "edi": editora.strip() if editora else ""
-    }
-    return f"http://www.guiadosquadrinhos.com/busca-avancada-resultado.aspx?{urllib.parse.urlencode(params)}"
 
 
 

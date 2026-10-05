@@ -1326,13 +1326,35 @@ class TestHqCatalog(unittest.TestCase):
 
 
     def test_buscar_dados_guia_dos_quadrinhos(self):
-        # 1. Obra Canônica
+        # 1. Obra Canônica Wolverine
         res_canonico = gemini_service.buscar_dados_guia_dos_quadrinhos("Wolverine", "21", "Abril")
         self.assertIsInstance(res_canonico, dict)
         self.assertEqual(res_canonico.get("titulo"), "Wolverine")
         self.assertIn("Mary Jo Duffy", res_canonico.get("roteiro", ""))
 
-        # 2. Obra Genérica (Garante que não lança NameError 'capa_oficial')
+        # 2. Obra Canônica Universo DC 3ª Série 0 Panini
+        res_udc = gemini_service.buscar_dados_guia_dos_quadrinhos("Universo DC 3ª Série", "0", "Panini")
+        self.assertIsInstance(res_udc, dict)
+        self.assertEqual(res_udc.get("titulo"), "Universo DC 3ª Série")
+        self.assertEqual(res_udc.get("edicao"), "0")
+        self.assertIn("Geoff Johns", res_udc.get("roteiro", ""))
+        self.assertIn("Ivan Reis", res_udc.get("desenho", ""))
+        self.assertEqual(res_udc.get("preco_capa_formatado"), "R$ 15,90")
+        self.assertIn("Debaixo D'água", res_udc.get("resumo", ""))
+        self.assertNotIn("busca-avancada", res_udc.get("url_edicao", ""))
+        self.assertTrue(res_udc.get("capa_b64", "").startswith("data:image"))
+        self.assertTrue(len(res_udc.get("capas_alternativas", [])) >= 1)
+
+        # 3. Normalização de slug com ordinais
+        slug_udc = gemini_service.normalizar_slug_gq("Universo DC 3ª Série")
+        self.assertEqual(slug_udc, "universo-dc-3-serie")
+
+        # 4. Resolução de URL sem busca-avancada
+        url_res = gemini_service.resolver_url_guia_dos_quadrinhos("Universo DC 3ª Série", "0", "Panini")
+        self.assertIn("guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-0/un011300/104735", url_res)
+        self.assertNotIn("busca-avancada-resultado.aspx", url_res)
+
+        # 5. Obra Genérica (Garante que não lança NameError 'capa_oficial')
         with patch("requests.get") as mock_get, \
              patch("gemini_service.buscar_capas_online", return_value=[]), \
              patch("gemini_service.get_gemini_client"):
@@ -1345,6 +1367,7 @@ class TestHqCatalog(unittest.TestCase):
             self.assertIsInstance(res_generico, dict)
             self.assertEqual(res_generico.get("titulo"), "Homem-Aranha")
             self.assertIn("url_edicao", res_generico)
+            self.assertNotIn("busca-avancada-resultado.aspx", res_generico.get("url_edicao", ""))
 
 
 if __name__ == "__main__":

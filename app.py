@@ -299,15 +299,23 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
     with c_edi:
         termo_edi = st.text_input("Editora:", value=hq_alvo.get("editora") or "", key=f"dlg_edi_gq_{hq_alvo['id']}")
 
+    termo_url = st.text_input(
+        "🔗 Link Direto da Edição no Guia dos Quadrinhos (opcional):",
+        value=hq_alvo.get("link_edicao") or "",
+        key=f"dlg_url_gq_{hq_alvo['id']}",
+        placeholder="Ex: https://www.guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-0/un011300/104735",
+        help="Cole o link direto da página da edição no Guia dos Quadrinhos para carregar todos os dados técnicos e histórias instantaneamente sem usar IA."
+    )
+
     btn_pesquisar_gq = st.button("🔎 Buscar no Guia dos Quadrinhos", key=f"dlg_btn_pesquisar_gq_{hq_alvo['id']}", use_container_width=True, type="primary")
 
     session_res_key = f"dados_gq_encontrados_{hq_alvo['id']}"
     termo_cache_key = f"termo_gq_cache_{hq_alvo['id']}"
-    chave_termo = f"{termo_tit}|{termo_ed}|{termo_edi}"
+    chave_termo = f"{termo_tit}|{termo_ed}|{termo_edi}|{termo_url}"
     termo_mudou = st.session_state.get(termo_cache_key) != chave_termo
 
     if btn_pesquisar_gq or termo_mudou or session_res_key not in st.session_state:
-        with st.spinner("🔍 Carregando dados no Guia dos Quadrinhos (Roteiro, Desenho, Preço de Capa, Capa e Resumo)..."):
+        with st.spinner("🔍 Carregando dados no Guia dos Quadrinhos (Roteiro, Desenho, Preço de Capa, Capa e Histórias)..."):
             fn_gq = getattr(gemini_service, "buscar_dados_guia_dos_quadrinhos", None)
             dados_obtidos = {}
             if fn_gq:
@@ -319,14 +327,22 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
                         edicao=termo_ed,
                         editora=termo_edi,
                         api_key=st.session_state.get("gemini_api_key"),
-                        modelo=mod_gq
+                        modelo=mod_gq,
+                        url_edicao=termo_url.strip(),
+                        usar_ia=False
                     )
                 except Exception as ex_gq:
                     st.error(f"Erro ao buscar no Guia dos Quadrinhos: {ex_gq}")
             st.session_state[session_res_key] = dados_obtidos
             st.session_state[termo_cache_key] = chave_termo
             # Sincroniza e reseta os estados dos inputs do modal para refletir os dados obtidos
-            st.session_state[f"capa_gq_selecionada_{hq_alvo['id']}"] = dados_obtidos.get("capa_b64") or ""
+            capa_inicial = (
+                dados_obtidos.get("capa_b64")
+                or dados_obtidos.get("capa_url")
+                or (dados_obtidos.get("capas_alternativas", [{}])[0].get("url") if dados_obtidos.get("capas_alternativas") else "")
+                or ""
+            )
+            st.session_state[f"capa_gq_selecionada_{hq_alvo['id']}"] = capa_inicial
             st.session_state[f"gq_input_roteiro_{hq_alvo['id']}"] = dados_obtidos.get("roteiro") or ""
             st.session_state[f"gq_input_desenho_{hq_alvo['id']}"] = dados_obtidos.get("desenho") or ""
             st.session_state[f"gq_input_preco_{hq_alvo['id']}"] = float(dados_obtidos.get("preco_capa") or 0.0)
@@ -349,7 +365,13 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
 
     # Coluna 1: Capa encontrada e alternativas
     with col_capa_gq:
-        capa_atual_sess = st.session_state.get(f"capa_gq_selecionada_{hq_alvo['id']}") or dados.get("capa_b64") or ""
+        capa_atual_sess = (
+            st.session_state.get(f"capa_gq_selecionada_{hq_alvo['id']}")
+            or dados.get("capa_b64")
+            or dados.get("capa_url")
+            or (dados.get("capas_alternativas", [{}])[0].get("url") if dados.get("capas_alternativas") else "")
+            or ""
+        )
         placeholder_capa = st.empty()
         if capa_atual_sess:
             placeholder_capa.image(capa_atual_sess, caption="Capa Selecionada", use_container_width=True)
@@ -358,13 +380,13 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
             placeholder_capa.image(img_padrao, caption="Sem capa encontrada", use_container_width=True)
 
         capas_alt = dados.get("capas_alternativas", [])
-        if len(capas_alt) > 1:
-            with st.expander("🖼️ Outras opções de capa", expanded=False):
-                for idx_c, alt in enumerate(capas_alt[:4]):
+        if len(capas_alt) >= 1:
+            with st.expander(f"🖼️ Opções de capa ({len(capas_alt)})", expanded=False):
+                for idx_c, alt in enumerate(capas_alt[:6]):
                     u_img = alt.get("url") or alt.get("thumbnail") or ""
                     if u_img:
                         st.image(u_img, width=120)
-                        if st.button(f"Usar esta capa #{idx_c+1}", key=f"btn_alt_capa_{hq_alvo['id']}_{idx_c}", use_container_width=True):
+                        if st.button(f"Usar capa #{idx_c+1}", key=f"btn_alt_capa_{hq_alvo['id']}_{idx_c}", use_container_width=True):
                             with st.spinner(f"Carregando capa #{idx_c+1}..."):
                                 b64_alt = gemini_service.baixar_imagem_url_base64(u_img)
                                 capa_escolhida = b64_alt if (b64_alt and b64_alt.startswith("data:image")) else u_img
@@ -378,37 +400,28 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
 
     # Coluna 2: Roteiro, Desenho, Preço de Capa, Resumo e Link
     with col_dados_gq:
-        roteiro_edit = st.text_input(
-            "✍️ Roteiro:",
-            value=dados.get("roteiro") or "",
-            key=f"gq_input_roteiro_{hq_alvo['id']}",
-            help="Roteirista(s) oficial(is) creditados na edição"
-        )
-        desenho_edit = st.text_input(
-            "🎨 Desenho / Ilustrador:",
-            value=dados.get("desenho") or "",
-            key=f"gq_input_desenho_{hq_alvo['id']}",
-            help="Desenhista(s) / Arte oficial creditados na edição"
-        )
-        preco_val_init = float(dados.get("preco_capa") or 0.0)
-        preco_edit = st.number_input(
-            "🏷️ Preço de capa (R$):",
-            value=preco_val_init,
-            min_value=0.0,
-            step=0.50,
-            format="%.2f",
-            key=f"gq_input_preco_{hq_alvo['id']}",
-            help="Valor oficial impresso na capa da edição"
-        )
-        resumo_edit = st.text_area(
-            "📝 Resumo / Sinopse:",
-            value=dados.get("resumo") or "",
-            height=120,
-            key=f"gq_input_resumo_{hq_alvo['id']}",
-            help="Sinopse e visão geral da edição"
-        )
+        k_rot = f"gq_input_roteiro_{hq_alvo['id']}"
+        if k_rot not in st.session_state:
+            st.session_state[k_rot] = dados.get("roteiro") or ""
+        roteiro_edit = st.text_input("✍️ Roteiro:", key=k_rot, help="Roteirista(s) oficial(is) creditados na edição")
+
+        k_des = f"gq_input_desenho_{hq_alvo['id']}"
+        if k_des not in st.session_state:
+            st.session_state[k_des] = dados.get("desenho") or ""
+        desenho_edit = st.text_input("🎨 Desenho / Ilustrador:", key=k_des, help="Desenhista(s) / Arte oficial creditados na edição")
+
+        k_prc = f"gq_input_preco_{hq_alvo['id']}"
+        if k_prc not in st.session_state:
+            st.session_state[k_prc] = float(dados.get("preco_capa") or 0.0)
+        preco_edit = st.number_input("🏷️ Preço de capa (R$):", min_value=0.0, step=0.50, format="%.2f", key=k_prc, help="Valor oficial impresso na capa da edição")
+
+        k_res = f"gq_input_resumo_{hq_alvo['id']}"
+        if k_res not in st.session_state:
+            st.session_state[k_res] = dados.get("resumo") or ""
+        resumo_edit = st.text_area("📝 Resumo / Sinopse:", height=120, key=k_res, help="Sinopse e visão geral da edição")
+
         url_link_gq = hq_alvo.get("link_edicao") or dados.get("url_edicao") or ""
-        ids_alucinados = ["/14102", "/14107", "/li00401/", "/13926", "/ptd0031/"]
+        ids_alucinados = ["/14102", "/14107", "/li00401/", "/13926", "/ptd0031/", "busca-avancada"]
         if not url_link_gq or any(inv in url_link_gq for inv in ids_alucinados):
             fn_res_url = getattr(gemini_service, "resolver_url_guia_dos_quadrinhos", None)
             if fn_res_url:
@@ -419,12 +432,16 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
                     url_candidata=dados.get("url_edicao") or ""
                 )
             else:
-                url_link_gq = f"http://www.guiadosquadrinhos.com/busca-avancada-resultado.aspx?tit={urllib.parse.quote(hq_alvo['titulo'])}"
+                editora_termo_fallback = hq_alvo.get('editora') if hq_alvo.get('editora') and str(hq_alvo['editora']).lower() not in ['desconhecida', 'não informada', 'nao informada', ''] else ""
+                termo_fallback = f'site:guiadosquadrinhos.com "{hq_alvo["titulo"]}" {hq_alvo.get("edicao") or ""} {editora_termo_fallback}'.strip()
+                url_link_gq = f"https://www.google.com/search?q={urllib.parse.quote(termo_fallback)}"
 
+        k_lnk = f"gq_input_link_{hq_alvo['id']}"
+        if k_lnk not in st.session_state:
+            st.session_state[k_lnk] = url_link_gq
         link_edicao_edit = st.text_input(
             "🔗 Link Oficial no Guia dos Quadrinhos:",
-            value=url_link_gq,
-            key=f"gq_input_link_{hq_alvo['id']}",
+            key=k_lnk,
             help="URL oficial da página desta edição no Guia dos Quadrinhos"
         )
 
@@ -435,8 +452,10 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
 
         col_lnk1, col_lnk2 = st.columns(2)
         with col_lnk1:
-            if link_edicao_edit and link_edicao_edit.startswith("http"):
+            if link_edicao_edit and link_edicao_edit.startswith("http") and "google.com" not in link_edicao_edit:
                 st.markdown(f"🔗 [Abrir esta Edição no Guia dos Quadrinhos ➔]({link_edicao_edit})")
+            elif link_edicao_edit and "google.com" in link_edicao_edit:
+                st.markdown(f"🔍 [Pesquisar esta Edição no Google ➔]({link_edicao_edit})")
             else:
                 st.caption("Link não configurado.")
         with col_lnk2:
@@ -471,14 +490,20 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
                     erros.append("Resumo")
 
             # 4. Armazena Capa
-            capa_final = st.session_state.get(f"capa_gq_selecionada_{hq_alvo['id']}") or dados.get("capa_b64") or ""
+            capa_final = (
+                st.session_state.get(f"capa_gq_selecionada_{hq_alvo['id']}")
+                or dados.get("capa_b64")
+                or dados.get("capa_url")
+                or (dados.get("capas_alternativas", [{}])[0].get("url") if dados.get("capas_alternativas") else "")
+                or ""
+            )
             if capa_final and (capa_final.startswith("data:image") or capa_final.startswith("http")):
                 if not database.definir_capa(int(hq_alvo["id"]), capa_final):
                     sucesso_total = False
                     erros.append("Capa")
 
             # 5. Armazena Link Oficial da Edição no Guia dos Quadrinhos
-            if link_edicao_edit and link_edicao_edit.strip():
+            if link_edicao_edit and link_edicao_edit.strip() and "busca-avancada" not in link_edicao_edit:
                 fn_link = getattr(database, "definir_link_edicao", None)
                 if fn_link:
                     fn_link(int(hq_alvo["id"]), link_edicao_edit.strip())
