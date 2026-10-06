@@ -304,8 +304,81 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
         value=hq_alvo.get("link_edicao") or "",
         key=f"dlg_url_gq_{hq_alvo['id']}",
         placeholder="Ex: https://www.guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-0/un011300/104735",
-        help="Cole o link direto da página da edição no Guia dos Quadrinhos para carregar todos os dados técnicos e histórias instantaneamente sem usar IA."
+        help="Cole o link direto da página da edição no Guia dos Quadrinhos para carregar os dados."
     )
+
+    with st.expander("📋 Ou colar texto/ficha da página do Guia dos Quadrinhos (Extração 100% Exata)", expanded=False):
+        st.caption("Se estiver com a página aberta no navegador, selecione e copie o texto ou a tabela de Histórias/Ficha Técnica e cole abaixo:")
+        txt_copiado_gq = st.text_area("Texto copiado da página:", height=90, key=f"dlg_txt_paste_{hq_alvo['id']}", placeholder="Cole o texto da página ou as histórias...")
+        if st.button("⚡ Extrair do Texto Colado", key=f"btn_ext_txt_{hq_alvo['id']}", use_container_width=True):
+            if txt_copiado_gq.strip():
+                fn_txt_ext = getattr(gemini_service, "extrair_dados_texto_ou_html_gq", None)
+                if fn_txt_ext:
+                    d_txt = fn_txt_ext(txt_copiado_gq, termo_url.strip())
+                    if d_txt:
+                        s_key = f"dados_gq_encontrados_{hq_alvo['id']}"
+                        st.session_state[s_key] = d_txt
+                        st.session_state[f"gq_input_roteiro_{hq_alvo['id']}"] = d_txt.get("roteiro") or ""
+                        st.session_state[f"gq_input_desenho_{hq_alvo['id']}"] = d_txt.get("desenho") or ""
+                        st.session_state[f"gq_input_preco_{hq_alvo['id']}"] = float(d_txt.get("preco_capa") or 0.0)
+                        st.session_state[f"gq_input_resumo_{hq_alvo['id']}"] = d_txt.get("resumo") or ""
+                        if d_txt.get("url_edicao"):
+                            st.session_state[f"gq_input_link_{hq_alvo['id']}"] = d_txt.get("url_edicao")
+                        if d_txt.get("capa_url"):
+                            st.session_state[f"capa_gq_selecionada_{hq_alvo['id']}"] = d_txt.get("capa_url")
+                        # Evita que a busca automática sobreponha os dados extraídos
+                        st.session_state[f"termo_gq_cache_{hq_alvo['id']}"] = f"{termo_tit}|{termo_ed}|{termo_edi}|{termo_url}"
+                        st.success("✅ Informações da ficha técnica extraídas com sucesso!")
+                        try:
+                            st.rerun(scope="fragment")
+                        except Exception:
+                            pass
+
+    with st.expander("🖼️ Definir Capa (Link Web ou Enviar Imagem)", expanded=False):
+        st.caption("Insira o link de uma imagem da internet ou envie o arquivo da capa:")
+        col_img_gq1, col_img_gq2 = st.columns([3, 1])
+        with col_img_gq1:
+            url_capa_direta_gq = st.text_input(
+                "Link direto da imagem:",
+                placeholder="Ex: https://.../capa.jpg (Links ShowImage.aspx do GQ são bloqueados por hotlink)",
+                key=f"dlg_input_img_gq_direta_{hq_alvo['id']}",
+                label_visibility="collapsed"
+            )
+        with col_img_gq2:
+            if st.button("🖼️ Usar Link", key=f"btn_set_capa_gq_direta_{hq_alvo['id']}", use_container_width=True):
+                if url_capa_direta_gq.strip():
+                    u_clean = url_capa_direta_gq.strip()
+                    b64 = gemini_service.baixar_imagem_url_base64(u_clean)
+                    if b64 and b64.startswith("data:image"):
+                        st.session_state[f"capa_gq_selecionada_{hq_alvo['id']}"] = b64
+                        st.session_state[f"termo_gq_cache_{hq_alvo['id']}"] = f"{termo_tit}|{termo_ed}|{termo_edi}|{termo_url}"
+                        st.success("✅ Imagem da web baixada e aplicada com sucesso!")
+                    else:
+                        if "guiadosquadrinhos.com" in u_clean or "ShowImage.aspx" in u_clean:
+                            st.warning("⚠️ O servidor do Guia dos Quadrinhos bloqueia acesso externo direto (Cloudflare/Hotlink). Salve a imagem no seu PC e use o campo de envio de arquivo abaixo!")
+                        else:
+                            st.warning("⚠️ Não foi possível baixar a imagem deste link. Tente enviar o arquivo diretamente.")
+                    try:
+                        st.rerun(scope="fragment")
+                    except Exception:
+                        pass
+
+        arq_capa_modal = st.file_uploader(
+            "📁 Enviar imagem ou colar da área de transferência (Ctrl + V):",
+            type=["jpg", "jpeg", "png", "webp"],
+            key=f"dlg_upload_capa_{hq_alvo['id']}",
+            help="Dica: Após clicar em 'Copiar imagem' no navegador, clique aqui e pressione Ctrl + V para colar a imagem diretamente sem salvar no disco!"
+        )
+        if arq_capa_modal is not None:
+            try:
+                img_pil = Image.open(arq_capa_modal)
+                b64_up = processar_imagem_capa(img_pil)
+                if b64_up:
+                    st.session_state[f"capa_gq_selecionada_{hq_alvo['id']}"] = b64_up
+                    st.session_state[f"termo_gq_cache_{hq_alvo['id']}"] = f"{termo_tit}|{termo_ed}|{termo_edi}|{termo_url}"
+                    st.success("✅ Imagem colada / carregada com sucesso!")
+            except Exception as ex_up:
+                st.error(f"Erro ao processar imagem: {ex_up}")
 
     btn_pesquisar_gq = st.button("🔎 Buscar no Guia dos Quadrinhos", key=f"dlg_btn_pesquisar_gq_{hq_alvo['id']}", use_container_width=True, type="primary")
 
@@ -326,10 +399,10 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
                         titulo=termo_tit,
                         edicao=termo_ed,
                         editora=termo_edi,
-                        api_key=st.session_state.get("gemini_api_key"),
+                        api_key=st.session_state.get("gemini_api_key") or os.getenv("GEMINI_API_KEY"),
                         modelo=mod_gq,
                         url_edicao=termo_url.strip(),
-                        usar_ia=False
+                        usar_ia=True
                     )
                 except Exception as ex_gq:
                     st.error(f"Erro ao buscar no Guia dos Quadrinhos: {ex_gq}")
@@ -398,6 +471,24 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
                                 except Exception:
                                     pass
 
+        with st.expander("📁 Enviar / Colar Capa (Ctrl+V)", expanded=False):
+            arq_col = st.file_uploader(
+                "Selecione ou cole com Ctrl+V:",
+                type=["jpg", "jpeg", "png", "webp"],
+                key=f"dlg_upload_col_{hq_alvo['id']}",
+                help="Clique aqui e pressione Ctrl + V para colar a imagem copiada diretamente."
+            )
+            if arq_col is not None:
+                try:
+                    img_col = Image.open(arq_col)
+                    b64_c = processar_imagem_capa(img_col)
+                    if b64_c:
+                        st.session_state[f"capa_gq_selecionada_{hq_alvo['id']}"] = b64_c
+                        st.session_state[f"termo_gq_cache_{hq_alvo['id']}"] = f"{termo_tit}|{termo_ed}|{termo_edi}|{termo_url}"
+                        st.success("✅ Capa colada / carregada!")
+                except Exception as ex_col:
+                    st.error(f"Erro: {ex_col}")
+
     # Coluna 2: Roteiro, Desenho, Preço de Capa, Resumo e Link
     with col_dados_gq:
         k_rot = f"gq_input_roteiro_{hq_alvo['id']}"
@@ -453,13 +544,11 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
         col_lnk1, col_lnk2 = st.columns(2)
         with col_lnk1:
             if link_edicao_edit and link_edicao_edit.startswith("http") and "google.com" not in link_edicao_edit:
-                st.markdown(f"🔗 [Abrir esta Edição no Guia dos Quadrinhos ➔]({link_edicao_edit})")
-            elif link_edicao_edit and "google.com" in link_edicao_edit:
-                st.markdown(f"🔍 [Pesquisar esta Edição no Google ➔]({link_edicao_edit})")
+                st.markdown(f"🔗 [Abrir no Guia dos Quadrinhos ➔]({link_edicao_edit})")
             else:
-                st.caption("Link não configurado.")
+                st.caption("ℹ️ Nenhum link direto salvo.")
         with col_lnk2:
-            st.markdown(f"🌐 [Localizar Edição no Google ➔]({url_google_gq})")
+            st.markdown(f"🔍 [Pesquisar esta Edição no Google ➔]({url_google_gq})")
 
     st.markdown("---")
 

@@ -936,6 +936,29 @@ Retorne o JSON da operação correspondente:"""
 # -------------------------------------------------------------
 # BUSCA ONLINE DE CAPAS (ITUNES / OPENLIBRARY / SERPAPI)
 # -------------------------------------------------------------
+def extrair_og_image(url: str, headers: Optional[Dict[str, str]] = None, timeout: float = 3.0) -> Optional[str]:
+    """Tenta obter a imagem og:image ou twitter:image de uma página web de quadrinhos."""
+    if not url or not (url.startswith("http://") or url.startswith("https://")):
+        return None
+    if requests is None or BeautifulSoup is None:
+        return None
+    h = headers or {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    }
+    try:
+        r = requests.get(url, headers=h, timeout=timeout)
+        if r.status_code == 200 and r.text:
+            soup = BeautifulSoup(r.text, "html.parser")
+            og = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
+            if og and og.get("content"):
+                img_c = str(og.get("content")).strip()
+                if (img_c.startswith("http://") or img_c.startswith("https://")) and not img_c.endswith(".ico"):
+                    return img_c
+    except Exception:
+        pass
+    return None
+
+
 def buscar_capas_online(
     titulo: str,
     edicao: str = "",
@@ -944,13 +967,12 @@ def buscar_capas_online(
     limite: int = 8
 ) -> List[Dict[str, str]]:
     """
-    Busca capas de quadrinhos, mangás e graphic novels online em múltiplos serviços,
-    priorizando em primeiro lugar o acervo oficial do Guia dos Quadrinhos (guiadosquadrinhos.com):
-    1. Guia dos Quadrinhos (guiadosquadrinhos.com via Google Images SerpApi) - PRIORIDADE MÁXIMA
-    2. SerpApi Google Images (Busca aberta de capas brasileiras)
+    Busca capas de quadrinhos, mangás e graphic novels online em múltiplos serviços especializados:
+    1. Gemini Google Search Grounding (Busca inteligente em tempo real em lojas especializadas e sites de resenhas de HQs no Brasil) - PRIORIDADE MÁXIMA
+    2. SerpApi Google Images (Acervo do Guia dos Quadrinhos e Google Images HD)
     3. Apple Books / iTunes Search API (imagens oficiais em alta resolução)
     4. OpenLibrary Covers API
-    Retorna uma lista de dicionários contendo {'url', 'titulo', 'fonte', 'thumbnail'}.
+    Aplica validação semântica e filtro anti-ruído para garantir que apenas capas reais da edição solicitada sejam retornadas.
     """
     capas: List[Dict[str, str]] = []
     urls_vistas = set()
@@ -958,10 +980,20 @@ def buscar_capas_online(
     if not titulo or not titulo.strip():
         return []
 
+    dominios_bloqueados = [
+        "shutterstock", "poder360", "veja.abril", "oglobo.globo", "universoalien",
+        "semanticscholar", "cnnbrasil", "g1.globo", "folha.uol", "estadao", "metropoles", "uol.com.br/splash"
+    ]
+
     def add_capa(url: str, tit: str, fonte: str, thumb: Optional[str] = None):
         if not url or url in urls_vistas:
             return
         if not (url.startswith("http://") or url.startswith("https://")):
+            return
+        u_low = url.lower()
+        if any(d in u_low for d in dominios_bloqueados):
+            return
+        if "capasthumbs/antigas" in u_low or "logo" in u_low and "capa" not in u_low:
             return
         urls_vistas.add(url)
         capas.append({
@@ -971,157 +1003,182 @@ def buscar_capas_online(
             "thumbnail": thumb or url
         })
 
-    # Construção de termo limpo sem duplicar palavras já presentes
-    termo_limpo = str(titulo).strip()
-    if edicao and edicao.lower() not in termo_limpo.lower():
-        termo_limpo += f" {edicao}"
-    if editora and editora.lower() not in termo_limpo.lower():
-        termo_limpo += f" {editora}"
+    # Extração de número de edição se não veio explícito
+    titulo_limpo = re.sub(r"\s+", " ", str(titulo)).strip()
+    num_num = re.sub(r"[^\d]", "", edicao or "")
+    if not num_num:
+        m_num = re.search(r"\b(?:vol(?:ume)?|v|ed|#|n[oº°])?\.?\s*(\d{1,3})\b", titulo_limpo, re.IGNORECASE)
+        if m_num:
+            num_num = m_num.group(1)
 
-    termos_unicos = [termo_limpo]
-    if titulo.strip() not in termos_unicos:
-        termos_unicos.append(titulo.strip())
+    palavras_titulo = [
+        p for p in re.split(r"\W+", normalizar_str_busca(titulo_limpo))
+        if len(p) >= 3 and p not in ["panini", "capa", "gibi", "hq", "edicao", "volume", "vol", "editora", "quadrinhos"]
+    ]
 
-    serp_key = os.getenv("SERPAPI_API_KEY", "") or DEFAULT_SERPAPI_KEY or ""
-
-    # 1. PROVEDOR 1 (PRIORIDADE MÁXIMA): Guia dos Quadrinhos (guiadosquadrinhos.com)
-    if serp_key:
+    # 1. PROVEDOR 1 (PRIORIDADE MÁXIMA): Gemini com Google Search Grounding
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if gemini_key:
         try:
-            import serpapi
-            client = serpapi.Client(api_key=serp_key)
-            editora_termo_busca = editora.strip() if editora and editora.lower() not in ["desconhecida", "não informada", "nao informada", ""] else ""
-            num_num_c = re.sub(r"[^\d]", "", edicao.strip() or "")
-            ed_termo_busca = f'"nº {num_num_c}"' if num_num_c else (f'"{edicao.strip()}"' if edicao.strip() else "")
-            query_gq = f'site:guiadosquadrinhos.com "{titulo.strip()}" {ed_termo_busca} {editora_termo_busca}'.strip()
-            res_gq = client.search({
-                "engine": "google_images",
-                "q": query_gq,
-                "gl": "br",
-                "hl": "pt-br",
-                "num": 12
-            })
-            palavras_tit_busca = [p for p in re.split(r"\W+", normalizar_str_busca(titulo).strip()) if len(p) >= 3]
-            for img_it in res_gq.get("images_results", []):
-                if len(capas) >= limite:
-                    break
-                orig = img_it.get("original") or ""
-                thumb = img_it.get("thumbnail") or ""
-                tit_img = img_it.get("title") or termo_limpo
-                link_ref = img_it.get("link") or ""
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=gemini_key)
 
-                # Descarta miniaturas de ícones antigos de navegação
-                if "capasthumbs/antigas" in orig.lower() or "capasthumbs/antigas" in link_ref.lower():
-                    continue
+            prompt_busca = f"""Você é um especialista em histórias em quadrinhos brasileiras, encadernados, mangás e graphic novels.
+Encontre imagens de capa da edição:
+Título: {titulo_limpo}
+Edição: {edicao or num_num or ''}
+Editora: {editora or ''}
 
-                # Validação semântica: garante que o resultado pertence à obra pesquisada
-                tit_img_norm = normalizar_str_busca(tit_img)
-                link_ref_norm = normalizar_str_busca(link_ref)
-                if palavras_tit_busca and not any(p in tit_img_norm or p in link_ref_norm for p in palavras_tit_busca):
-                    continue
-
-                # Se o título procurado NÃO tem "x-men", e a imagem pertence a "X-Men", descarta
-                if "x-men" not in palavras_tit_busca and "xmen" not in palavras_tit_busca:
-                    if "x-men" in tit_img_norm or "x-men" in link_ref_norm or "xmen" in tit_img_norm:
-                        continue
-
-                # Validação de número de edição para evitar capas de edições completamente diferentes
-                if num_num_c:
-                    m_num_img = re.search(r"n[º°o]?\s*(\d+)", tit_img_norm)
-                    if m_num_img:
-                        num_enc = m_num_img.group(1).lstrip("0") or "0"
-                        num_esp = num_num_c.lstrip("0") or "0"
-                        if num_enc != num_esp:
-                            continue
-
-                # O servidor do Guia dos Quadrinhos bloqueia 403 requisições externas diretas ao ShowImage.aspx
-                # Por isso, a URL de CDN segura e nítida (360x550+) é o thumbnail do Google
-                url_final = thumb if ("guiadosquadrinhos.com" in orig.lower() or "ShowImage.aspx" in orig) else (orig or thumb)
-
-                if url_final:
-                    add_capa(
-                        url=url_final,
-                        tit=tit_img,
-                        fonte="Guia dos Quadrinhos (guiadosquadrinhos.com)",
-                        thumb=thumb or url_final
+Pesquise na web em lojas de quadrinhos (Comix Book Shop, Rika Comic Shop, Panini, Mythos, Pipoca e Nanquim, Amazon Brasil) e sites especializados (Universo HQ, Guia dos Quadrinhos).
+Retorne um JSON com uma lista de capas reais encontradas.
+Formato:
+[
+  {{"url": "URL_DIRETA_DA_IMAGEM_OU_PAGINA", "titulo": "Nome Completo da Edição", "fonte": "Nome do Site/Loja"}}
+]
+Retorne APENAS o array JSON puro sem blocos adicionais fora do array.
+"""
+            modelos_busca = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"]
+            for mod in modelos_busca:
+                try:
+                    res = client.models.generate_content(
+                        model=mod,
+                        contents=prompt_busca,
+                        config=types.GenerateContentConfig(
+                            tools=[types.Tool(google_search=types.GoogleSearch())],
+                            temperature=0.1
+                        )
                     )
-        except Exception as ex_gq:
-            print(f"[Aviso SerpApi Guia dos Quadrinhos Capas: {ex_gq}]")
+                    if res and res.text:
+                        m_json = re.search(r"\[\s*\{.*?\}\s*\]", res.text, re.DOTALL)
+                        if m_json:
+                            try:
+                                dados = json.loads(m_json.group(0))
+                                for item in dados:
+                                    u = item.get("url", "")
+                                    t = item.get("titulo", "")
+                                    f = item.get("fonte", "Web (HQ)")
+                                    if u:
+                                        if any(u.lower().endswith(ext) or ext in u.lower() for ext in [".jpg", ".jpeg", ".png", ".webp", "vtexassets", "mlstatic", "images.universohq", "comix.com.br/media"]):
+                                            add_capa(u, t, f)
+                                        else:
+                                            og_img = extrair_og_image(u)
+                                            if og_img:
+                                                add_capa(og_img, t, f)
+                            except Exception:
+                                pass
 
-    # 2. PROVEDOR 2: SerpApi Google Images Geral (Capas em alta resolução de lojas e editoras)
+                    # Aproveita links relevantes nos chunks de grounding
+                    if hasattr(res, 'candidates') and res.candidates:
+                        c = res.candidates[0]
+                        if hasattr(c, 'grounding_metadata') and c.grounding_metadata:
+                            for chunk in (c.grounding_metadata.grounding_chunks or []):
+                                if hasattr(chunk, 'web') and chunk.web:
+                                    w_url = chunk.web.uri or ""
+                                    w_tit = chunk.web.title or ""
+                                    if w_url and any(s in w_url.lower() for s in ["universohq", "comix", "rika", "panini", "amazon", "guiadosquadrinhos"]):
+                                        og = extrair_og_image(w_url)
+                                        if og:
+                                            add_capa(og, w_tit, "Google Grounding")
+
+                    if len(capas) >= 3:
+                        break
+                except Exception as e_mod:
+                    print(f"[Aviso Gemini Search Cover mod={mod}]: {e_mod}")
+        except Exception as e_gem:
+            print(f"[Aviso Gemini Grounding Cover]: {e_gem}")
+
+    # 2. PROVEDOR 2: SerpApi Google Images (se configurada e com cota)
+    serp_key = os.getenv("SERPAPI_API_KEY", "")
     if serp_key and len(capas) < limite:
         try:
             import serpapi
-            client = serpapi.Client(api_key=serp_key)
-            query_img = f"{termo_limpo} capa HQ".strip()
-            res = client.search({"engine": "google_images", "q": query_img, "gl": "br", "hl": "pt-br", "num": 6})
-            for img_it in res.get("images_results", []):
+            client_serp = serpapi.Client(api_key=serp_key)
+            query_serp = f"{titulo_limpo} {edicao} {editora} capa gibi HQ".strip()
+            res_serp = client_serp.search({"engine": "google_images", "q": query_serp, "gl": "br", "hl": "pt-br", "num": 8})
+            for img_it in res_serp.get("images_results", []):
                 if len(capas) >= limite:
                     break
                 orig = img_it.get("original") or ""
                 thumb = img_it.get("thumbnail") or ""
-                tit_img = img_it.get("title") or titulo
+                tit_img = img_it.get("title") or titulo_limpo
+                link_ref = img_it.get("link") or ""
 
-                if "capasthumbs/antigas" in orig.lower():
+                tit_norm = normalizar_str_busca(tit_img)
+                link_norm = normalizar_str_busca(link_ref)
+
+                # Validação semântica
+                if palavras_titulo and not any(p in tit_norm or p in link_norm for p in palavras_titulo):
                     continue
 
                 url_final = thumb if ("guiadosquadrinhos.com" in orig.lower() or "ShowImage.aspx" in orig) else (orig or thumb)
                 if url_final:
-                    add_capa(
-                        url=url_final,
-                        tit=tit_img,
-                        fonte="Google Images (HD)",
-                        thumb=thumb or url_final
-                    )
-        except Exception as ex:
-            print(f"[Aviso SerpApi Images: {ex}]")
+                    add_capa(url=url_final, tit=tit_img, fonte="Google Images (HD)", thumb=thumb or url_final)
+        except Exception as ex_serp:
+            print(f"[Aviso SerpApi Cover: {ex_serp}]")
 
-    # 3. PROVEDOR 3: Apple Books / iTunes
+    # 3. PROVEDOR 3: Apple Books / iTunes Search API
     if requests is not None and len(capas) < limite:
-        for termo in termos_unicos:
-            if len(capas) >= limite:
-                break
-            try:
-                r = requests.get(
-                    "https://itunes.apple.com/search",
-                    params={"term": termo, "media": "ebook", "country": "BR", "limit": 4},
-                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-                    timeout=5
-                )
-                if r.status_code == 200:
-                    dados = r.json()
-                    for item in dados.get("results", []):
-                        art = item.get("artworkUrl100") or ""
-                        if art:
-                            highres = art.replace("100x100bb.jpg", "800x800bb.jpg").replace("100x100bb.png", "800x800bb.png")
-                            item_tit = item.get("trackName") or titulo
-                            add_capa(highres, item_tit, "Apple Books / iTunes", art)
-            except Exception as ex:
-                print(f"[Aviso iTunes search: {ex}]")
+        try:
+            r_it = requests.get(
+                "https://itunes.apple.com/search",
+                params={"term": f"{titulo_limpo} {edicao}".strip(), "media": "ebook", "country": "BR", "limit": 4},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=5
+            )
+            if r_it.status_code == 200:
+                for item in r_it.json().get("results", []):
+                    art = item.get("artworkUrl100") or ""
+                    item_tit = item.get("trackName") or ""
+                    item_norm = normalizar_str_busca(item_tit)
+                    if palavras_titulo and all(p in item_norm for p in palavras_titulo):
+                        highres = art.replace("100x100bb.jpg", "800x800bb.jpg").replace("100x100bb.png", "800x800bb.png")
+                        add_capa(highres, item_tit, "Apple Books / iTunes", art)
+        except Exception as ex_it:
+            print(f"[Aviso iTunes search: {ex_it}]")
 
-    # 4. PROVEDOR 4: OpenLibrary
+    # 4. PROVEDOR 4: OpenLibrary Covers API
     if requests is not None and len(capas) < limite:
-        for termo in termos_unicos[:2]:
-            if len(capas) >= limite:
-                break
-            try:
-                r = requests.get(
-                    "https://openlibrary.org/search.json",
-                    params={"q": termo, "limit": 4},
-                    headers={"User-Agent": "HqCatalog/1.0"},
-                    timeout=5
-                )
-                if r.status_code == 200:
-                    dados = r.json()
-                    for doc in dados.get("docs", []):
-                        cover_i = doc.get("cover_i")
-                        if cover_i:
-                            c_url = f"https://covers.openlibrary.org/b/id/{cover_i}-L.jpg"
-                            c_thumb = f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg"
-                            doc_tit = doc.get("title") or titulo
-                            add_capa(c_url, doc_tit, "OpenLibrary", c_thumb)
-            except Exception as ex:
-                print(f"[Aviso OpenLibrary search: {ex}]")
+        try:
+            r_ol = requests.get(
+                "https://openlibrary.org/search.json",
+                params={"q": f"{titulo_limpo} {edicao}".strip(), "limit": 4},
+                headers={"User-Agent": "HqCatalog/1.0"},
+                timeout=5
+            )
+            if r_ol.status_code == 200:
+                for doc in r_ol.json().get("docs", []):
+                    cover_i = doc.get("cover_i")
+                    doc_tit = doc.get("title") or ""
+                    doc_norm = normalizar_str_busca(doc_tit)
+                    if cover_i and palavras_titulo and all(p in doc_norm for p in palavras_titulo):
+                        c_url = f"https://covers.openlibrary.org/b/id/{cover_i}-L.jpg"
+                        c_thumb = f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg"
+                        add_capa(c_url, doc_tit, "OpenLibrary", c_thumb)
+        except Exception as ex_ol:
+            print(f"[Aviso OpenLibrary search: {ex_ol}]")
 
+    # Ranking e pontuação de relevância das capas
+    def _score_capa(item: Dict[str, str]) -> int:
+        tit_c = normalizar_str_busca(item.get("titulo", ""))
+        score = 0
+        if palavras_titulo and all(p in tit_c for p in palavras_titulo):
+            score += 50
+        for p in palavras_titulo:
+            if p in tit_c:
+                score += 15
+        if num_num:
+            if f"n {num_num}" in tit_c or f"nº {num_num}" in tit_c or f"vol {num_num}" in tit_c or f"volume {num_num}" in tit_c or f" {num_num} " in f" {tit_c} ":
+                score += 40
+            else:
+                m_outro = re.findall(r"\b(?:vol(?:ume)?|n[oº°]?|#)\s*(\d+)\b", tit_c)
+                if m_outro and num_num not in m_outro:
+                    score -= 30
+        if editora and normalizar_str_busca(editora) in tit_c:
+            score += 20
+        return score
+
+    capas.sort(key=_score_capa, reverse=True)
     return capas[:limite]
 
 
@@ -3377,6 +3434,190 @@ def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dic
     return res
 
 
+def extrair_dados_texto_ou_html_gq(conteudo: str, url_orig: str = "") -> Dict[str, Any]:
+    """
+    Extrai dados de ficha técnica copiados como texto ou HTML do Guia dos Quadrinhos.
+    Permite importação 100% fiel e instantânea sem depender de IA ou scrapers quando
+    o usuário copiar a página do navegador.
+    """
+    if not conteudo or not conteudo.strip():
+        return {}
+    
+    # Se for HTML com tags, usa o parser HTML
+    if "<div" in conteudo or "<html" in conteudo or "<body" in conteudo:
+        return extrair_dados_html_guia_dos_quadrinhos(conteudo, url_orig)
+
+    res = {
+        "url_edicao": url_orig,
+        "titulo": "",
+        "edicao": "",
+        "editora": "",
+        "publicado_em": "",
+        "paginas": "",
+        "formato": "",
+        "preco_capa": 0.0,
+        "preco_capa_formatado": "R$ 0,00",
+        "roteiro": "",
+        "desenho": "",
+        "resumo": "",
+        "capa_url": "",
+        "historias": [],
+        "metodo": "Ficha Copiada do Guia dos Quadrinhos"
+    }
+
+    # Preço de capa
+    m_preco = re.search(r"Preço de capa:\s*R\$\s*([\d\.,]+)", conteudo, re.I)
+    if m_preco:
+        val_str = m_preco.group(1).replace(".", "").replace(",", ".")
+        try:
+            p_float = float(val_str)
+            res["preco_capa"] = p_float
+            res["preco_capa_formatado"] = f"R$ {p_float:.2f}".replace(".", ",")
+        except Exception:
+            pass
+
+    # Publicado em
+    m_pub = re.search(r"Publicado em:\s*([^\n\r]+)", conteudo, re.I)
+    if m_pub:
+        res["publicado_em"] = m_pub.group(1).strip()
+
+    # Editora
+    m_edi = re.search(r"Editora:\s*([^\n\r]+)", conteudo, re.I)
+    if m_edi:
+        res["editora"] = m_edi.group(1).strip()
+
+    # Formato
+    m_for = re.search(r"Formato:\s*([^\n\r]+)", conteudo, re.I)
+    if m_for:
+        res["formato"] = m_for.group(1).strip()
+
+    # Páginas
+    m_pag = re.search(r"Número de páginas:\s*([^\n\r]+)", conteudo, re.I)
+    if m_pag:
+        res["paginas"] = m_pag.group(1).strip()
+
+    # Roteiristas, Desenhistas e Histórias
+    roteiristas = []
+    desenhistas = []
+    historias = []
+    linhas = [l.strip() for l in conteudo.splitlines() if l.strip()]
+
+    for i, line in enumerate(linhas):
+        line_s = line.strip()
+        if re.match(r"^(roteiro|argumento|texto):\s*", line_s, re.I):
+            rot = re.sub(r"^(roteiro|argumento|texto):\s*", "", line_s, flags=re.I).strip()
+            for r_item in re.split(r"[,/;&]", rot):
+                r_clean = r_item.strip()
+                if r_clean and r_clean not in roteiristas and len(r_clean) > 2:
+                    roteiristas.append(r_clean)
+        elif re.match(r"^(desenho|arte|ilustra[çc][ãa]o|arte-final):\s*", line_s, re.I):
+            des = re.sub(r"^(desenho|arte|ilustra[çc][ãa]o|arte-final):\s*", "", line_s, flags=re.I).strip()
+            for d_item in re.split(r"[,/;&]", des):
+                d_clean = d_item.strip()
+                if d_clean and d_clean not in desenhistas and len(d_clean) > 2:
+                    desenhistas.append(d_clean)
+        elif (i + 1 < len(linhas)) and any(linhas[i+1].lower().startswith(k) for k in ["personagens:", "roteiro:", "argumento:"]):
+            if not any(line_s.lower().startswith(ign) for ign in ["personagens:", "roteiro:", "argumento:", "desenho:", "arte:", "cores:", "letrista:", "tradutor:", "publicada", "histórias", "ficha técnica", "publicado em", "editora", "licenciador", "gênero", "status", "número de páginas", "formato", "preço"]):
+                if line_s not in historias and len(line_s) > 2:
+                    historias.append(line_s)
+
+    res["roteiro"] = ", ".join(roteiristas)
+    res["desenho"] = ", ".join(desenhistas)
+
+    # Capa (ShowImage.aspx ou URL de imagem)
+    m_capa = re.search(r'(https?://[^\s"\'<>]*ShowImage\.aspx[^\s"\'<>]*)', conteudo, re.I)
+    if not m_capa:
+        m_capa = re.search(r'(https?://[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s"\'<>]*)?)', conteudo, re.I)
+    if m_capa:
+        res["capa_url"] = m_capa.group(1).strip()
+        res["capas_alternativas"] = [{"url": res["capa_url"], "origem": "Guia dos Quadrinhos"}]
+
+    # -------------------------------------------------------------
+    # EXTRAÇÃO COMPLETA DE HISTÓRIAS & RESUMO INTEGRAL
+    # -------------------------------------------------------------
+    cabecalho_keys = [
+        "publicado em:", "editora:", "licenciador:", "categoria:", "gênero:", "genero:",
+        "número de páginas:", "numero de paginas:", "formato:", "preço de capa:", "preco de capa:",
+        "crédito da capa", "arte da capa", "cores da capa", "status:", "preço:"
+    ]
+
+    story_starts = []
+    idx_l = 0
+    while idx_l < len(linhas):
+        line = linhas[idx_l]
+        line_l = line.lower()
+        if any(line_l.startswith(k) for k in cabecalho_keys) or line_l.startswith("histórias") or line_l.startswith("ficha técnica"):
+            idx_l += 1
+            continue
+            
+        if idx_l + 1 < len(linhas) and linhas[idx_l+1].lower().startswith("personagens:"):
+            story_starts.append(idx_l)
+            idx_l += 2
+            continue
+        elif line_l.startswith("personagens:"):
+            story_starts.append(idx_l)
+            idx_l += 1
+            continue
+            
+        idx_l += 1
+
+    blocos_historia = []
+    if story_starts:
+        for idx, start in enumerate(story_starts):
+            end = story_starts[idx + 1] if idx + 1 < len(story_starts) else len(linhas)
+            bloco_linhas = linhas[start:end]
+            
+            titulo = ""
+            personagens = ""
+            creditos = []
+            publicacao = ""
+            paginas = ""
+            sinopse_linhas = []
+            
+            for j, b_line in enumerate(bloco_linhas):
+                b_low = b_line.lower()
+                if j == 0 and not any(b_low.startswith(k) for k in ["personagens:", "roteiro:", "argumento:", "desenho:", "arte:", "publicada", "publicado"]):
+                    titulo = b_line
+                elif b_low.startswith("personagens:"):
+                    personagens = re.sub(r"^personagens:\s*", "", b_line, flags=re.I).strip()
+                elif any(b_low.startswith(k) for k in ["roteiro:", "argumento:", "texto:", "desenho:", "arte:", "arte-final:", "cores:", "letrista:", "tradutor:", "editor original:"]):
+                    creditos.append(b_line)
+                elif any(b_low.startswith(k) for k in ["publicada pela primeira vez", "publicado pela primeira vez", "publicação original", "primeira aparição"]):
+                    publicacao = b_line
+                elif re.match(r"^\d+\s*p[aá]ginas?$", b_low):
+                    paginas = b_line
+                elif not any(b_low.startswith(k) for k in cabecalho_keys) and not b_low.startswith("histórias") and not b_low.startswith("ficha técnica") and not b_low.startswith("http"):
+                    sinopse_linhas.append(b_line)
+            
+            bloco_txt = []
+            t_label = f"📖 {titulo}" if titulo else f"📖 História #{idx+1}"
+            bloco_txt.append(t_label)
+            if personagens:
+                bloco_txt.append(f"• Personagens: {personagens}")
+            if creditos:
+                bloco_txt.append(f"• Créditos: " + " | ".join(creditos))
+            if publicacao:
+                pub_str = f"• {publicacao}"
+                if paginas:
+                    pub_str += f" ({paginas})"
+                bloco_txt.append(pub_str)
+            elif paginas:
+                bloco_txt.append(f"• Páginas: {paginas}")
+            if sinopse_linhas:
+                bloco_txt.append(f"• Sinopse: " + " ".join(sinopse_linhas))
+                
+            blocos_historia.append("\n".join(bloco_txt))
+
+    if blocos_historia:
+        res["resumo"] = "\n\n".join(blocos_historia)
+    else:
+        linhas_uteis = [l for l in linhas if not any(l.lower().startswith(k) for k in cabecalho_keys) and not l.lower().startswith("histórias") and not l.lower().startswith("ficha técnica") and not l.lower().startswith("http")]
+        if linhas_uteis:
+            res["resumo"] = "\n".join(linhas_uteis)
+
+    return res
+
+
 # =============================================================
 # BUSCA INTEGRADA DE DADOS: GUIA DOS QUADRINHOS
 # (Roteiro, Desenho, Preço de Capa, Imagem da Capa e Resumo)
@@ -3393,7 +3634,7 @@ def buscar_dados_guia_dos_quadrinhos(
     api_key: Optional[str] = None,
     modelo: Optional[str] = None,
     url_edicao: str = "",
-    usar_ia: bool = False
+    usar_ia: bool = True
 ) -> Dict[str, Any]:
     """
     Busca todas as informações técnicas e editoriais de uma HQ no Guia dos Quadrinhos
@@ -3405,7 +3646,8 @@ def buscar_dados_guia_dos_quadrinhos(
     - Resumo / Sinopse (histórias contidas na edição)
     - Link oficial da edição no Guia dos Quadrinhos
 
-    Prioriza extração direta do HTML da página oficial da edição (zero créditos de IA).
+    Tenta extração direta do HTML (quando disponível sem captcha) e realiza fallback
+    automático inteligente via Gemini + Google Search Grounding para máxima fidelidade.
     """
     if not titulo or not titulo.strip():
         return {}
@@ -3423,7 +3665,7 @@ def buscar_dados_guia_dos_quadrinhos(
             if ficha_canonica.get("capas_alternativas"):
                 for alt in ficha_canonica["capas_alternativas"]:
                     u = alt.get("url") or alt.get("thumbnail") or ""
-                    if u:
+                    if u and "ShowImage.aspx" not in u:
                         b64 = baixar_imagem_url_base64(u)
                         if b64 and b64.startswith("data:image"):
                             ficha_canonica["capa_b64"] = b64
@@ -3469,6 +3711,7 @@ def buscar_dados_guia_dos_quadrinhos(
         "preco_capa": 0.0,
         "preco_capa_formatado": "R$ 0,00",
         "resumo": "",
+        "publicado_em": "",
         "capa_b64": "",
         "capas_alternativas": [],
         "url_edicao": url_resolvida,
@@ -3492,6 +3735,8 @@ def buscar_dados_guia_dos_quadrinhos(
                 resultado["preco_capa"] = float(dados_extraidos.get("preco_capa") or 0.0)
                 resultado["preco_capa_formatado"] = dados_extraidos.get("preco_capa_formatado") or "R$ 0,00"
                 resultado["resumo"] = dados_extraidos.get("resumo") or ""
+                if dados_extraidos.get("publicado_em"):
+                    resultado["publicado_em"] = dados_extraidos.get("publicado_em") or ""
                 resultado["metodo"] = "Página Oficial do Guia dos Quadrinhos"
 
                 if dados_extraidos.get("capa_url"):
@@ -3506,7 +3751,7 @@ def buscar_dados_guia_dos_quadrinhos(
 
     # -----------------------------------------------------------------
     # ETAPA 3: CONSULTA COMPLEMENTAR POR IA COM GOOGLE SEARCH GROUNDING
-    # (Apenas se explicitamente solicitado via usar_ia=True e faltarem dados)
+    # (Ativada se dados essenciais estiverem vazios)
     # -----------------------------------------------------------------
     precisa_ia = (
         usar_ia
@@ -3519,15 +3764,19 @@ def buscar_dados_guia_dos_quadrinhos(
         )
     )
 
+    dados_ia: Optional[Dict[str, Any]] = None
     if precisa_ia:
         try:
-            client_g = get_gemini_client(api_key)
+            api_key_usada = api_key or os.getenv("GEMINI_API_KEY", "") or DEFAULT_GEMINI_API_KEY or ""
+            client_g = get_gemini_client(api_key_usada)
             editora_termo = editora_limpa if editora_limpa and editora_limpa.lower() not in ["desconhecida", "não informada", "nao informada", ""] else ""
             termo_pesquisa_gq = f"site:guiadosquadrinhos.com \"{titulo_limpo}\" {edicao_limpa} {editora_termo}".strip()
+            url_ref = url_resolvida if (url_resolvida and url_resolvida.startswith("http") and "/edicao/" in url_resolvida) else ""
 
-            prompt_gq = f"""Você é o Especialista Mestre no GUIA DOS QUADRINHOS (guiadosquadrinhos.com).
-Consulte as informações completas da seguinte edição no Guia dos Quadrinhos através da pesquisa:
-{termo_pesquisa_gq}
+            prompt_gq = f"""Você é o Especialista Mestre na enciclopédia GUIA DOS QUADRINHOS (guiadosquadrinhos.com).
+Consulte as informações completas da seguinte edição no Guia dos Quadrinhos através da pesquisa no Google:
+{f"URL exata da edição no Guia dos Quadrinhos: {url_ref}" if url_ref else ""}
+Termo de busca: {termo_pesquisa_gq}
 
 Dados da edição:
 - Título: {titulo_limpo}
@@ -3535,11 +3784,13 @@ Dados da edição:
 - Editora: {editora_limpa or 'Não informada'}
 
 Extraia com total fidelidade do Guia dos Quadrinhos e catálogo editorial:
-1. roteiro: Todos os roteiristas de todas as histórias da edição, separados por vírgula.
-2. desenho: Todos os desenhistas / ilustradores / arte de todas as histórias da edição, separados por vírgula.
-3. preco_capa: Preço oficial de capa em reais (número float, ex: 15.90).
-4. resumo: Lista com os títulos de todas as histórias da edição e sinopse.
-5. capa_url: URL da imagem da capa oficial desta edição exata no Guia dos Quadrinhos (ShowImage.aspx).
+1. "roteiro": Nomes de todos os roteiristas de todas as histórias contidas na edição, separados por vírgula (ex: "Geoff Johns, Brian Azzarello, Gail Simone").
+2. "desenho": Nomes de todos os desenhistas / ilustradores / arte de todas as histórias contidas na edição, separados por vírgula (ex: "Ivan Reis, Cliff Chiang, Travis Moore").
+3. "preco_capa": Preço oficial de capa em reais (número float, ex: 14.90).
+4. "resumo": Compilação detalhada de todas as histórias da edição com seus respectivos títulos, personagens principais e sinopse das histórias.
+5. "publicado_em": Mês e ano de publicação no Brasil (ex: "Fevereiro de 2013").
+6. "capa_url": URL da imagem da capa oficial desta edição no Guia dos Quadrinhos ou CDN.
+7. "url_edicao": Link canônico direto da página da edição no Guia dos Quadrinhos (ex: "https://www.guiadosquadrinhos.com/edicao/...").
 
 Retorne ESTRITAMENTE um JSON com as chaves:
 {{
@@ -3547,11 +3798,13 @@ Retorne ESTRITAMENTE um JSON com as chaves:
   "desenho": "...",
   "preco_capa": 0.0,
   "resumo": "...",
-  "capa_url": "..."
+  "publicado_em": "...",
+  "capa_url": "...",
+  "url_edicao": "..."
 }}
 """
             modelo_base = str(modelo).strip() if modelo and str(modelo).strip() else "gemini-3.1-flash-lite"
-            candidatos = [modelo_base, "gemini-3.1-flash-lite", "gemini-3.8-flash"]
+            candidatos = [modelo_base, "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-3.5-flash"]
             dados_ia = None
 
             for mod in candidatos:
@@ -3581,6 +3834,10 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     pass
 
             if dados_ia:
+                if dados_ia.get("url_edicao") and "guiadosquadrinhos.com/edicao/" in str(dados_ia["url_edicao"]):
+                    u_gq_ia = str(dados_ia["url_edicao"]).strip()
+                    if "/edicao/" in u_gq_ia and "busca-avancada" not in u_gq_ia:
+                        resultado["url_edicao"] = u_gq_ia
                 if not resultado.get("roteiro"):
                     rot = dados_ia.get("roteiro") or dados_ia.get("roteiristas") or ""
                     if isinstance(rot, list):
@@ -3616,11 +3873,15 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     if res_ia:
                         resultado["resumo"] = str(res_ia).strip()
 
+                if not resultado.get("publicado_em") and dados_ia.get("publicado_em"):
+                    resultado["publicado_em"] = str(dados_ia.get("publicado_em")).strip()
+
                 capa_sugerida = dados_ia.get("capa_url") or ""
                 if capa_sugerida and capa_sugerida.startswith("http") and not resultado.get("capa_b64"):
-                    b64 = baixar_imagem_url_base64(capa_sugerida)
-                    if b64 and b64.startswith("data:image"):
-                        resultado["capa_b64"] = b64
+                    if "ShowImage.aspx" not in capa_sugerida:
+                        b64 = baixar_imagem_url_base64(capa_sugerida)
+                        if b64 and b64.startswith("data:image"):
+                            resultado["capa_b64"] = b64
 
         except Exception as ex_ia:
             print(f"[Aviso IA Guia dos Quadrinhos: {ex_ia}]")
@@ -3629,18 +3890,44 @@ Retorne ESTRITAMENTE um JSON com as chaves:
     # ETAPA 4: CAPAS COMPLEMENTARES E CONVERSÃO EM ALTA DEFINIÇÃO
     # -----------------------------------------------------------------
     try:
-        capas_candidatas = buscar_capas_online(titulo_limpo, edicao_limpa, editora_limpa, limite=4)
+        capas_candidatas = buscar_capas_online(titulo_limpo, edicao_limpa, editora_limpa, limite=6)
+        
+        # Se temos uma URL oficial com slug, pesquisa também com o título completo decodificado do slug
+        url_alvo_slug = resultado.get("url_edicao") or url_resolvida or url_edicao
+        if url_alvo_slug and "/edicao/" in url_alvo_slug:
+            m_slug = re.search(r"/edicao/([^/]+)/", url_alvo_slug)
+            if m_slug:
+                slug_tit = m_slug.group(1).replace("-n-", " ").replace("-", " ").strip()
+                if slug_tit and slug_tit.lower() != titulo_limpo.lower():
+                    capas_slug = buscar_capas_online(slug_tit, edicao_limpa, editora_limpa, limite=4)
+                    for item_s in capas_slug:
+                        if not any(c.get("url") == item_s.get("url") for c in capas_candidatas):
+                            capas_candidatas.append(item_s)
+
+        # Adiciona imagens encontradas pelo Gemini Grounding
+        if dados_ia and isinstance(dados_ia.get("capas_alternativas"), list):
+            for u_alt_ia in dados_ia["capas_alternativas"]:
+                if u_alt_ia and str(u_alt_ia).startswith("http") and "ShowImage.aspx" not in str(u_alt_ia):
+                    if not any(c.get("url") == str(u_alt_ia) for c in capas_candidatas):
+                        capas_candidatas.append({
+                            "url": str(u_alt_ia),
+                            "thumbnail": str(u_alt_ia),
+                            "titulo": f"{titulo_limpo} nº {edicao_limpa}",
+                            "fonte": "Busca Online (IA/Web)"
+                        })
+
         if capas_candidatas:
             for item_c in capas_candidatas:
                 if not any(c.get("url") == item_c.get("url") for c in resultado["capas_alternativas"]):
                     resultado["capas_alternativas"].append(item_c)
             if not resultado.get("capa_b64"):
-                primeira = capas_candidatas[0]
-                url_img = primeira.get("url") or primeira.get("thumbnail") or ""
-                if url_img:
-                    b64 = baixar_imagem_url_base64(url_img)
-                    if b64 and b64.startswith("data:image"):
-                        resultado["capa_b64"] = b64
+                for item_c in resultado["capas_alternativas"]:
+                    url_img = item_c.get("url") or item_c.get("thumbnail") or ""
+                    if url_img and "ShowImage.aspx" not in url_img:
+                        b64 = baixar_imagem_url_base64(url_img)
+                        if b64 and b64.startswith("data:image"):
+                            resultado["capa_b64"] = b64
+                            break
     except Exception as ex_capas:
         print(f"[Aviso busca complementar de capas: {ex_capas}]")
 
@@ -3649,22 +3936,18 @@ Retorne ESTRITAMENTE um JSON com as chaves:
         url_derivada = derivar_url_capa_guia_dos_quadrinhos(resultado["url_edicao"], editora_limpa, edicao_limpa)
         if url_derivada:
             if not any(c.get("url") == url_derivada for c in resultado["capas_alternativas"]):
-                resultado["capas_alternativas"].insert(0, {
+                resultado["capas_alternativas"].append({
                     "url": url_derivada,
                     "thumbnail": url_derivada,
                     "titulo": f"{titulo_limpo} nº {edicao_limpa} (Capa Oficial Guia dos Quadrinhos)",
                     "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)"
                 })
-            if not resultado.get("capa_b64"):
-                b64_der = baixar_imagem_url_base64(url_derivada)
-                if b64_der and b64_der.startswith("data:image"):
-                    resultado["capa_b64"] = b64_der
 
-    # Se ainda não possui capa_b64 mas possui capas alternativas, tenta carregar a primeira
+    # Se ainda não possui capa_b64 mas possui capas alternativas, tenta carregar a primeira válida
     if not resultado.get("capa_b64") and resultado.get("capas_alternativas"):
         for alt in resultado["capas_alternativas"]:
             url_alt = alt.get("url") or alt.get("thumbnail") or ""
-            if url_alt:
+            if url_alt and "ShowImage.aspx" not in url_alt:
                 b64_alt = baixar_imagem_url_base64(url_alt)
                 if b64_alt and b64_alt.startswith("data:image"):
                     resultado["capa_b64"] = b64_alt

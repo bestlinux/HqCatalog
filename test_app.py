@@ -792,6 +792,38 @@ class TestHqCatalog(unittest.TestCase):
         res = gemini_service.baixar_imagem_url_base64(url_invalida, timeout=2)
         self.assertEqual(res, url_invalida)
 
+    def test_extrair_dados_texto_ou_html_gq(self):
+        txt_exemplo = """
+        Superboy (2ª Série) n° 21
+        Publicado em: julho de 1998
+        Editora: Abril
+        Número de páginas: 84
+        Formato: Formatinho (13,5 x 19 cm)
+        Preço de capa: R$ 2,50
+
+        Ataque mental
+        Personagens: Superboy (Pós-Crise), Dubbilex, Tana Moon, Roxy Leech, Rex Leech, Amanda Spence, Contessa Érica Del Portenza
+        Argumento: Ron Marz
+        Desenho: Ramon Bernado
+        Arte-Final: Doug Hazlewood
+        Cores: Tom McCraw
+        Publicada pela primeira vez em Superboy (1994) n° 34/1996 - DC Comics
+        Superboy decidiu ficar com Tana, mas a tristeza de Roxy abala os sentimentos do herói. Enquanto isso, Dubbilex surta com a volta de seus poderes e somente Roxy será capaz de ajudar.
+        22 Páginas
+
+        Imagem: https://www.guiadosquadrinhos.com/edicao/ShowImage.aspx?id=8146&path=abril/s/sb00302021.jpg
+        """
+        res = gemini_service.extrair_dados_texto_ou_html_gq(txt_exemplo, "https://www.guiadosquadrinhos.com/edicao/superboy-2-serie-n-21/sb00302/8146")
+        self.assertEqual(res["roteiro"], "Ron Marz")
+        self.assertEqual(res["desenho"], "Ramon Bernado, Doug Hazlewood")
+        self.assertEqual(res["preco_capa"], 2.50)
+        self.assertEqual(res["capa_url"], "https://www.guiadosquadrinhos.com/edicao/ShowImage.aspx?id=8146&path=abril/s/sb00302021.jpg")
+        self.assertIn("Ataque mental", res["resumo"])
+        self.assertIn("Dubbilex", res["resumo"])
+        self.assertIn("Superboy (1994) n° 34/1996", res["resumo"])
+        self.assertIn("Superboy decidiu ficar com Tana", res["resumo"])
+        self.assertIn("22 Páginas", res["resumo"])
+
     def test_status_lendo_e_secao_em_leitura(self):
         # 1. Cadastrar HQs de teste
         database.salvar_hqs([
@@ -1363,11 +1395,35 @@ class TestHqCatalog(unittest.TestCase):
             mock_resp.text = ""
             mock_get.return_value = mock_resp
 
-            res_generico = gemini_service.buscar_dados_guia_dos_quadrinhos("Homem-Aranha", "1", "Panini")
+            res_generico = gemini_service.buscar_dados_guia_dos_quadrinhos("Homem-Aranha", "1", "Panini", usar_ia=False)
             self.assertIsInstance(res_generico, dict)
             self.assertEqual(res_generico.get("titulo"), "Homem-Aranha")
             self.assertIn("url_edicao", res_generico)
             self.assertNotIn("busca-avancada-resultado.aspx", res_generico.get("url_edicao", ""))
+
+        # 6. Universo DC 3ª Série 8 com URL do Guia dos Quadrinhos e Fallback por IA
+        with patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
+             patch("gemini_service.get_gemini_client") as mock_client:
+            mock_chat = MagicMock()
+            mock_resp_ai = MagicMock()
+            mock_resp_ai.text = '{"roteiro": "Geoff Johns, Brian Azzarello", "desenho": "Ivan Reis, Cliff Chiang", "preco_capa": 14.90, "resumo": "Histórias dos Novos 52"}'
+            mock_chat.send_message.return_value = mock_resp_ai
+            mock_instance = MagicMock()
+            mock_instance.chats.create.return_value = mock_chat
+            mock_client.return_value = mock_instance
+
+            res_udc8 = gemini_service.buscar_dados_guia_dos_quadrinhos(
+                "Universo DC 3ª Série",
+                "8",
+                "Panini",
+                url_edicao="https://www.guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-8/un011300/101984"
+            )
+            self.assertIsInstance(res_udc8, dict)
+            self.assertEqual(res_udc8.get("roteiro"), "Geoff Johns, Brian Azzarello")
+            self.assertEqual(res_udc8.get("desenho"), "Ivan Reis, Cliff Chiang")
+            self.assertEqual(res_udc8.get("preco_capa_formatado"), "R$ 14,90")
+            self.assertEqual(res_udc8.get("resumo"), "Histórias dos Novos 52")
+            self.assertEqual(res_udc8.get("url_edicao"), "https://www.guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-8/un011300/101984")
 
 
 if __name__ == "__main__":
