@@ -454,22 +454,32 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
 
         capas_alt = dados.get("capas_alternativas", [])
         if len(capas_alt) >= 1:
-            with st.expander(f"🖼️ Opções de capa ({len(capas_alt)})", expanded=False):
-                for idx_c, alt in enumerate(capas_alt[:6]):
-                    u_img = alt.get("url") or alt.get("thumbnail") or ""
-                    if u_img:
-                        st.image(u_img, width=120)
-                        if st.button(f"Usar capa #{idx_c+1}", key=f"btn_alt_capa_{hq_alvo['id']}_{idx_c}", use_container_width=True):
-                            with st.spinner(f"Carregando capa #{idx_c+1}..."):
-                                b64_alt = gemini_service.baixar_imagem_url_base64(u_img)
-                                capa_escolhida = b64_alt if (b64_alt and b64_alt.startswith("data:image")) else u_img
-                                st.session_state[f"capa_gq_selecionada_{hq_alvo['id']}"] = capa_escolhida
-                                placeholder_capa.image(capa_escolhida, caption=f"Capa #{idx_c+1} Selecionada", use_container_width=True)
-                                st.success(f"✅ Capa #{idx_c+1} selecionada! Clique em 'Armazenar tudo' abaixo para salvar.")
-                                try:
-                                    st.rerun(scope="fragment")
-                                except Exception:
-                                    pass
+            with st.expander(f"🖼️ Escolher entre outras opções de capa ({len(capas_alt)} disponíveis)", expanded=False):
+                for i_alt in range(0, len(capas_alt), 2):
+                    cols_alt = st.columns(2, gap="small")
+                    for j_alt in range(2):
+                        idx_c = i_alt + j_alt
+                        if idx_c < len(capas_alt):
+                            alt = capas_alt[idx_c]
+                            u_img = alt.get("url") or alt.get("thumbnail") or ""
+                            if u_img:
+                                with cols_alt[j_alt]:
+                                    with st.container(border=True):
+                                        st.image(u_img, use_container_width=True)
+                                        tit_c = alt.get("titulo") or f"Opção #{idx_c+1}"
+                                        fonte_c = alt.get("fonte") or "Web"
+                                        st.caption(f"**{tit_c}**\n\n*{fonte_c}*")
+                                        if st.button(f"✅ Usar Capa #{idx_c+1}", key=f"btn_alt_capa_{hq_alvo['id']}_{idx_c}", use_container_width=True, type="primary" if idx_c == 0 else "secondary"):
+                                            with st.spinner(f"Carregando capa #{idx_c+1}..."):
+                                                b64_alt = gemini_service.baixar_imagem_url_base64(u_img)
+                                                capa_escolhida = b64_alt if (b64_alt and b64_alt.startswith("data:image")) else u_img
+                                                st.session_state[f"capa_gq_selecionada_{hq_alvo['id']}"] = capa_escolhida
+                                                placeholder_capa.image(capa_escolhida, caption=f"Capa #{idx_c+1} Selecionada", use_container_width=True)
+                                                st.success(f"✅ Capa #{idx_c+1} selecionada! Clique em 'Armazenar tudo' abaixo para salvar.")
+                                                try:
+                                                    st.rerun(scope="fragment")
+                                                except Exception:
+                                                    pass
 
         with st.expander("📁 Enviar / Colar Capa (Ctrl+V)", expanded=False):
             arq_col = st.file_uploader(
@@ -674,7 +684,8 @@ def dialog_buscar_capa(id_padrao: Optional[int] = None):
                 titulo=termo_busca,
                 edicao=hq_alvo.get("edicao") or "",
                 editora=hq_alvo.get("editora") or "",
-                escritor=hq_alvo.get("escritor") or ""
+                escritor=hq_alvo.get("escritor") or "",
+                limite=15
             )
             st.session_state[session_res_key] = resultados
 

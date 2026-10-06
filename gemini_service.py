@@ -967,12 +967,12 @@ def buscar_capas_online(
     edicao: str = "",
     editora: str = "",
     escritor: str = "",
-    limite: int = 8
+    limite: int = 15
 ) -> List[Dict[str, str]]:
     """
     Busca capas de quadrinhos, mangás e graphic novels online em múltiplos serviços especializados:
-    1. Gemini Google Search Grounding (Busca inteligente em tempo real em lojas especializadas e sites de resenhas de HQs no Brasil) - PRIORIDADE MÁXIMA
-    2. SerpApi Google Images (Acervo do Guia dos Quadrinhos e Google Images HD)
+    1. Gemini IA Multi-Modelos (Curadoria de capas canônicas, variantes, importadas e nacionais em CDNs oficiais)
+    2. SerpApi Google Images (quando configurado com cota)
     3. Apple Books / iTunes Search API (imagens oficiais em alta resolução)
     4. OpenLibrary Covers API
     Aplica validação semântica e filtro anti-ruído para garantir que apenas capas reais da edição solicitada sejam retornadas.
@@ -996,7 +996,7 @@ def buscar_capas_online(
         u_low = url.lower()
         if any(d in u_low for d in dominios_bloqueados):
             return
-        if "capasthumbs/antigas" in u_low or "logo" in u_low and "capa" not in u_low:
+        if "capasthumbs/antigas" in u_low or ("logo" in u_low and "capa" not in u_low):
             return
         urls_vistas.add(url)
         capas.append({
@@ -1019,77 +1019,84 @@ def buscar_capas_online(
         if len(p) >= 3 and p not in ["panini", "capa", "gibi", "hq", "edicao", "volume", "vol", "editora", "quadrinhos"]
     ]
 
-    # 1. PROVEDOR 1 (PRIORIDADE MÁXIMA): Gemini com Google Search Grounding
+    # 1. PROVEDOR 1 (PRIORIDADE MÁXIMA): Gemini com Multi-Modelos e Fallback Inteligente
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key:
         try:
-            from google import genai
-            from google.genai import types
-            client = genai.Client(api_key=gemini_key)
+            client = get_gemini_client(gemini_key)
 
-            prompt_busca = f"""Você é um especialista em histórias em quadrinhos brasileiras, encadernados, mangás e graphic novels.
-Encontre imagens de capa da edição:
-Título: {titulo_limpo}
-Edição: {edicao or num_num or ''}
-Editora: {editora or ''}
+            prompt_busca = f"""Você é o maior especialista em catalogação e capas de Histórias em Quadrinhos, Mangás e Graphic Novels do Brasil.
+Liste pelo menos 10 a 15 opções de URLs e links de imagens de capa em alta definição para a seguinte HQ:
+- Título: {titulo_limpo}
+- Volume / Edição: {edicao or num_num or 'Volume 1 / Edição Única'}
+- Editora: {editora or 'Não informada'}
+- Roteirista / Autor: {escritor or ''}
 
-Pesquise na web em lojas de quadrinhos (Comix Book Shop, Rika Comic Shop, Panini, Mythos, Pipoca e Nanquim, Amazon Brasil) e sites especializados (Universo HQ, Guia dos Quadrinhos).
-Retorne um JSON com uma lista de capas reais encontradas.
-Formato:
+Inclua todas as variações e fontes conhecidas:
+1. Capa oficial nacional (Panini / Guia dos Quadrinhos / Amazon BR / Pipoca & Nanquim / JBC)
+2. Capas variantes, edições especiais de luxo, capa dura e encadernados
+3. Capas originais importadas (Vertigo / DC Comics / Marvel / Comic Vine / Fandom / Image)
+4. Imagens em CDNs reais (ex: m.media-amazon.com/images/I/..., comicvine.gamespot.com, static.wikia.nocookie.net, panini.com.br, etc.)
+
+Retorne ESTRITAMENTE um array JSON no formato:
 [
-  {{"url": "URL_DIRETA_DA_IMAGEM_OU_PAGINA", "titulo": "Nome Completo da Edição", "fonte": "Nome do Site/Loja"}}
+  {{"url": "https://...", "titulo": "{titulo_limpo} - Capa Principal", "fonte": "Amazon / Panini"}},
+  {{"url": "https://...", "titulo": "{titulo_limpo} - Capa Variante / Guia dos Quadrinhos", "fonte": "Guia dos Quadrinhos"}},
+  {{"url": "https://...", "titulo": "{titulo_limpo} - Capa Original Vertigo", "fonte": "Comic Vine"}}
 ]
-Retorne APENAS o array JSON puro sem blocos adicionais fora do array.
 """
-            modelos_busca = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
+            modelos_busca = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
             for mod in modelos_busca:
+                resp_text = None
+                # Tentativa 1: com Grounding (se a conta suportar)
                 try:
                     res = client.models.generate_content(
                         model=mod,
                         contents=prompt_busca,
                         config=types.GenerateContentConfig(
                             tools=[types.Tool(google_search=types.GoogleSearch())],
-                            temperature=0.1
-                        )
+                            temperature=0.2
+                        ) if types else None
                     )
                     if res and res.text:
-                        m_json = re.search(r"\[\s*\{.*?\}\s*\]", res.text, re.DOTALL)
-                        if m_json:
-                            try:
-                                dados = json.loads(m_json.group(0))
+                        resp_text = res.text
+                except Exception:
+                    resp_text = None
+
+                # Tentativa 2: Fallback direto via Chat sem ferramentas externas (ideal para contas gratuitas)
+                if not resp_text:
+                    try:
+                        chat = client.chats.create(
+                            model=mod,
+                            config=types.GenerateContentConfig(temperature=0.2) if types else None
+                        )
+                        res_chat = chat.send_message(prompt_busca)
+                        if res_chat and res_chat.text:
+                            resp_text = res_chat.text
+                    except Exception:
+                        resp_text = None
+
+                if resp_text:
+                    resp_str = str(resp_text)
+                    m_json = re.search(r"\[\s*\{.*?\}\s*\]", resp_str, re.DOTALL)
+                    if m_json:
+                        try:
+                            dados = json.loads(m_json.group(0))
+                            if isinstance(dados, list):
                                 for item in dados:
-                                    u = item.get("url", "")
-                                    t = item.get("titulo", "")
-                                    f = item.get("fonte", "Web (HQ)")
-                                    if u:
-                                        if any(u.lower().endswith(ext) or ext in u.lower() for ext in [".jpg", ".jpeg", ".png", ".webp", "vtexassets", "mlstatic", "images.universohq", "comix.com.br/media"]):
+                                    if isinstance(item, dict):
+                                        u = item.get("url", "")
+                                        t = item.get("titulo", "")
+                                        f = item.get("fonte", "Web / Gemini")
+                                        if u and u.startswith("http"):
                                             add_capa(u, t, f)
-                                        else:
-                                            og_img = extrair_og_image(u)
-                                            if og_img:
-                                                add_capa(og_img, t, f)
-                            except Exception:
-                                pass
+                        except Exception:
+                            pass
 
-                    # Aproveita links relevantes nos chunks de grounding
-                    if hasattr(res, 'candidates') and res.candidates:
-                        c = res.candidates[0]
-                        if hasattr(c, 'grounding_metadata') and c.grounding_metadata:
-                            for chunk in (c.grounding_metadata.grounding_chunks or []):
-                                if hasattr(chunk, 'web') and chunk.web:
-                                    w_url = chunk.web.uri or ""
-                                    w_tit = chunk.web.title or ""
-                                    if w_url and any(s in w_url.lower() for s in ["universohq", "comix", "rika", "panini", "amazon", "guiadosquadrinhos"]):
-                                        og = extrair_og_image(w_url)
-                                        if og:
-                                            add_capa(og, w_tit, "Google Grounding")
-
-                    if len(capas) >= 3:
-                        break
-                except Exception as e_mod:
-                    print(f"[Aviso Gemini Search Cover mod={mod}]: {e_mod}")
+                if len(capas) >= 5:
+                    break
         except Exception as e_gem:
-            print(f"[Aviso Gemini Grounding Cover]: {e_gem}")
+            print(f"[Aviso Gemini Covers]: {e_gem}")
 
     # 2. PROVEDOR 2: SerpApi Google Images (se configurada e com cota)
     serp_key = os.getenv("SERPAPI_API_KEY", "")
@@ -3676,7 +3683,7 @@ def buscar_dados_guia_dos_quadrinhos(
         # Busca capas online complementares caso ainda não tenha base64
         if not ficha_canonica.get("capa_b64") or not ficha_canonica["capa_b64"].startswith("data:image"):
             try:
-                capas_candidatas = buscar_capas_online(titulo_limpo, edicao_limpa, editora_limpa, limite=4)
+                capas_candidatas = buscar_capas_online(titulo_limpo, edicao_limpa, editora_limpa, limite=15)
                 if capas_candidatas:
                     for item_c in capas_candidatas:
                         if not any(c.get("url") == item_c.get("url") for c in ficha_canonica["capas_alternativas"]):
@@ -3916,7 +3923,7 @@ Retorne ESTRITAMENTE um JSON com as chaves:
     # ETAPA 4: CAPAS COMPLEMENTARES E CONVERSÃO EM ALTA DEFINIÇÃO
     # -----------------------------------------------------------------
     try:
-        capas_candidatas = buscar_capas_online(titulo_limpo, edicao_limpa, editora_limpa, limite=6)
+        capas_candidatas = buscar_capas_online(titulo_limpo, edicao_limpa, editora_limpa, limite=15)
         
         # Se temos uma URL oficial com slug, pesquisa também com o título completo decodificado do slug
         url_alvo_slug = resultado.get("url_edicao") or url_resolvida or url_edicao
@@ -3925,7 +3932,7 @@ Retorne ESTRITAMENTE um JSON com as chaves:
             if m_slug:
                 slug_tit = m_slug.group(1).replace("-n-", " ").replace("-", " ").strip()
                 if slug_tit and slug_tit.lower() != titulo_limpo.lower():
-                    capas_slug = buscar_capas_online(slug_tit, edicao_limpa, editora_limpa, limite=4)
+                    capas_slug = buscar_capas_online(slug_tit, edicao_limpa, editora_limpa, limite=10)
                     for item_s in capas_slug:
                         if not any(c.get("url") == item_s.get("url") for c in capas_candidatas):
                             capas_candidatas.append(item_s)
