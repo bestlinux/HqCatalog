@@ -394,7 +394,7 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
             if fn_gq:
                 try:
                     sel_mod = st.session_state.get("seletor_modelo_gemini")
-                    mod_gq = sel_mod if sel_mod and sel_mod != "Automático (Otimizado)" else "gemini-3.1-flash-lite"
+                    mod_gq = sel_mod if sel_mod and sel_mod != "Automático (Otimizado)" else "gemini-3.7-flash"
                     dados_obtidos = fn_gq(
                         titulo=termo_tit,
                         edicao=termo_ed,
@@ -1203,24 +1203,24 @@ with st.sidebar:
         "Modelo do Gemini:",
         options=[
             "Automático (Otimizado)",
-            "gemini-3.1-flash-lite",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
             "gemini-3.8-flash",
             "gemini-flash-latest",
-            "gemini-3.5-flash",
-            "gemini-3.6-flash",
-            "gemini-3.7-flash",
+            "gemini-3.1-flash-lite",
             "gemini-3.1-pro-preview",
             "gemini-pro-latest"
         ],
         index=0,
         key="seletor_modelo_gemini",
-        help="Automático: gemini-3.1-flash-lite para máxima velocidade (2 a 5s), economia de créditos e precisão total com Google Search."
+        help="Automático: gemini-3.7-flash / 3.6 com fallback inteligente para máxima velocidade, curadoria e precisão de metadados."
     )
 
     def resolver_modelo(tipo: str) -> str:
         if modelo_selecionado != "Automático (Otimizado)":
             return modelo_selecionado
-        return "gemini-3.6-flash"
+        return "gemini-3.7-flash"
 
     # Indicador de Banco de Dados
     if database.is_using_turso():

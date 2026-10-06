@@ -108,16 +108,19 @@ NÃO adicione nenhum texto introdutório ou explicativo fora do array JSON.
 """
 
 
+DEFAULT_GEMINI_API_KEY = ""
+
+
 def get_gemini_client(api_key: Optional[str] = None) -> Any:
     """
     Inicializa e retorna o cliente oficial do Google GenAI.
-    Se a api_key não for passada, busca na variável de ambiente GEMINI_API_KEY.
+    Se a api_key não for passada, busca na variável de ambiente GEMINI_API_KEY ou st.session_state.
     """
     key = api_key or os.getenv("GEMINI_API_KEY")
     if not key:
         raise ValueError(
             "Chave de API do Gemini não informada. "
-            "Configure a variável de ambiente GEMINI_API_KEY ou informe-a na barra lateral do app."
+            "Configure a variável de ambiente GEMINI_API_KEY no arquivo .env ou informe-a na barra lateral do app."
         )
     return genai.Client(api_key=key)
 
@@ -214,16 +217,16 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 FALLBACK_MODELS = [
-    "gemini-3.6-flash",
     "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
     "gemini-3.8-flash",
     "gemini-flash-latest",
-    "gemini-3.5-flash",
-    "gemini-3.1-pro-preview",
-    "gemini-pro-latest",
     "gemini-3.1-flash-lite",
     "gemini-3.5-flash-lite",
-    "gemini-3-flash-preview"
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
+    "gemini-pro-latest"
 ]
 
 
@@ -267,7 +270,7 @@ def _analisar_tipo_erro(erro_str: str) -> str:
 def processar_foto_prateleira(
     imagem: Any,
     api_key: Optional[str] = None,
-    modelo: str = "gemini-3.6-flash",
+    modelo: str = "gemini-3.7-flash",
     max_retries: int = 3,
     status_callback: Optional[Any] = None
 ) -> List[Dict[str, Any]]:
@@ -434,16 +437,16 @@ def consultar_chatbot_colecao(
     # Lista ordenada de modelos recomendados e ativos
     modelos_tentativa = [modelo]
     modelos_disponiveis = [
-        "gemini-3.5-flash",
-        "gemini-3.6-flash",
         "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
         "gemini-3.8-flash",
         "gemini-flash-latest",
-        "gemini-3.1-pro-preview",
-        "gemini-pro-latest",
         "gemini-3.1-flash-lite",
         "gemini-3.5-flash-lite",
-        "gemini-3-flash-preview"
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview",
+        "gemini-pro-latest"
     ]
     for fb in modelos_disponiveis:
         if fb not in modelos_tentativa:
@@ -888,16 +891,16 @@ Retorne o JSON da operação correspondente:"""
 
     modelos_tentativa = [modelo]
     modelos_disponiveis = [
-        "gemini-3.5-flash",
-        "gemini-3.6-flash",
         "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
         "gemini-3.8-flash",
         "gemini-flash-latest",
-        "gemini-3.1-pro-preview",
-        "gemini-pro-latest",
         "gemini-3.1-flash-lite",
         "gemini-3.5-flash-lite",
-        "gemini-3-flash-preview"
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview",
+        "gemini-pro-latest"
     ]
     for fb in modelos_disponiveis:
         if fb not in modelos_tentativa:
@@ -1038,7 +1041,7 @@ Formato:
 ]
 Retorne APENAS o array JSON puro sem blocos adicionais fora do array.
 """
-            modelos_busca = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"]
+            modelos_busca = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
             for mod in modelos_busca:
                 try:
                     res = client.models.generate_content(
@@ -1340,7 +1343,7 @@ Se não encontrar anúncios reais com preços confirmados, retorne []."""
                 temperature=0.1
             ) if types else None
 
-            modelos_busca = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview"]
+            modelos_busca = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
             for mod in modelos_busca:
                 try:
                     resp = client.models.generate_content(
@@ -1702,7 +1705,7 @@ Retorne o JSON com o Guia de Leitura Completo:"""
         temperature=0.2
     )
 
-    modelos = [modelo, "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview"]
+    modelos = [modelo, "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
     for mod in modelos:
         for tentativa in range(1, max_retries + 1):
             try:
@@ -1834,7 +1837,7 @@ Retorne o diagnóstico completo do DNA e Gaps da Coleção em formato JSON:"""
         temperature=0.2
     )
 
-    modelos = [modelo, "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview"]
+    modelos = [modelo, "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
     for mod in modelos:
         for tentativa in range(1, max_retries + 1):
             try:
@@ -1948,7 +1951,7 @@ Gere o Recap Narrativo Imersivo em JSON:"""
         temperature=0.3
     )
 
-    modelos = [modelo, "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"]
+    modelos = [modelo, "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
     for mod in modelos:
         for tentativa in range(1, max_retries + 1):
             try:
@@ -2065,7 +2068,7 @@ Gere o Quiz em JSON:"""
         temperature=0.4
     )
 
-    modelos = [modelo, "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"]
+    modelos = [modelo, "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
     for mod in modelos:
         for tentativa in range(1, max_retries + 1):
             try:
@@ -3632,7 +3635,7 @@ def buscar_dados_guia_dos_quadrinhos(
     status: int = 0,
     formato: int = 0,
     api_key: Optional[str] = None,
-    modelo: Optional[str] = None,
+    modelo: Optional[str] = "gemini-3.7-flash",
     url_edicao: str = "",
     usar_ia: bool = True
 ) -> Dict[str, Any]:
@@ -3803,11 +3806,17 @@ Retorne ESTRITAMENTE um JSON com as chaves:
   "url_edicao": "..."
 }}
 """
-            modelo_base = str(modelo).strip() if modelo and str(modelo).strip() else "gemini-3.1-flash-lite"
-            candidatos = [modelo_base, "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-3.5-flash"]
+            modelo_base = str(modelo).strip() if modelo and str(modelo).strip() else "gemini-3.7-flash"
+            candidatos_base = [modelo_base, "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
+            candidatos = []
+            for c in candidatos_base:
+                if c not in candidatos:
+                    candidatos.append(c)
             dados_ia = None
 
             for mod in candidatos:
+                resp_chat = None
+                # 1. Tenta com Google Search Grounding (quando disponível na conta)
                 try:
                     chat = client_g.chats.create(
                         model=mod,
@@ -3817,21 +3826,38 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                         ) if types else None
                     )
                     resp_chat = chat.send_message(prompt_gq)
-                    if resp_chat and resp_chat.text:
-                        txt = resp_chat.text.strip()
-                        if "```json" in txt:
-                            txt = txt.split("```json")[1].split("```")[0].strip()
-                        elif "```" in txt:
-                            txt = txt.split("```")[1].split("```")[0].strip()
-                        if "{" in txt and "}" in txt:
-                            txt = txt[txt.find("{"):txt.rfind("}")+1]
+                except Exception:
+                    resp_chat = None
+
+                # 2. Fallback imediato: execução direta com o modelo LLM sem ferramenta externa
+                if not resp_chat or not resp_chat.text:
+                    try:
+                        chat = client_g.chats.create(
+                            model=mod,
+                            config=types.GenerateContentConfig(
+                                temperature=0.1
+                            ) if types else None
+                        )
+                        resp_chat = chat.send_message(prompt_gq)
+                    except Exception:
+                        resp_chat = None
+
+                if resp_chat and resp_chat.text:
+                    txt = resp_chat.text.strip()
+                    if "```json" in txt:
+                        txt = txt.split("```json")[1].split("```")[0].strip()
+                    elif "```" in txt:
+                        txt = txt.split("```")[1].split("```")[0].strip()
+                    if "{" in txt and "}" in txt:
+                        txt = txt[txt.find("{"):txt.rfind("}")+1]
+                    try:
                         parsed = json.loads(txt)
                         if isinstance(parsed, dict) and (parsed.get("roteiro") or parsed.get("desenho") or parsed.get("resumo")):
                             dados_ia = parsed
                             resultado["metodo"] = f"Guia dos Quadrinhos IA ({mod})"
                             break
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
 
             if dados_ia:
                 if dados_ia.get("url_edicao") and "guiadosquadrinhos.com/edicao/" in str(dados_ia["url_edicao"]):
