@@ -309,8 +309,8 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
                     return
             
             st.info("Interpretando dados com a IA...")
-                
-                prompt_llm = f"""
+            
+            prompt_llm = f"""
 Você é um especialista em HQs. Aqui está o texto extraído da página do Guia dos Quadrinhos para a edição: "{titulo}".
 Por favor, extraia as seguintes informações do texto abaixo:
 1. Roteiro (Roteirista(s))
@@ -326,98 +326,96 @@ Texto extraído:
 
 Retorne ESTRITAMENTE um JSON no seguinte formato (sem marcações markdown, apenas o JSON):
 {{
-    "roteiro": "nome dos roteiristas ou null",
-    "ilustrador": "nome dos desenhistas ou null",
-    "capa": "url da imagem ou null",
-    "valor": 27.90,
-    "resumo": "resumo da história ou null"
+"roteiro": "nome dos roteiristas ou null",
+"ilustrador": "nome dos desenhistas ou null",
+"capa": "url da imagem ou null",
+"valor": 27.90,
+"resumo": "resumo da história ou null"
 }}
 """
-                import gemini_service
-                cliente = gemini_service.get_gemini_client()
-                
-                resposta = None
-                modelos_para_tentar = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash']
-                for modelo in modelos_para_tentar:
-                    try:
-                        resposta = cliente.models.generate_content(
-                            model=modelo,
-                            contents=prompt_llm,
-                        )
-                        break # Se funcionou, sai do loop
-                    except Exception as ai_err:
-                        err_str = str(ai_err).lower()
-                        if "503" in err_str or "unavailable" in err_str or "timed out" in err_str or "time out" in err_str or "504" in err_str or "deadline" in err_str:
-                            continue # Tenta o próximo modelo
-                        else:
-                            raise ai_err # Se for outro erro, levanta a exceção
-                
-                if not resposta:
-                    st.error("Todos os modelos da IA estão sobrecarregados ou ocorreram timeouts. Tente novamente.")
-                    return
-                
-                if len(texto_extraido) < 1000:
-                    st.warning("Atenção: A página extraída tem menos de 1000 caracteres. É muito provável que o Cloudflare tenha bloqueado o robô na tela 'Just a moment...', o que pode resultar em dados vazios.")
-                
-                dados = gemini_service.limpar_e_parsear_json_dict(resposta.text)
-                
-                if dados:
-                    campos_update = []
-                    valores_update = []
-                    if dados.get("roteiro") and dados["roteiro"] != "null":
-                        campos_update.append("escritor = ?")
-                        valores_update.append(dados["roteiro"])
-                    if dados.get("ilustrador") and dados["ilustrador"] != "null":
-                        campos_update.append("ilustrador = ?")
-                        valores_update.append(dados["ilustrador"])
-                    if dados.get("resumo") and dados["resumo"] != "null":
-                        campos_update.append("resumo = ?")
-                        valores_update.append(dados["resumo"])
-                    if dados.get("valor") is not None:
-                        try:
-                            v = float(dados["valor"])
-                            campos_update.append("valor = ?")
-                            valores_update.append(v)
-                        except:
-                            pass
-                    if dados.get("capa") and dados["capa"] != "null":
-                        campos_update.append("capa = ?")
-                        valores_update.append(dados["capa"])
-                    
-                    if campos_update:
-                        import sqlite3
-                        conn = sqlite3.connect(database.DB_FILE)
-                        c = conn.cursor()
-                        valores_update.append(val_id)
-                        c.execute(f"UPDATE hqs SET {', '.join(campos_update)} WHERE id = ?", valores_update)
-                        conn.commit()
-                        conn.close()
-                        
-                        st.success("Dados salvos com sucesso no Banco de Dados!")
-                        
-                        # Mostra visualmente o que foi extraído
-                        st.markdown("### Resumo da Extração")
-                        col_img, col_dados = st.columns([1, 2])
-                        with col_img:
-                            if dados.get("capa") and dados["capa"] != "null":
-                                st.image(dados["capa"], use_container_width=True)
-                            else:
-                                st.info("Nenhuma capa encontrada.")
-                        with col_dados:
-                            st.write(f"**Roteiro:** {dados.get('roteiro', 'N/A')}")
-                            st.write(f"**Ilustrador:** {dados.get('ilustrador', 'N/A')}")
-                            st.write(f"**Preço Capa:** R$ {dados.get('valor', 'N/A')}")
-                            st.write(f"**Resumo:** {dados.get('resumo', 'N/A')}")
-                        
-                        st.info("A página será recarregada em 5 segundos para atualizar a Edição do Dia...")
-                        time.sleep(5)
-                        st.rerun()
+            import gemini_service
+            cliente = gemini_service.get_gemini_client()
+            
+            resposta = None
+            modelos_para_tentar = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash']
+            for modelo in modelos_para_tentar:
+                try:
+                    resposta = cliente.models.generate_content(
+                        model=modelo,
+                        contents=prompt_llm,
+                    )
+                    break # Se funcionou, sai do loop
+                except Exception as ai_err:
+                    err_str = str(ai_err).lower()
+                    if "503" in err_str or "unavailable" in err_str or "timed out" in err_str or "time out" in err_str or "504" in err_str or "deadline" in err_str:
+                        continue # Tenta o próximo modelo
                     else:
-                        st.warning("Nenhum dado novo encontrado para atualizar. (Isso pode acontecer se o site bloqueou a leitura ou a IA não encontrou dados).")
-                        st.json(dados)
+                        raise ai_err # Se for outro erro, levanta a exceção
+            
+            if not resposta:
+                st.error("Todos os modelos da IA estão sobrecarregados ou ocorreram timeouts. Tente novamente.")
+                return
+            
+            if len(texto_extraido) < 1000:
+                st.warning("Atenção: A página extraída tem menos de 1000 caracteres. É muito provável que o Cloudflare tenha bloqueado o robô na tela 'Just a moment...', o que pode resultar em dados vazios.")
+            
+            dados = gemini_service.limpar_e_parsear_json_dict(resposta.text)
+            
+            if dados:
+                campos_update = []
+                valores_update = []
+                if dados.get("roteiro") and dados["roteiro"] != "null":
+                    campos_update.append("escritor = ?")
+                    valores_update.append(dados["roteiro"])
+                if dados.get("ilustrador") and dados["ilustrador"] != "null":
+                    campos_update.append("ilustrador = ?")
+                    valores_update.append(dados["ilustrador"])
+                if dados.get("resumo") and dados["resumo"] != "null":
+                    campos_update.append("resumo = ?")
+                    valores_update.append(dados["resumo"])
+                if dados.get("valor") is not None:
+                    try:
+                        v = float(dados["valor"])
+                        campos_update.append("valor = ?")
+                        valores_update.append(v)
+                    except:
+                        pass
+                if dados.get("capa") and dados["capa"] != "null":
+                    campos_update.append("capa = ?")
+                    valores_update.append(dados["capa"])
+                
+                if campos_update:
+                    import sqlite3
+                    conn = sqlite3.connect(database.DB_FILE)
+                    c = conn.cursor()
+                    valores_update.append(val_id)
+                    c.execute(f"UPDATE hqs SET {', '.join(campos_update)} WHERE id = ?", valores_update)
+                    conn.commit()
+                    conn.close()
+                    
+                    st.success("Dados salvos com sucesso no Banco de Dados!")
+                    
+                    # Mostra visualmente o que foi extraído
+                    st.markdown("### Resumo da Extração")
+                    col_img, col_dados = st.columns([1, 2])
+                    with col_img:
+                        if dados.get("capa") and dados["capa"] != "null":
+                            st.image(dados["capa"], use_container_width=True)
+                        else:
+                            st.info("Nenhuma capa encontrada.")
+                    with col_dados:
+                        st.write(f"**Roteiro:** {dados.get('roteiro', 'N/A')}")
+                        st.write(f"**Ilustrador:** {dados.get('ilustrador', 'N/A')}")
+                        st.write(f"**Preço Capa:** R$ {dados.get('valor', 'N/A')}")
+                        st.write(f"**Resumo:** {dados.get('resumo', 'N/A')}")
+                    
+                    st.info("A página será recarregada em 5 segundos para atualizar a Edição do Dia...")
+                    time.sleep(5)
+                    st.rerun()
+                else:
+                    st.warning("Nenhum dado novo encontrado para atualizar. (Isso pode acontecer se o site bloqueou a leitura ou a IA não encontrou dados).")
+                    st.json(dados)
 
-            except Exception as e:
-                st.error(f"Ocorreu um erro durante a busca via Playwright: {str(e)}")
 
 @st.dialog("🔍 Buscar Dados (Guia dos Quadrinhos)", width="large")
 def dialog_buscar_dados(id_padrao: Optional[int] = None):
