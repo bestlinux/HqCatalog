@@ -3897,10 +3897,40 @@ def buscar_dados_guia_dos_quadrinhos(
             termo_pesquisa_gq = f"site:guiadosquadrinhos.com \"{titulo_limpo}\" {edicao_limpa} {editora_termo}".strip()
             url_ref = url_resolvida if (url_resolvida and url_resolvida.startswith("http") and "/edicao/" in url_resolvida) else ""
 
+            # --- INTEGRAÇÃO RESERP.AI ---
+            reserp_api_key = "HROQunnPEHw2JlSTbfl_lYxLKq0D9mM7QHXf_QxIY5M"
+            reserp_text = ""
+            try:
+                google_search_url = f"https://www.google.com/search?q={urllib.parse.quote(termo_pesquisa_gq)}&hl=pt-BR&gl=br"
+                res_resp = requests.post(
+                    "https://api.reserp.ai/v2/serp/search",
+                    headers={
+                        "Authorization": f"Bearer {reserp_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={"url": google_search_url},
+                    timeout=15
+                )
+                if res_resp.status_code == 200:
+                    r_data = res_resp.json()
+                    results = r_data.get("results", [])
+                    if not url_ref and results:
+                        for r in results:
+                            u = r.get("url", "")
+                            if "guiadosquadrinhos.com/edicao/" in u:
+                                url_ref = u
+                                break
+                    reserp_text = "\n\n".join([r.get("text", "") for r in results[:5] if r.get("text")])
+            except Exception as e:
+                print(f"Erro Reserp: {e}")
+
             prompt_gq = f"""Você é o Especialista Mestre na enciclopédia GUIA DOS QUADRINHOS (guiadosquadrinhos.com).
-Consulte as informações completas da seguinte edição no Guia dos Quadrinhos através da pesquisa no Google:
+Consulte as informações completas da seguinte edição no Guia dos Quadrinhos baseando-se nos resultados de busca abaixo.
 {f"URL exata da edição no Guia dos Quadrinhos: {url_ref}" if url_ref else ""}
 Termo de busca: {termo_pesquisa_gq}
+
+Resultados da Busca (Reserp.ai):
+{reserp_text}
 
 Dados da edição:
 - Título: {titulo_limpo}
@@ -3927,8 +3957,8 @@ Retorne ESTRITAMENTE um JSON com as chaves:
   "url_edicao": "..."
 }}
 """
-            modelo_base = str(modelo).strip() if modelo and str(modelo).strip() else "gemini-3.8-flash"
-            candidatos_base = [modelo_base, "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+            modelo_base = str(modelo).strip() if modelo and str(modelo).strip() else "gemini-3.5-flash"
+            candidatos_base = [modelo_base, "gemini-3.5-flash", "gemini-3.1-flash-lite"]
             candidatos = []
             for c in candidatos_base:
                 if c not in candidatos:
@@ -3945,7 +3975,8 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                         ) if types else None
                     )
                     resp_chat = chat.send_message(prompt_gq)
-                except Exception:
+                except Exception as e:
+                    print(f"Erro no Gemini modelo {mod}: {e}")
                     resp_chat = None
 
                 if resp_chat and resp_chat.text:
