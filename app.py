@@ -264,6 +264,204 @@ def dialog_cadastrar_capa(id_padrao: Optional[int] = None):
         st.info(f"Nenhum quadrinho com o ID #{id_para_capa} encontrado.");
         if st.button("❌ Fechar", key="dlg_btn_close_capa_empty", use_container_width=True): st.rerun()
 
+@st.dialog("🌐 Buscar Fonte (Google + Playwright)", width="large")
+def dialog_buscar_fonte(id_padrao: Optional[int] = None):
+    val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
+    hq_alvo = database.obter_hq_por_id(int(val_id))
+    if not hq_alvo:
+        st.warning(f"Quadrinho com ID #{val_id} não encontrado.")
+        if st.button("❌ Fechar", key="btn_close_busca_fonte_empty", use_container_width=True):
+            st.rerun()
+        return
+
+    titulo = hq_alvo.get("titulo") or ""
+    edicao = hq_alvo.get("edicao") or ""
+    editora = hq_alvo.get("editora") or ""
+    
+    texto_cabecalho = f"{titulo} {edicao} {editora}".strip()
+    st.markdown(f"#### 🌐 Buscando Fonte para: {texto_cabecalho}")
+    st.info("Esta função usa o Playwright de forma visível (`headless=False`) para pesquisar no Google e acessar o GuiaDosQuadrinhos. Isso contorna os bloqueios agressivos (Cloudflare) que ocorrem ao usar robôs invisíveis.")
+
+    if st.button("🚀 Iniciar Busca via Playwright", key="btn_iniciar_busca_pw", type="primary"):
+        with st.spinner("Pesquisando no Google via Playwright Visível ... Pode demorar um pouco."):
+            try:
+                from playwright.sync_api import sync_playwright
+                from urllib.parse import quote
+                import time
+                
+                query = f'site:guiadosquadrinhos.com/edicao/ "{titulo}" {edicao} {editora}'
+                url_ddg = f"https://duckduckgo.com/?q={quote(query)}"
+                
+                texto_extraido = ""
+                with sync_playwright() as p:
+                    # Rodando SEM SER HEADLESS para não ser bloqueado como bot
+                    browser = p.chromium.launch(headless=False, args=['--disable-blink-features=AutomationControlled'])
+                    context = browser.new_context(
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                        viewport={'width': 1280, 'height': 720}
+                    )
+                    context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                    
+                    page = context.new_page()
+                    page.goto(url_ddg, wait_until="domcontentloaded")
+                    
+                    st.info("Aguardando resultados (DuckDuckGo)...")
+                    
+                    try:
+                        # Espera até 30 segundos pelos resultados do DuckDuckGo
+                        page.wait_for_selector("a[data-testid='result-title-a']", timeout=30000)
+                        page.wait_for_timeout(2000)
+                    except Exception as e:
+                        pass
+                    
+                    first_link = None
+                    links = page.locator("a[data-testid='result-title-a']").element_handles()
+                    
+                    # Procura o primeiro link que seja do Guia dos Quadrinhos (priorizando /edicao/)
+                    for a in links:
+                        href = a.get_attribute("href")
+                        if href and "guiadosquadrinhos.com" in href:
+                            first_link = href
+                            if "/edicao/" in href:
+                                # Trata o caso em que o buscador indexou o link dinâmico "contribuicao_edicao.aspx"
+                                if "contribuicao_edicao.aspx" in first_link:
+                                    import re
+                                    m_tit = re.search(r'cod_tit=([^&]+)', first_link)
+                                    m_edc = re.search(r'cod_edc=([^&]+)', first_link)
+                                    if m_tit and m_edc:
+                                        first_link = f"https://www.guiadosquadrinhos.com/edicao/x/{m_tit.group(1)}/{m_edc.group(1)}"
+                                break # Achou o link ideal, para de procurar
+                            
+                    if not first_link:
+                        browser.close()
+                        st.error("A HQ não foi encontrada no GuiaDosQuadrinhos pelo DuckDuckGo.")
+                        return
+                    
+                    st.success(f"Link encontrado: {first_link}")
+                    page.goto(first_link, wait_until="domcontentloaded")
+                    
+                    st.info("Acessando a página do GuiaDosQuadrinhos (aguardando Cloudflare validar a conexão - se pedir, clique na caixa 'Sou Humano')...")
+                    
+                    texto_extraido = ""
+                    for _ in range(30):
+                        page.wait_for_timeout(2000) # Aguarda 2 segundos por ciclo
+                        texto_extraido = page.locator("body").inner_text()
+                        if len(texto_extraido) > 1500:
+                            break # O Cloudflare passou e a página real carregou!
+                            
+                    browser.close()
+                    
+                st.info(f"Página lida com sucesso! ({len(texto_extraido)} caracteres). Interpretando com IA...")
+                
+                prompt_llm = f"""
+Você é um especialista em HQs. Aqui está o texto extraído da página do Guia dos Quadrinhos para a edição: "{titulo}".
+Por favor, extraia as seguintes informações do texto abaixo:
+1. Roteiro (Roteirista(s))
+2. Ilustrador (Desenhista(s))
+3. Preço da capa (apenas o valor numérico, formato float ex: 27.90)
+4. Resumo (Sinopse da história)
+5. URL da Capa (se houver, procure por links de imagens terminados em jpg ou png relacionados à capa, deixe null se não achar)
+
+Texto extraído:
+---
+{texto_extraido[:12000]}
+---
+
+Retorne ESTRITAMENTE um JSON no seguinte formato (sem marcações markdown, apenas o JSON):
+{{
+    "roteiro": "nome dos roteiristas ou null",
+    "ilustrador": "nome dos desenhistas ou null",
+    "capa": "url da imagem ou null",
+    "valor": 27.90,
+    "resumo": "resumo da história ou null"
+}}
+"""
+                import gemini_service
+                cliente = gemini_service.get_gemini_client()
+                
+                resposta = None
+                modelos_para_tentar = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash']
+                for modelo in modelos_para_tentar:
+                    try:
+                        resposta = cliente.models.generate_content(
+                            model=modelo,
+                            contents=prompt_llm,
+                        )
+                        break # Se funcionou, sai do loop
+                    except Exception as ai_err:
+                        err_str = str(ai_err).lower()
+                        if "503" in err_str or "unavailable" in err_str or "timed out" in err_str or "time out" in err_str or "504" in err_str or "deadline" in err_str:
+                            continue # Tenta o próximo modelo
+                        else:
+                            raise ai_err # Se for outro erro, levanta a exceção
+                
+                if not resposta:
+                    st.error("Todos os modelos da IA estão sobrecarregados ou ocorreram timeouts. Tente novamente.")
+                    return
+                
+                if len(texto_extraido) < 1000:
+                    st.warning("Atenção: A página extraída tem menos de 1000 caracteres. É muito provável que o Cloudflare tenha bloqueado o robô na tela 'Just a moment...', o que pode resultar em dados vazios.")
+                
+                dados = gemini_service.limpar_e_parsear_json_dict(resposta.text)
+                
+                if dados:
+                    campos_update = []
+                    valores_update = []
+                    if dados.get("roteiro") and dados["roteiro"] != "null":
+                        campos_update.append("escritor = ?")
+                        valores_update.append(dados["roteiro"])
+                    if dados.get("ilustrador") and dados["ilustrador"] != "null":
+                        campos_update.append("ilustrador = ?")
+                        valores_update.append(dados["ilustrador"])
+                    if dados.get("resumo") and dados["resumo"] != "null":
+                        campos_update.append("resumo = ?")
+                        valores_update.append(dados["resumo"])
+                    if dados.get("valor") is not None:
+                        try:
+                            v = float(dados["valor"])
+                            campos_update.append("valor = ?")
+                            valores_update.append(v)
+                        except:
+                            pass
+                    if dados.get("capa") and dados["capa"] != "null":
+                        campos_update.append("capa = ?")
+                        valores_update.append(dados["capa"])
+                    
+                    if campos_update:
+                        import sqlite3
+                        conn = sqlite3.connect(database.DB_FILE)
+                        c = conn.cursor()
+                        valores_update.append(val_id)
+                        c.execute(f"UPDATE hqs SET {', '.join(campos_update)} WHERE id = ?", valores_update)
+                        conn.commit()
+                        conn.close()
+                        
+                        st.success("Dados salvos com sucesso no Banco de Dados!")
+                        
+                        # Mostra visualmente o que foi extraído
+                        st.markdown("### Resumo da Extração")
+                        col_img, col_dados = st.columns([1, 2])
+                        with col_img:
+                            if dados.get("capa") and dados["capa"] != "null":
+                                st.image(dados["capa"], use_container_width=True)
+                            else:
+                                st.info("Nenhuma capa encontrada.")
+                        with col_dados:
+                            st.write(f"**Roteiro:** {dados.get('roteiro', 'N/A')}")
+                            st.write(f"**Ilustrador:** {dados.get('ilustrador', 'N/A')}")
+                            st.write(f"**Preço Capa:** R$ {dados.get('valor', 'N/A')}")
+                            st.write(f"**Resumo:** {dados.get('resumo', 'N/A')}")
+                        
+                        st.info("A página será recarregada em 5 segundos para atualizar a Edição do Dia...")
+                        time.sleep(5)
+                        st.rerun()
+                    else:
+                        st.warning("Nenhum dado novo encontrado para atualizar. (Isso pode acontecer se o site bloqueou a leitura ou a IA não encontrou dados).")
+                        st.json(dados)
+
+            except Exception as e:
+                st.error(f"Ocorreu um erro durante a busca via Playwright: {str(e)}")
+
 @st.dialog("🔍 Buscar Dados (Guia dos Quadrinhos)", width="large")
 def dialog_buscar_dados(id_padrao: Optional[int] = None):
     val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
@@ -3059,6 +3257,9 @@ if hq_dia:
             with col_btn_c2:
                 if st.button("🖼️ Buscar Capas", key="btn_buscar_capa_dia", use_container_width=True, help="Procurar opções de capa desta HQ na internet"):
                     dialog_buscar_capa(int(hq_dia["id"]))
+
+            if st.button("🌐 Buscar Fonte", key="btn_buscar_fonte_dia", use_container_width=True, help="Busca a fonte da HQ via Google e Playwright"):
+                dialog_buscar_fonte(int(hq_dia["id"]))
 
             col_btn_c3, col_btn_c4 = st.columns(2)
             with col_btn_c3:
