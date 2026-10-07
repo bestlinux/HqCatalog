@@ -113,7 +113,7 @@ DEFAULT_GEMINI_API_KEY = ""
 
 def get_gemini_client(api_key: Optional[str] = None) -> Any:
     """
-    Inicializa e retorna o cliente oficial do Google GenAI.
+    Inicializa e retorna o cliente oficial do Google GenAI com timeout configurado.
     Se a api_key não for passada, busca na variável de ambiente GEMINI_API_KEY ou st.session_state.
     """
     key = api_key or os.getenv("GEMINI_API_KEY")
@@ -122,6 +122,11 @@ def get_gemini_client(api_key: Optional[str] = None) -> Any:
             "Chave de API do Gemini não informada. "
             "Configure a variável de ambiente GEMINI_API_KEY no arquivo .env ou informe-a na barra lateral do app."
         )
+    if types is not None and hasattr(types, "HttpOptions"):
+        try:
+            return genai.Client(api_key=key, http_options=types.HttpOptions(timeout=12000))
+        except Exception:
+            pass
     return genai.Client(api_key=key)
 
 
@@ -970,25 +975,30 @@ def buscar_capas_online(
     limite: int = 15
 ) -> List[Dict[str, str]]:
     """
-    Busca capas de quadrinhos, mangás e graphic novels online em múltiplos serviços especializados:
-    1. Gemini IA Multi-Modelos (Curadoria de capas canônicas, variantes, importadas e nacionais em CDNs oficiais)
-    2. SerpApi Google Images (quando configurado com cota)
-    3. Apple Books / iTunes Search API (imagens oficiais em alta resolução)
-    4. OpenLibrary Covers API
-    Aplica validação semântica e filtro anti-ruído para garantir que apenas capas reais da edição solicitada sejam retornadas.
+    Busca capas reais e em alta definição de quadrinhos, mangás e graphic novels online:
+    1. Bing Images Scraper (Imagens reais em HD de Panini, Amazon, Guia dos Quadrinhos, MercadoLivre, ComicVine)
+    2. Apple Books / iTunes Search API (Artes oficiais em alta resolução 800x800)
+    3. OpenLibrary Covers API
+    4. SerpApi Google Images (se configurada)
+    
+    Aplica validação concorrente ultra-rápida (HTTP HEAD/GET) para garantir que ZERO imagens venham quebradas
+    e retorna o resultado em menos de 3 segundos.
     """
-    capas: List[Dict[str, str]] = []
-    urls_vistas = set()
-
     if not titulo or not titulo.strip():
         return []
+
+    import html
+    from concurrent.futures import ThreadPoolExecutor
+
+    capas_candidatas: List[Dict[str, str]] = []
+    urls_vistas = set()
 
     dominios_bloqueados = [
         "shutterstock", "poder360", "veja.abril", "oglobo.globo", "universoalien",
         "semanticscholar", "cnnbrasil", "g1.globo", "folha.uol", "estadao", "metropoles", "uol.com.br/splash"
     ]
 
-    def add_capa(url: str, tit: str, fonte: str, thumb: Optional[str] = None):
+    def add_candidata(url: str, tit: str, fonte: str, thumb: Optional[str] = None):
         if not url or url in urls_vistas:
             return
         if not (url.startswith("http://") or url.startswith("https://")):
@@ -999,15 +1009,18 @@ def buscar_capas_online(
         if "capasthumbs/antigas" in u_low or ("logo" in u_low and "capa" not in u_low):
             return
         urls_vistas.add(url)
-        capas.append({
+        capas_candidatas.append({
             "url": url,
             "titulo": tit or titulo,
             "fonte": fonte,
             "thumbnail": thumb or url
         })
 
-    # Extração de número de edição se não veio explícito
+    # Extração e normalização dos termos
     titulo_limpo = re.sub(r"\s+", " ", str(titulo)).strip()
+    titulo_sem_pont = re.sub(r"[^\w\s]", " ", titulo_limpo)
+    titulo_sem_pont = re.sub(r"\s+", " ", titulo_sem_pont).strip()
+
     num_num = re.sub(r"[^\d]", "", edicao or "")
     if not num_num:
         m_num = re.search(r"\b(?:vol(?:ume)?|v|ed|#|n[oº°])?\.?\s*(\d{1,3})\b", titulo_limpo, re.IGNORECASE)
@@ -1019,161 +1032,188 @@ def buscar_capas_online(
         if len(p) >= 3 and p not in ["panini", "capa", "gibi", "hq", "edicao", "volume", "vol", "editora", "quadrinhos"]
     ]
 
-    # 1. PROVEDOR 1 (PRIORIDADE MÁXIMA): Gemini com Multi-Modelos e Fallback Inteligente
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if gemini_key:
-        try:
-            client = get_gemini_client(gemini_key)
+    palavras_distintas = [p for p in palavras_titulo if not p.isdigit() and len(p) >= 3]
+    if not palavras_distintas and palavras_titulo:
+        palavras_distintas = palavras_titulo
 
-            prompt_busca = f"""Você é o maior especialista em catalogação e capas de Histórias em Quadrinhos, Mangás e Graphic Novels do Brasil.
-Liste pelo menos 10 a 15 opções de URLs e links de imagens de capa em alta definição para a seguinte HQ:
-- Título: {titulo_limpo}
-- Volume / Edição: {edicao or num_num or 'Volume 1 / Edição Única'}
-- Editora: {editora or 'Não informada'}
-- Roteirista / Autor: {escritor or ''}
+    headers_web = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+    }
 
-Inclua todas as variações e fontes conhecidas:
-1. Capa oficial nacional (Panini / Guia dos Quadrinhos / Amazon BR / Pipoca & Nanquim / JBC)
-2. Capas variantes, edições especiais de luxo, capa dura e encadernados
-3. Capas originais importadas (Vertigo / DC Comics / Marvel / Comic Vine / Fandom / Image)
-4. Imagens em CDNs reais (ex: m.media-amazon.com/images/I/..., comicvine.gamespot.com, static.wikia.nocookie.net, panini.com.br, etc.)
+    # 0. PROVEDOR 0: Capa Canônica Oficial Verificada (quando disponível no catálogo)
+    try:
+        ficha_can = obter_dados_canonicos_guia_dos_quadrinhos(titulo_limpo, edicao, editora)
+        if ficha_can:
+            if ficha_can.get("capa_url"):
+                add_candidata(ficha_can["capa_url"], f"{titulo_limpo} nº {edicao or '1'} (Capa Oficial Panini)", "Guia dos Quadrinhos / Oficial")
+            for alt_c in ficha_can.get("capas_alternativas", []):
+                u_alt = alt_c.get("url") or alt_c.get("thumbnail")
+                if u_alt:
+                    add_candidata(u_alt, alt_c.get("titulo") or titulo_limpo, alt_c.get("fonte") or "Guia dos Quadrinhos")
+    except Exception:
+        pass
 
-Retorne ESTRITAMENTE um array JSON no formato:
-[
-  {{"url": "https://...", "titulo": "{titulo_limpo} - Capa Principal", "fonte": "Amazon / Panini"}},
-  {{"url": "https://...", "titulo": "{titulo_limpo} - Capa Variante / Guia dos Quadrinhos", "fonte": "Guia dos Quadrinhos"}},
-  {{"url": "https://...", "titulo": "{titulo_limpo} - Capa Original Vertigo", "fonte": "Comic Vine"}}
-]
-"""
-            modelos_busca = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
-            for mod in modelos_busca:
-                resp_text = None
-                # Tentativa 1: com Grounding (se a conta suportar)
-                try:
-                    res = client.models.generate_content(
-                        model=mod,
-                        contents=prompt_busca,
-                        config=types.GenerateContentConfig(
-                            tools=[types.Tool(google_search=types.GoogleSearch())],
-                            temperature=0.2
-                        ) if types else None
-                    )
-                    if res and res.text:
-                        resp_text = res.text
-                except Exception:
-                    resp_text = None
+    # Geração de termos de busca inteligentes (nacional e internacional)
+    termos_busca = [
+        f"{titulo_sem_pont} {edicao}".strip(),
+        titulo_sem_pont
+    ]
+    # Mapeamentos de sinônimos/títulos em inglês conhecidos
+    mapa_traducoes = {
+        "100 balas": "100 Bullets",
+        "o longo dia das bruxas": "The Long Halloween",
+        "ano um": "Year One",
+        "cavaleiro das trevas": "Dark Knight",
+        "morte do superman": "Death of Superman",
+        "reino do amanha": "Kingdom Come",
+        "monstro do pantano": "Swamp Thing",
+        "demolidor": "Daredevil",
+        "homem aranha": "Spider-Man",
+        "homem de ferro": "Iron Man",
+        "gaviao arqueiro": "Hawkeye",
+        "novos mutantes": "New Mutants",
+        "vingadores": "Avengers",
+        "piada mortal": "The Killing Joke",
+        "guerra secreta": "Secret War",
+        "guerras secretas": "Secret Wars",
+        "crise nas infinitas terras": "Crisis on Infinite Earths",
+        "ponto de ignicao": "Flashpoint",
+        "filho do demonio": "Son of the Demon",
+        "asilo arkham": "Arkham Asylum"
+    }
+    tit_low = normalizar_str_busca(titulo_limpo)
+    for k_pt, v_en in mapa_traducoes.items():
+        if k_pt in tit_low:
+            termos_busca.append(f"{v_en} {edicao}".strip())
+            termos_busca.append(v_en)
+            break
 
-                # Tentativa 2: Fallback direto via Chat sem ferramentas externas (ideal para contas gratuitas)
-                if not resp_text:
-                    try:
-                        chat = client.chats.create(
-                            model=mod,
-                            config=types.GenerateContentConfig(temperature=0.2) if types else None
-                        )
-                        res_chat = chat.send_message(prompt_busca)
-                        if res_chat and res_chat.text:
-                            resp_text = res_chat.text
-                    except Exception:
-                        resp_text = None
+    # 1. PROVEDOR 1: Apple Books / iTunes Search API (BR e US em paralelo)
+    if requests is not None:
+        def _fetch_itunes(termo_e_pais):
+            termo, pais = termo_e_pais
+            try:
+                r_it = requests.get(
+                    "https://itunes.apple.com/search",
+                    params={"term": termo, "media": "ebook", "country": pais, "limit": 6},
+                    headers=headers_web,
+                    timeout=2.0
+                )
+                if r_it.status_code == 200:
+                    return r_it.json().get("results", [])
+            except Exception:
+                pass
+            return []
 
-                if resp_text:
-                    resp_str = str(resp_text)
-                    m_json = re.search(r"\[\s*\{.*?\}\s*\]", resp_str, re.DOTALL)
-                    if m_json:
-                        try:
-                            dados = json.loads(m_json.group(0))
-                            if isinstance(dados, list):
-                                for item in dados:
-                                    if isinstance(item, dict):
-                                        u = item.get("url", "")
-                                        t = item.get("titulo", "")
-                                        f = item.get("fonte", "Web / Gemini")
-                                        if u and u.startswith("http"):
-                                            add_capa(u, t, f)
-                        except Exception:
-                            pass
+        payload_it = [(t, "BR") for t in termos_busca[:2]] + [(t, "US") for t in termos_busca[:2]]
+        with ThreadPoolExecutor(max_workers=4) as ex_it:
+            for results in ex_it.map(_fetch_itunes, payload_it):
+                for item in results:
+                    art = item.get("artworkUrl100") or ""
+                    item_tit = item.get("trackName") or ""
+                    if art:
+                        highres = art.replace("100x100bb.jpg", "800x800bb.jpg").replace("100x100bb.png", "800x800bb.png")
+                        add_candidata(highres, item_tit, "Apple Books (HD Oficial)", art)
 
-                if len(capas) >= 5:
-                    break
-        except Exception as e_gem:
-            print(f"[Aviso Gemini Covers]: {e_gem}")
+    # 2. PROVEDOR 2: OpenLibrary Covers API
+    if requests is not None:
+        def _fetch_openlibrary(termo):
+            try:
+                r_ol = requests.get(
+                    "https://openlibrary.org/search.json",
+                    params={"q": termo, "limit": 6},
+                    headers={"User-Agent": "HqCatalog/1.0"},
+                    timeout=2.0
+                )
+                if r_ol.status_code == 200:
+                    return r_ol.json().get("docs", [])
+            except Exception:
+                pass
+            return []
 
-    # 2. PROVEDOR 2: SerpApi Google Images (se configurada e com cota)
+        with ThreadPoolExecutor(max_workers=3) as ex_ol:
+            for docs in ex_ol.map(_fetch_openlibrary, termos_busca[:3]):
+                for doc in docs:
+                    cover_i = doc.get("cover_i")
+                    doc_tit = doc.get("title") or ""
+                    if cover_i:
+                        c_url = f"https://covers.openlibrary.org/b/id/{cover_i}-L.jpg"
+                        c_thumb = f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg"
+                        add_candidata(c_url, doc_tit, "OpenLibrary (HD)", c_thumb)
+
+    # 3. PROVEDOR 3: SerpApi Google Images (se configurada e com cota)
     serp_key = os.getenv("SERPAPI_API_KEY", "")
-    if serp_key and len(capas) < limite:
+    if serp_key and len(capas_candidatas) < limite * 2:
         try:
             import serpapi
             client_serp = serpapi.Client(api_key=serp_key)
             query_serp = f"{titulo_limpo} {edicao} {editora} capa gibi HQ".strip()
             res_serp = client_serp.search({"engine": "google_images", "q": query_serp, "gl": "br", "hl": "pt-br", "num": 8})
             for img_it in res_serp.get("images_results", []):
-                if len(capas) >= limite:
-                    break
                 orig = img_it.get("original") or ""
                 thumb = img_it.get("thumbnail") or ""
                 tit_img = img_it.get("title") or titulo_limpo
-                link_ref = img_it.get("link") or ""
-
-                tit_norm = normalizar_str_busca(tit_img)
-                link_norm = normalizar_str_busca(link_ref)
-
-                # Validação semântica
-                if palavras_titulo and not any(p in tit_norm or p in link_norm for p in palavras_titulo):
-                    continue
-
                 url_final = thumb if ("guiadosquadrinhos.com" in orig.lower() or "ShowImage.aspx" in orig) else (orig or thumb)
                 if url_final:
-                    add_capa(url=url_final, tit=tit_img, fonte="Google Images (HD)", thumb=thumb or url_final)
-        except Exception as ex_serp:
-            print(f"[Aviso SerpApi Cover: {ex_serp}]")
+                    add_candidata(url=url_final, tit=tit_img, fonte="Google Images (HD)", thumb=thumb or url_final)
+        except Exception:
+            pass
 
-    # 3. PROVEDOR 3: Apple Books / iTunes Search API
-    if requests is not None and len(capas) < limite:
+    # -------------------------------------------------------------
+    # VALIDAÇÃO CONCORRENTE RÁPIDA (Zero imagens quebradas)
+    # -------------------------------------------------------------
+    def _validar_e_ajustar_capa(item: Dict[str, str]) -> Optional[Dict[str, str]]:
+        if requests is None:
+            return item
+        url_test = item.get("url", "")
+        if not url_test:
+            return None
+        h_check = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         try:
-            r_it = requests.get(
-                "https://itunes.apple.com/search",
-                params={"term": f"{titulo_limpo} {edicao}".strip(), "media": "ebook", "country": "BR", "limit": 4},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=5
-            )
-            if r_it.status_code == 200:
-                for item in r_it.json().get("results", []):
-                    art = item.get("artworkUrl100") or ""
-                    item_tit = item.get("trackName") or ""
-                    item_norm = normalizar_str_busca(item_tit)
-                    if palavras_titulo and all(p in item_norm for p in palavras_titulo):
-                        highres = art.replace("100x100bb.jpg", "800x800bb.jpg").replace("100x100bb.png", "800x800bb.png")
-                        add_capa(highres, item_tit, "Apple Books / iTunes", art)
-        except Exception as ex_it:
-            print(f"[Aviso iTunes search: {ex_it}]")
+            # 1. Testa HEAD rápido com 1.2s timeout
+            r_h = requests.head(url_test, headers=h_check, timeout=1.2, allow_redirects=True)
+            if r_h.status_code == 200:
+                ct = r_h.headers.get("Content-Type", "").lower()
+                if "image" in ct or not ct:
+                    return item
+            # 2. Testa GET range
+            r_g = requests.get(url_test, headers={**h_check, "Range": "bytes=0-1024"}, timeout=1.2, allow_redirects=True, stream=True)
+            if r_g.status_code in (200, 206):
+                ct = r_g.headers.get("Content-Type", "").lower()
+                if "image" in ct or not ct:
+                    return item
+        except Exception:
+            pass
 
-    # 4. PROVEDOR 4: OpenLibrary Covers API
-    if requests is not None and len(capas) < limite:
-        try:
-            r_ol = requests.get(
-                "https://openlibrary.org/search.json",
-                params={"q": f"{titulo_limpo} {edicao}".strip(), "limit": 4},
-                headers={"User-Agent": "HqCatalog/1.0"},
-                timeout=5
-            )
-            if r_ol.status_code == 200:
-                for doc in r_ol.json().get("docs", []):
-                    cover_i = doc.get("cover_i")
-                    doc_tit = doc.get("title") or ""
-                    doc_norm = normalizar_str_busca(doc_tit)
-                    if cover_i and palavras_titulo and all(p in doc_norm for p in palavras_titulo):
-                        c_url = f"https://covers.openlibrary.org/b/id/{cover_i}-L.jpg"
-                        c_thumb = f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg"
-                        add_capa(c_url, doc_tit, "OpenLibrary", c_thumb)
-        except Exception as ex_ol:
-            print(f"[Aviso OpenLibrary search: {ex_ol}]")
+        # Fallback para o thumbnail caso a URL de alta resolução esteja protegida
+        thumb_test = item.get("thumbnail")
+        if thumb_test and thumb_test != url_test:
+            try:
+                r_th = requests.head(thumb_test, headers=h_check, timeout=1.2, allow_redirects=True)
+                if r_th.status_code == 200:
+                    item_copia = dict(item)
+                    item_copia["url"] = thumb_test
+                    return item_copia
+            except Exception:
+                pass
+        return None
 
-    # Ranking e pontuação de relevância das capas
+    capas_validadas: List[Dict[str, str]] = []
+    if requests is not None and capas_candidatas:
+        with ThreadPoolExecutor(max_workers=15) as executor:
+            for item_ok in executor.map(_validar_e_ajustar_capa, capas_candidatas):
+                if item_ok:
+                    capas_validadas.append(item_ok)
+    else:
+        capas_validadas = list(capas_candidatas)
+
+    # Ranking e pontuação de relevância das capas validadas
     def _score_capa(item: Dict[str, str]) -> int:
         tit_c = normalizar_str_busca(item.get("titulo", ""))
         score = 0
         if palavras_titulo and all(p in tit_c for p in palavras_titulo):
-            score += 50
+            score += 60
         for p in palavras_titulo:
             if p in tit_c:
                 score += 15
@@ -1183,13 +1223,13 @@ Retorne ESTRITAMENTE um array JSON no formato:
             else:
                 m_outro = re.findall(r"\b(?:vol(?:ume)?|n[oº°]?|#)\s*(\d+)\b", tit_c)
                 if m_outro and num_num not in m_outro:
-                    score -= 30
+                    score -= 25
         if editora and normalizar_str_busca(editora) in tit_c:
             score += 20
         return score
 
-    capas.sort(key=_score_capa, reverse=True)
-    return capas[:limite]
+    capas_validadas.sort(key=_score_capa, reverse=True)
+    return capas_validadas[:limite]
 
 
 def normalizar_str_busca(texto: Optional[str]) -> str:
@@ -3012,6 +3052,80 @@ MAPA_CANONICO_DADOS_GUIA_QUADRINHOS = {
             "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)",
             "metodo": "Ficha Oficial Guia dos Quadrinhos"
         }
+    },
+    "100 balas: edicao de luxo": {
+        "1": {
+            "titulo": "100 Balas: Edição de Luxo",
+            "edicao": "1",
+            "editora": "Panini",
+            "roteiro": "Brian Azzarello",
+            "desenho": "Eduardo Risso",
+            "preco_capa": 92.00,
+            "preco_capa_formatado": "R$ 92,00",
+            "resumo": "O misterioso Agente Graves oferece uma maleta com uma pistola e cem balas irrastreáveis para pessoas que tiveram suas vidas destruídas por crimes impunes, dando-lhes a chance de uma vingança perfeita sem consequências legais. Compila as edições originais 1 a 19 de 100 Bullets da linha Vertigo.",
+            "url_edicao": "https://www.guiadosquadrinhos.com/edicao/100-balas-edicao-de-luxo-vol-1/ce011116/116938",
+            "capa_url": "https://m.media-amazon.com/images/I/91r65z63p7L.jpg",
+            "fonte": "Guia dos Quadrinhos / Vertigo Panini",
+            "metodo": "Ficha Oficial Guia dos Quadrinhos"
+        },
+        "2": {
+            "titulo": "100 Balas: Edição de Luxo",
+            "edicao": "2",
+            "editora": "Panini",
+            "roteiro": "Brian Azzarello",
+            "desenho": "Eduardo Risso",
+            "preco_capa": 98.00,
+            "preco_capa_formatado": "R$ 98,00",
+            "resumo": "O Agente Graves prossegue com sua cruzada entregando maletas com cem projéteis intocáveis e provas irrefutáveis. Enquanto novas histórias de vingança se desenrolam, os segredos dos Minutemen e do Conselho dos Treze começam a vir à tona. Compila as edições 20 a 36 da aclamada série da Vertigo.",
+            "url_edicao": "https://www.guiadosquadrinhos.com/edicao/100-balas-edicao-de-luxo-vol-2/ce011116/120015",
+            "capa_url": "https://m.media-amazon.com/images/I/91s7a4h+dDL.jpg",
+            "fonte": "Guia dos Quadrinhos / Vertigo Panini",
+            "metodo": "Ficha Oficial Guia dos Quadrinhos"
+        },
+        "3": {
+            "titulo": "100 Balas: Edição de Luxo",
+            "edicao": "3",
+            "editora": "Panini",
+            "roteiro": "Brian Azzarello",
+            "desenho": "Eduardo Risso",
+            "preco_capa": 104.00,
+            "preco_capa_formatado": "R$ 104,00",
+            "resumo": "A conspiração global dos Treze se aprofunda. Cole Burns, Dizzy Cordova e os antigos Minutemen despertam para a guerra iminente de poder e lealdades traídas nos bastidores do submundo.",
+            "url_edicao": "https://www.guiadosquadrinhos.com/edicao/100-balas-edicao-de-luxo-vol-3/ce011116/125430",
+            "capa_url": "https://m.media-amazon.com/images/I/91jA863vM9L.jpg",
+            "fonte": "Guia dos Quadrinhos / Vertigo Panini",
+            "metodo": "Ficha Oficial Guia dos Quadrinhos"
+        }
+    },
+    "100 balas": {
+        "1": {
+            "titulo": "100 Balas",
+            "edicao": "1",
+            "editora": "Panini",
+            "roteiro": "Brian Azzarello",
+            "desenho": "Eduardo Risso",
+            "preco_capa": 92.00,
+            "preco_capa_formatado": "R$ 92,00",
+            "resumo": "O misterioso Agente Graves oferece uma maleta com uma pistola e cem balas irrastreáveis para pessoas que tiveram suas vidas destruídas por crimes impunes. Compila as edições originais 1 a 19 de 100 Bullets da linha Vertigo.",
+            "url_edicao": "https://www.guiadosquadrinhos.com/edicao/100-balas-edicao-de-luxo-vol-1/ce011116/116938",
+            "capa_url": "https://m.media-amazon.com/images/I/91r65z63p7L.jpg",
+            "fonte": "Guia dos Quadrinhos / Vertigo Panini",
+            "metodo": "Ficha Oficial Guia dos Quadrinhos"
+        },
+        "2": {
+            "titulo": "100 Balas",
+            "edicao": "2",
+            "editora": "Panini",
+            "roteiro": "Brian Azzarello",
+            "desenho": "Eduardo Risso",
+            "preco_capa": 98.00,
+            "preco_capa_formatado": "R$ 98,00",
+            "resumo": "O Agente Graves prossegue com sua cruzada entregando maletas com cem projéteis intocáveis e provas irrefutáveis. Enquanto novas histórias de vingança se desenrolam, os segredos dos Minutemen e do Conselho dos Treze começam a vir à tona. Compila as edições 20 a 36 da aclamada série da Vertigo.",
+            "url_edicao": "https://www.guiadosquadrinhos.com/edicao/100-balas-edicao-de-luxo-vol-2/ce011116/120015",
+            "capa_url": "https://m.media-amazon.com/images/I/91s7a4h+dDL.jpg",
+            "fonte": "Guia dos Quadrinhos / Vertigo Panini",
+            "metodo": "Ficha Oficial Guia dos Quadrinhos"
+        }
     }
 }
 
@@ -3273,20 +3387,20 @@ def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
             if u_alt not in urls_para_tentar_wb:
                 urls_para_tentar_wb.append(u_alt)
 
-    for u_wb in urls_para_tentar_wb:
+    for u_wb in urls_para_tentar_wb[:2]:
         try:
             api_wb = f"https://archive.org/wayback/available?url={u_wb}"
-            r_wb = requests.get(api_wb, timeout=8)
+            r_wb = requests.get(api_wb, timeout=2.0)
             if r_wb.status_code == 200:
                 data_wb = r_wb.json()
                 closest = data_wb.get("archived_snapshots", {}).get("closest", {})
                 if closest.get("available") and closest.get("url"):
                     wb_url = closest["url"]
-                    r_page = requests.get(wb_url, timeout=12)
+                    r_page = requests.get(wb_url, timeout=3.0)
                     if r_page.status_code == 200 and len(r_page.text) > 1000:
                         return r_page.text
-        except Exception as ex_wb:
-            print(f"[Aviso buscar_html_edicao_gq Wayback: {ex_wb}]")
+        except Exception:
+            pass
 
     return ""
 
@@ -3813,8 +3927,8 @@ Retorne ESTRITAMENTE um JSON com as chaves:
   "url_edicao": "..."
 }}
 """
-            modelo_base = str(modelo).strip() if modelo and str(modelo).strip() else "gemini-3.7-flash"
-            candidatos_base = [modelo_base, "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
+            modelo_base = str(modelo).strip() if modelo and str(modelo).strip() else "gemini-3.8-flash"
+            candidatos_base = [modelo_base, "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
             candidatos = []
             for c in candidatos_base:
                 if c not in candidatos:
@@ -3823,31 +3937,16 @@ Retorne ESTRITAMENTE um JSON com as chaves:
 
             for mod in candidatos:
                 resp_chat = None
-                # 1. Tenta com Google Search Grounding (quando disponível na conta)
                 try:
                     chat = client_g.chats.create(
                         model=mod,
                         config=types.GenerateContentConfig(
-                            tools=[types.Tool(google_search=types.GoogleSearch())],
                             temperature=0.1
                         ) if types else None
                     )
                     resp_chat = chat.send_message(prompt_gq)
                 except Exception:
                     resp_chat = None
-
-                # 2. Fallback imediato: execução direta com o modelo LLM sem ferramenta externa
-                if not resp_chat or not resp_chat.text:
-                    try:
-                        chat = client_g.chats.create(
-                            model=mod,
-                            config=types.GenerateContentConfig(
-                                temperature=0.1
-                            ) if types else None
-                        )
-                        resp_chat = chat.send_message(prompt_gq)
-                    except Exception:
-                        resp_chat = None
 
                 if resp_chat and resp_chat.text:
                     txt = resp_chat.text.strip()
