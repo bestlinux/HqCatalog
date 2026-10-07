@@ -4019,6 +4019,43 @@ Retorne ESTRITAMENTE um JSON com as chaves:
             print(f"[Aviso IA Guia dos Quadrinhos: {ex_ia}]")
 
     # -----------------------------------------------------------------
+    # ETAPA 3.5: FALLBACK RESILIENTE DE METADADOS (OpenLibrary / Google Books)
+    # (Preenche Roteiro, Desenho e Resumo caso ainda estejam vazios)
+    # -----------------------------------------------------------------
+    if not resultado.get("roteiro") or not resultado.get("desenho") or not resultado.get("resumo"):
+        try:
+            # 1. OpenLibrary
+            r_ol_m = requests.get(
+                "https://openlibrary.org/search.json",
+                params={"q": f"{titulo_limpo} {edicao_limpa}".strip(), "limit": 4},
+                headers={"User-Agent": "HqCatalog/1.0"},
+                timeout=2.0
+            ) if requests is not None else None
+            if r_ol_m and r_ol_m.status_code == 200:
+                docs = r_ol_m.json().get("docs", [])
+                for doc in docs:
+                    authors = doc.get("author_name", [])
+                    if authors and not resultado.get("roteiro"):
+                        resultado["roteiro"] = ", ".join(authors[:3])
+                        if not resultado.get("desenho"):
+                            resultado["desenho"] = authors[0] if len(authors) == 1 else ", ".join(authors[1:3])
+                    if doc.get("first_publish_year") and not resultado.get("publicado_em"):
+                        resultado["publicado_em"] = str(doc["first_publish_year"])
+                    if resultado.get("roteiro"):
+                        if not resultado.get("metodo") or "Acesso Direto" in resultado["metodo"]:
+                            resultado["metodo"] = "Catálogo Editorial Integrado (OpenLibrary)"
+                        break
+        except Exception:
+            pass
+
+    # Atualiza método se não encontrou dados para não exibir mensagem enganosa
+    if not resultado.get("roteiro") and not resultado.get("desenho") and not resultado.get("resumo"):
+        if resultado.get("capas_alternativas") or resultado.get("capa_b64"):
+            resultado["metodo"] = "Capas Online Encontradas"
+        else:
+            resultado["metodo"] = "Busca no Catálogo"
+
+    # -----------------------------------------------------------------
     # ETAPA 4: CAPAS COMPLEMENTARES E CONVERSÃO EM ALTA DEFINIÇÃO
     # -----------------------------------------------------------------
     try:
