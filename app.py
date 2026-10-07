@@ -385,13 +385,18 @@ Retorne ESTRITAMENTE um JSON no seguinte formato (sem marcações markdown, apen
                     valores_update.append(dados["capa"])
                 
                 if campos_update:
-                    import sqlite3
-                    conn = sqlite3.connect(database.DB_FILE)
-                    c = conn.cursor()
                     valores_update.append(val_id)
-                    c.execute(f"UPDATE hqs SET {', '.join(campos_update)} WHERE id = ?", valores_update)
-                    conn.commit()
-                    conn.close()
+                    sql_update = f"UPDATE hqs SET {', '.join(campos_update)} WHERE id = ?"
+                    if database.is_using_turso():
+                        database.executar_turso_query(sql_update, valores_update)
+                    else:
+                        conn = database.get_sqlite_connection()
+                        try:
+                            c = conn.cursor()
+                            c.execute(sql_update, tuple(valores_update))
+                            conn.commit()
+                        finally:
+                            conn.close()
                     
                     st.success("Dados salvos com sucesso no Banco de Dados!")
                     

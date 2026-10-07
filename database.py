@@ -23,6 +23,7 @@ except ImportError:
 import jev_engine
 
 DB_DEFAULT_PATH = os.getenv("DB_PATH", "hqs_inventario.db")
+DB_FILE = DB_DEFAULT_PATH
 
 
 def get_turso_credentials() -> tuple[Optional[str], Optional[str]]:
