@@ -337,23 +337,23 @@ Retorne ESTRITAMENTE um JSON no seguinte formato (sem marcações markdown, apen
             cliente = gemini_service.get_gemini_client()
             
             resposta = None
-            modelos_para_tentar = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash']
+            ultimo_erro = None
+            modelos_para_tentar = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash']
             for modelo in modelos_para_tentar:
                 try:
                     resposta = cliente.models.generate_content(
                         model=modelo,
                         contents=prompt_llm,
                     )
-                    break # Se funcionou, sai do loop
+                    if resposta and resposta.text:
+                        break # Se funcionou, sai do loop
                 except Exception as ai_err:
-                    err_str = str(ai_err).lower()
-                    if "503" in err_str or "unavailable" in err_str or "timed out" in err_str or "time out" in err_str or "504" in err_str or "deadline" in err_str:
-                        continue # Tenta o próximo modelo
-                    else:
-                        raise ai_err # Se for outro erro, levanta a exceção
+                    ultimo_erro = ai_err
+                    # Tenta o próximo modelo em caso de 429 (cota), 503, 504, timeout, etc.
+                    continue
             
-            if not resposta:
-                st.error("Todos os modelos da IA estão sobrecarregados ou ocorreram timeouts. Tente novamente.")
+            if not resposta or not resposta.text:
+                st.error(f"Todos os modelos da IA falharam ou estão sem cota no momento. Detalhe: {ultimo_erro}")
                 return
             
             if len(texto_extraido) < 1000:
