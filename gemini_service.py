@@ -130,6 +130,41 @@ def get_gemini_client(api_key: Optional[str] = None) -> Any:
     return genai.Client(api_key=key)
 
 
+def consultar_openai_hq(prompt: str, api_key: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Executa consulta à API da OpenAI (gpt-4o-mini) como fallback de alta velocidade
+    caso o Gemini atinja limites de requisição ou apresente lentidão.
+    """
+    key = api_key or os.getenv("OPENAI_API_KEY", "")
+    if not key or not key.startswith("sk-"):
+        return None
+    if requests is None:
+        return None
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": "Você é o maior especialista em catalogação e créditos de Histórias em Quadrinhos e Mangás do Brasil. Retorne estritamente um JSON no schema solicitado."},
+            {"role": "user", "content": prompt}
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.1
+    }
+    try:
+        r = requests.post(url, json=payload, headers=headers, timeout=6.0, verify=False)
+        if r.status_code == 200:
+            data = r.json()
+            content = data["choices"][0]["message"]["content"]
+            return json.loads(content)
+    except Exception as e:
+        print(f"[Aviso OpenAI Fallback: {e}]")
+    return None
+
+
 def higienizar_item_hq(item: Dict[str, Any]) -> Dict[str, Any]:
     """
     Higieniza e desmembra título e edição caso o número do volume tenha vindo anexado ao título.
@@ -3949,21 +3984,27 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     resp_chat = None
 
                 if resp_chat and resp_chat.text:
-                    txt = resp_chat.text.strip()
-                    if "```json" in txt:
-                        txt = txt.split("```json")[1].split("```")[0].strip()
-                    elif "```" in txt:
-                        txt = txt.split("```")[1].split("```")[0].strip()
-                    if "{" in txt and "}" in txt:
-                        txt = txt[txt.find("{"):txt.rfind("}")+1]
                     try:
-                        parsed = json.loads(txt)
-                        if isinstance(parsed, dict) and (parsed.get("roteiro") or parsed.get("desenho") or parsed.get("resumo")):
-                            dados_ia = parsed
+                        txt = resp_chat.text.strip()
+                        if "```json" in txt:
+                            txt = txt.split("```json")[1].split("```")[0].strip()
+                        elif "```" in txt:
+                            txt = txt.split("```")[1].split("```")[0].strip()
+                        if "{" in txt and "}" in txt:
+                            txt = txt[txt.find("{"):txt.rfind("}")+1]
+                        dados_ia = json.loads(txt)
+                        if dados_ia and isinstance(dados_ia, dict) and (dados_ia.get("roteiro") or dados_ia.get("resumo")):
                             resultado["metodo"] = f"Guia dos Quadrinhos IA ({mod})"
                             break
                     except Exception:
                         pass
+
+            # Fallback automático: OpenAI (gpt-4o-mini) caso o Gemini esteja sem cota ou indisponível
+            if not dados_ia:
+                openai_res = consultar_openai_hq(prompt_gq)
+                if openai_res and (openai_res.get("roteiro") or openai_res.get("desenho") or openai_res.get("resumo")):
+                    dados_ia = openai_res
+                    resultado["metodo"] = "Guia dos Quadrinhos IA (OpenAI GPT-4o-mini)"
 
             if dados_ia:
                 if dados_ia.get("url_edicao") and "guiadosquadrinhos.com/edicao/" in str(dados_ia["url_edicao"]):
