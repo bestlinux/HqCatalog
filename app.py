@@ -279,79 +279,36 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
     editora = hq_alvo.get("editora") or ""
     
     texto_cabecalho = f"{titulo} {edicao} {editora}".strip()
-    st.markdown(f"#### 🌐 Buscando Fonte para: {texto_cabecalho}")
-    st.info("Esta função usa o Playwright de forma visível (`headless=False`) para pesquisar no Google e acessar o GuiaDosQuadrinhos. Isso contorna os bloqueios agressivos (Cloudflare) que ocorrem ao usar robôs invisíveis.")
+    st.markdown(f"#### 🌐 Buscar Fonte para: {texto_cabecalho}")
+    st.info("Cole o link direto da edição no GuiaDosQuadrinhos ou cole o texto da página se o link for bloqueado.")
 
-    if st.button("🚀 Iniciar Busca via Playwright", key="btn_iniciar_busca_pw", type="primary"):
-        with st.spinner("Pesquisando no Google via Playwright Visível ... Pode demorar um pouco."):
-            try:
-                from playwright.sync_api import sync_playwright
-                from urllib.parse import quote
-                import time
-                
-                query = f'site:guiadosquadrinhos.com/edicao/ "{titulo}" {edicao} {editora}'
-                url_ddg = f"https://duckduckgo.com/?q={quote(query)}"
-                
-                texto_extraido = ""
-                with sync_playwright() as p:
-                    # Rodando SEM SER HEADLESS para não ser bloqueado como bot
-                    browser = p.chromium.launch(headless=False, args=['--disable-blink-features=AutomationControlled'])
-                    context = browser.new_context(
-                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                        viewport={'width': 1280, 'height': 720}
-                    )
-                    context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-                    
-                    page = context.new_page()
-                    page.goto(url_ddg, wait_until="domcontentloaded")
-                    
-                    st.info("Aguardando resultados (DuckDuckGo)...")
-                    
-                    try:
-                        # Espera até 30 segundos pelos resultados do DuckDuckGo
-                        page.wait_for_selector("a[data-testid='result-title-a']", timeout=30000)
-                        page.wait_for_timeout(2000)
-                    except Exception as e:
-                        pass
-                    
-                    first_link = None
-                    links = page.locator("a[data-testid='result-title-a']").element_handles()
-                    
-                    # Procura o primeiro link que seja do Guia dos Quadrinhos (priorizando /edicao/)
-                    for a in links:
-                        href = a.get_attribute("href")
-                        if href and "guiadosquadrinhos.com" in href:
-                            first_link = href
-                            if "/edicao/" in href:
-                                # Trata o caso em que o buscador indexou o link dinâmico "contribuicao_edicao.aspx"
-                                if "contribuicao_edicao.aspx" in first_link:
-                                    import re
-                                    m_tit = re.search(r'cod_tit=([^&]+)', first_link)
-                                    m_edc = re.search(r'cod_edc=([^&]+)', first_link)
-                                    if m_tit and m_edc:
-                                        first_link = f"https://www.guiadosquadrinhos.com/edicao/x/{m_tit.group(1)}/{m_edc.group(1)}"
-                                break # Achou o link ideal, para de procurar
-                            
-                    if not first_link:
-                        browser.close()
-                        st.error("A HQ não foi encontrada no GuiaDosQuadrinhos pelo DuckDuckGo.")
+    url_ou_texto = st.text_area("Link ou Texto da Página:", placeholder="https://www.guiadosquadrinhos.com/edicao/...", key="txt_url_gq_fonte")
+    
+    if st.button("🚀 Extrair Dados", key="btn_iniciar_busca_simples", type="primary"):
+        if not url_ou_texto.strip():
+            st.warning("Cole o link ou o texto primeiro!")
+            return
+            
+        with st.spinner("Processando..."):
+            texto_extraido = url_ou_texto.strip()
+            
+            # Se for um link, tenta baixar o HTML
+            if texto_extraido.startswith("http"):
+                try:
+                    import requests
+                    st.info("Baixando página da web...")
+                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                    r = requests.get(texto_extraido, headers=headers, timeout=10)
+                    if "Just a moment" in r.text or "Cloudflare" in r.text:
+                        st.warning("O site bloqueou o acesso do nosso servidor na nuvem (Cloudflare). Por favor, copie o TEXTO da página inteira e cole na caixa acima no lugar do link.")
                         return
-                    
-                    st.success(f"Link encontrado: {first_link}")
-                    page.goto(first_link, wait_until="domcontentloaded")
-                    
-                    st.info("Acessando a página do GuiaDosQuadrinhos (aguardando Cloudflare validar a conexão - se pedir, clique na caixa 'Sou Humano')...")
-                    
-                    texto_extraido = ""
-                    for _ in range(30):
-                        page.wait_for_timeout(2000) # Aguarda 2 segundos por ciclo
-                        texto_extraido = page.locator("body").inner_text()
-                        if len(texto_extraido) > 1500:
-                            break # O Cloudflare passou e a página real carregou!
-                            
-                    browser.close()
-                    
-                st.info(f"Página lida com sucesso! ({len(texto_extraido)} caracteres). Interpretando com IA...")
+                    texto_extraido = r.text
+                    st.success("Página baixada com sucesso!")
+                except Exception as e:
+                    st.error(f"Erro ao acessar link: {e}")
+                    return
+            
+            st.info("Interpretando dados com a IA...")
                 
                 prompt_llm = f"""
 Você é um especialista em HQs. Aqui está o texto extraído da página do Guia dos Quadrinhos para a edição: "{titulo}".
