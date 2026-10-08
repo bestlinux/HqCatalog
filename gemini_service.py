@@ -3546,14 +3546,50 @@ def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dic
             if hasattr(curr, "get") and curr.get("class") and "historia" in curr.get("class"):
                 break
             
-            # Se for elemento HTML
-            if hasattr(curr, "name") and curr.name:
-                # Se for container de comentários, rodapé ou propagandas, encerra
+            # Se for container de comentários, rodapé ou propagandas, encerra
+            if hasattr(curr, "get"):
                 c_class = str(curr.get("class") or "").lower()
                 c_id = str(curr.get("id") or "").lower()
                 if any(x in c_class or x in c_id for x in ["comentario", "rodape", "footer", "publicidade", "banner"]):
                     break
-                
+
+            txt_bloco = curr.get_text() if hasattr(curr, "get_text") else str(curr)
+            for l in txt_bloco.splitlines():
+                l_s = l.strip()
+                if not l_s:
+                    continue
+                if re.match(r"^(roteiro|argumento|texto):\s*", l_s, re.I):
+                    v = re.sub(r"^(roteiro|argumento|texto):\s*", "", l_s, flags=re.I).strip()
+                    for it in re.split(r"[,/;&]", v):
+                        it_c = it.strip()
+                        if it_c and len(it_c) > 2:
+                            if it_c not in rot_hist: rot_hist.append(it_c)
+                            if it_c not in roteiristas_set: roteiristas_set.append(it_c)
+                elif re.match(r"^(desenho|arte|ilustra[çc][ãa]o|arte-final|cores):\s*", l_s, re.I):
+                    v = re.sub(r"^(desenho|arte|ilustra[çc][ãa]o|arte-final|cores):\s*", "", l_s, flags=re.I).strip()
+                    for it in re.split(r"[,/;&]", v):
+                        it_c = it.strip()
+                        if it_c and len(it_c) > 2:
+                            if it_c not in art_hist: art_hist.append(it_c)
+                            if it_c not in desenhistas_set: desenhistas_set.append(it_c)
+                elif re.match(r"^personagens:\s*", l_s, re.I):
+                    v = re.sub(r"^personagens:\s*", "", l_s, flags=re.I).strip()
+                    for it in re.split(r"[,/;&]", v):
+                        it_c = it.strip()
+                        if it_c and len(it_c) > 2 and it_c not in personagens_hist:
+                            personagens_hist.append(it_c)
+                elif "publicada pela primeira vez" in l_s.lower():
+                    origem_hist = re.sub(r".*publicada pela primeira vez em\s*", "", l_s, flags=re.I).strip()
+                elif re.match(r"^sinopse:\s*", l_s, re.I):
+                    s_txt = re.sub(r"^sinopse:\s*", "", l_s, flags=re.I).strip()
+                    if s_txt and s_txt not in sinopse_textos:
+                        sinopse_textos.append(s_txt)
+                elif len(l_s) > 20 and not any(k in l_s.lower() for k in ["personagens:", "roteiro:", "desenho:", "publicada pela primeira", "arte:", "argumento:", "cores:"]):
+                    if l_s not in sinopse_textos:
+                        sinopse_textos.append(l_s)
+
+            # Processamento de nós de link e strong tradicionais caso existam
+            if hasattr(curr, "name") and curr.name:
                 txt_node = curr.get_text(strip=True)
                 if curr.name == "strong":
                     if "Personagens:" in txt_node:
@@ -3580,21 +3616,6 @@ def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dic
                             desenhistas_set.append(txt_node)
                         if txt_node and txt_node not in artistas_gerais_set:
                             artistas_gerais_set.append(txt_node)
-                    elif "Publicada pela primeira vez" in txt_node or (curr.previous_sibling and "Publicada pela primeira vez" in str(curr.previous_sibling)):
-                        origem_hist = txt_node
-                elif "Publicada pela primeira vez em" in txt_node:
-                    origem_hist = txt_node.replace("Publicada pela primeira vez em", "").strip()
-                elif curr.name in ["p", "span", "div"] and txt_node:
-                    # Captura texto de sinopse/enredo que não seja cabeçalho de metadados
-                    if not any(k in txt_node.lower() for k in ["personagens:", "roteiro:", "desenho:", "publicada pela primeira"]):
-                        if len(txt_node) > 10 and txt_node not in sinopse_textos:
-                            sinopse_textos.append(txt_node)
-            elif isinstance(curr, str):
-                # Texto puro entre tags
-                s_raw = curr.strip()
-                if s_raw and len(s_raw) > 10 and not any(k in s_raw.lower() for k in ["personagens:", "roteiro:", "desenho:"]):
-                    if s_raw not in sinopse_textos:
-                        sinopse_textos.append(s_raw)
 
             curr = curr.next_sibling
 
