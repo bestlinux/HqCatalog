@@ -264,7 +264,7 @@ def dialog_cadastrar_capa(id_padrao: Optional[int] = None):
         st.info(f"Nenhum quadrinho com o ID #{id_para_capa} encontrado.");
         if st.button("❌ Fechar", key="dlg_btn_close_capa_empty", use_container_width=True): st.rerun()
 
-@st.dialog("🌐 Buscar Fonte (Google + Playwright)", width="large")
+@st.dialog("🌐 Buscar Fonte (Reserp.ai + Google)", width="large")
 def dialog_buscar_fonte(id_padrao: Optional[int] = None):
     val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
     hq_alvo = database.obter_hq_por_id(int(val_id))
@@ -274,152 +274,281 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
             st.rerun()
         return
 
-    titulo = hq_alvo.get("titulo") or ""
-    edicao = hq_alvo.get("edicao") or ""
-    editora = hq_alvo.get("editora") or ""
-    
+    titulo = (hq_alvo.get("titulo") or "").strip()
+    edicao = (hq_alvo.get("edicao") or "").strip()
+    editora = (hq_alvo.get("editora") or "").strip()
+    if editora.lower() in ["desconhecida", "não informada", "nao informada"]:
+        editora = ""
+
     texto_cabecalho = f"{titulo} {edicao} {editora}".strip()
-    st.markdown(f"#### 🌐 Buscar Fonte para: {texto_cabecalho}")
-    st.info("Cole o link direto da edição no GuiaDosQuadrinhos ou cole o texto da página se o link for bloqueado.")
+    st.markdown(f"#### 🌐 Buscar Fontes e Dados para: **{texto_cabecalho}**")
 
-    url_ou_texto = st.text_area("Link ou Texto da Página:", placeholder="https://www.guiadosquadrinhos.com/edicao/...", key="txt_url_gq_fonte")
-    
-    if st.button("🚀 Extrair Dados", key="btn_iniciar_busca_simples", type="primary"):
-        if not url_ou_texto.strip():
-            st.warning("Cole o link ou o texto primeiro!")
-            return
-            
-        with st.spinner("Processando..."):
-            texto_extraido = url_ou_texto.strip()
-            
-            # Se for um link, tenta baixar o HTML
-            if texto_extraido.startswith("http"):
+    # Mostra dados atuais
+    detalhes_atuais = []
+    if hq_alvo.get("escritor") and str(hq_alvo["escritor"]).lower() not in ["não informado", "nao informado", ""]:
+        detalhes_atuais.append(f"✍️ **Roteiro:** `{hq_alvo['escritor']}`")
+    if hq_alvo.get("ilustrador") and str(hq_alvo["ilustrador"]).lower() not in ["não informado", "nao informado", ""]:
+        detalhes_atuais.append(f"🎨 **Desenho:** `{hq_alvo['ilustrador']}`")
+    if hq_alvo.get("valor") and float(hq_alvo["valor"]) > 0:
+        detalhes_atuais.append(f"💰 **Preço:** `R$ {float(hq_alvo['valor']):.2f}`".replace(".", ","))
+    if hq_alvo.get("link_edicao"):
+        detalhes_atuais.append(f"🔗 [Link Atual]({hq_alvo['link_edicao']})")
+    if detalhes_atuais:
+        st.caption(" • ".join(detalhes_atuais))
+
+    st.markdown("---")
+
+    # Termo de pesquisa padrão otimizado para SERP
+    query_padrao = f"{titulo} {edicao} {editora} \"guia dos quadrinhos\"".strip()
+    termo_busca = st.text_input(
+        "🔎 Termo de Busca no Google (Reserp.ai):",
+        value=query_padrao,
+        key=f"input_reserp_query_{val_id}",
+        help="Pesquisa no Google via Reserp.ai sem bloqueios de Cloudflare ou IP."
+    )
+
+    c_btn1, c_btn2 = st.columns([2, 1])
+    with c_btn1:
+        btn_pesquisar = st.button("🔎 Pesquisar Fontes na Web (Reserp.ai)", key=f"btn_pesquisar_reserp_{val_id}", type="primary", use_container_width=True)
+    with c_btn2:
+        btn_limpar = st.button("🔄 Nova Busca", key=f"btn_limpar_reserp_{val_id}", use_container_width=True)
+
+    session_reserp_key = f"reserp_fontes_data_{val_id}"
+    if btn_limpar and session_reserp_key in st.session_state:
+        del st.session_state[session_reserp_key]
+        st.rerun()
+
+    if btn_pesquisar or (session_reserp_key not in st.session_state):
+        with st.spinner("🔍 Consultando Google via Reserp.ai (sem bloqueios)..."):
+            fn_fontes = getattr(gemini_service, "buscar_fontes_hq_reserp", None)
+            dados_fontes = {}
+            if fn_fontes:
                 try:
-                    import requests
-                    st.info("Baixando página da web...")
-                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-                    r = requests.get(texto_extraido, headers=headers, timeout=10)
-                    if "Just a moment" in r.text or "Cloudflare" in r.text:
-                        st.warning("O site bloqueou o acesso do nosso servidor na nuvem (Cloudflare). Por favor, copie o TEXTO da página inteira e cole na caixa acima no lugar do link.")
-                        return
-                    texto_extraido = r.text
-                    st.success("Página baixada com sucesso!")
-                except Exception as e:
-                    st.error(f"Erro ao acessar link: {e}")
-                    return
-            
-            st.info("Interpretando dados com a IA...")
-            
-            prompt_llm = f"""
-Você é um especialista em HQs. Aqui está o texto extraído da página do Guia dos Quadrinhos para a edição: "{titulo}".
-Por favor, extraia as seguintes informações do texto abaixo:
-1. Roteiro (Roteirista(s))
-2. Ilustrador (Desenhista(s))
-3. Preço da capa (apenas o valor numérico, formato float ex: 27.90)
-4. Resumo (Sinopse da história)
-5. URL da Capa (se houver, procure por links de imagens terminados em jpg ou png relacionados à capa, deixe null se não achar)
+                    dados_fontes = fn_fontes(
+                        titulo=titulo,
+                        edicao=edicao,
+                        editora=editora,
+                        termo_custom=termo_busca.strip()
+                    )
+                except Exception as ex_f:
+                    st.error(f"Erro na consulta Reserp.ai: {ex_f}")
+            st.session_state[session_reserp_key] = dados_fontes
 
-Texto extraído:
+    res_busca = st.session_state.get(session_reserp_key, {})
+    fontes_lista = res_busca.get("fontes", [])
+    link_gq_encontrado = res_busca.get("link_guia_dos_quadrinhos", "")
+    texto_reserp = res_busca.get("texto_consolidado", "")
+
+    if fontes_lista:
+        st.success(f"✨ Encontrada(s) **{len(fontes_lista)}** fonte(s) na web!")
+        
+        for idx, fonte in enumerate(fontes_lista[:4]):
+            f_tit = fonte.get("titulo") or "Página Encontrada"
+            f_url = fonte.get("url") or ""
+            f_res = fonte.get("resumo") or ""
+            with st.container(border=True):
+                st.markdown(f"**[{f_tit}]({f_url})**")
+                st.caption(f"🔗 `{f_url}`")
+                if f_res:
+                    st.markdown(f"> *{f_res}*")
+
+        if link_gq_encontrado:
+            st.info(f"🎯 **Página canônica no Guia dos Quadrinhos:** [{link_gq_encontrado}]({link_gq_encontrado})")
+
+        st.markdown("---")
+        st.markdown("#### 🤖 Extração Inteligente com IA")
+        
+        if st.button("🚀 Extrair Dados das Fontes e Salvar no Banco", key=f"btn_extrair_reserp_{val_id}", type="primary", use_container_width=True):
+            with st.spinner("🤖 Interpretando dados das fontes com a IA Gemini..."):
+                prompt_llm = f"""Você é um especialista em catálogo de Histórias em Quadrinhos e enciclopédias editoriais.
+Analise os dados e textos extraídos via busca web (Reserp.ai / Google) sobre a edição: "{titulo}".
+
+Fontes e textos da web:
+---
+{texto_reserp[:12000]}
+---
+Link oficial da edição: {link_gq_encontrado or 'Não identificado'}
+
+Extraia com total fidelidade:
+1. "roteiro": Nome dos roteiristas / escritores (ex: "Alan Moore, Dave Gibbons").
+2. "ilustrador": Nome dos desenhistas / arte (ex: "Dave Gibbons").
+3. "valor": Preço de capa em reais (float numérico, ex: 29.90, ou null se não houver).
+4. "resumo": Sinopse / resumo completo das histórias contidas nesta edição.
+5. "capa": URL direta da imagem da capa se encontrada em alta resolução (ou null).
+6. "link_edicao": Link canônico da edição no Guia dos Quadrinhos se presente (ou "{link_gq_encontrado}").
+
+Retorne ESTRITAMENTE um JSON com as chaves:
+{{
+  "roteiro": "...",
+  "ilustrador": "...",
+  "valor": 0.0,
+  "resumo": "...",
+  "capa": "...",
+  "link_edicao": "..."
+}}
+"""
+                cliente = gemini_service.get_gemini_client()
+                modelos = ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite']
+                resposta = None
+                ultimo_erro = None
+                for mod in modelos:
+                    try:
+                        resposta = cliente.models.generate_content(
+                            model=mod,
+                            contents=prompt_llm
+                        )
+                        if resposta and resposta.text:
+                            break
+                    except Exception as ai_err:
+                        ultimo_erro = ai_err
+                        continue
+
+                if not resposta or not resposta.text:
+                    st.error(f"Erro ao processar com a IA: {ultimo_erro}")
+                    return
+
+                dados = gemini_service.limpar_e_parsear_json_dict(resposta.text)
+                if dados:
+                    campos_update = []
+                    valores_update = []
+                    
+                    if dados.get("roteiro") and str(dados["roteiro"]).lower() not in ["null", "none", ""]:
+                        campos_update.append("escritor = ?")
+                        valores_update.append(str(dados["roteiro"]).strip())
+                    if dados.get("ilustrador") and str(dados["ilustrador"]).lower() not in ["null", "none", ""]:
+                        campos_update.append("ilustrador = ?")
+                        valores_update.append(str(dados["ilustrador"]).strip())
+                    if dados.get("resumo") and str(dados["resumo"]).lower() not in ["null", "none", ""]:
+                        campos_update.append("resumo = ?")
+                        valores_update.append(str(dados["resumo"]).strip())
+                    if dados.get("valor") is not None:
+                        try:
+                            v = float(dados["valor"])
+                            if v > 0:
+                                campos_update.append("valor = ?")
+                                valores_update.append(v)
+                        except Exception:
+                            pass
+                    if dados.get("capa") and str(dados["capa"]).startswith("http"):
+                        campos_update.append("capa = ?")
+                        valores_update.append(str(dados["capa"]).strip())
+                    link_salvar = dados.get("link_edicao") or link_gq_encontrado
+                    if link_salvar and str(link_salvar).startswith("http"):
+                        campos_update.append("link_edicao = ?")
+                        valores_update.append(str(link_salvar).strip())
+
+                    if campos_update:
+                        valores_update.append(val_id)
+                        sql_update = f"UPDATE hqs SET {', '.join(campos_update)} WHERE id = ?"
+                        if database.is_using_turso():
+                            database.executar_turso_query(sql_update, valores_update)
+                        else:
+                            conn = database.get_sqlite_connection()
+                            try:
+                                c = conn.cursor()
+                                c.execute(sql_update, tuple(valores_update))
+                                conn.commit()
+                            finally:
+                                conn.close()
+
+                        st.success("✅ Dados atualizados com sucesso no Banco de Dados!")
+                        
+                        col_img, col_dados = st.columns([1, 2])
+                        with col_img:
+                            if dados.get("capa") and str(dados["capa"]).startswith("http"):
+                                st.image(dados["capa"], caption="Capa Encontrada", use_container_width=True)
+                            else:
+                                st.info("Sem imagem nova de capa.")
+                        with col_dados:
+                            st.write(f"**Roteiro:** {dados.get('roteiro') or 'N/A'}")
+                            st.write(f"**Ilustrador:** {dados.get('ilustrador') or 'N/A'}")
+                            if dados.get('valor'):
+                                st.write(f"**Preço de Capa:** R$ {float(dados['valor']):.2f}".replace(".", ","))
+                            if link_salvar:
+                                st.write(f"**Link:** [{link_salvar}]({link_salvar})")
+                            st.write(f"**Resumo:** {dados.get('resumo') or 'N/A'}")
+
+                        st.info("Atualizando página em 3 segundos...")
+                        time.sleep(3)
+                        st.rerun()
+                    else:
+                        st.warning("Nenhum dado novo encontrado para atualizar.")
+    else:
+        st.warning("Nenhuma fonte encontrada automaticamente via Reserp.ai. Você pode ajustar o termo de busca acima ou colar o conteúdo manualmente abaixo.")
+
+    with st.expander("📋 Opção Manual: Colar Link ou Texto da Página", expanded=False):
+        url_ou_texto = st.text_area("Link direto ou Texto copiado da página:", placeholder="https://www.guiadosquadrinhos.com/edicao/...", key=f"txt_url_manual_fonte_{val_id}")
+        if st.button("🚀 Processar Texto / Link Manual", key=f"btn_manual_busca_fonte_{val_id}"):
+            if not url_ou_texto.strip():
+                st.warning("Cole o link ou texto primeiro!")
+            else:
+                with st.spinner("Processando..."):
+                    texto_extraido = url_ou_texto.strip()
+                    if texto_extraido.startswith("http"):
+                        try:
+                            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                            r = requests.get(texto_extraido, headers=headers, timeout=10)
+                            if "Just a moment" in r.text or "Cloudflare" in r.text:
+                                st.warning("O site bloqueou o acesso direto (Cloudflare). Use a busca do Reserp.ai acima ou copie o texto da página.")
+                                return
+                            texto_extraido = r.text
+                        except Exception as e:
+                            st.error(f"Erro ao acessar link: {e}")
+                            return
+                    
+                    prompt_man = f"""Você é um especialista em HQs. Aqui está o texto extraído da página:
+"{titulo}"
+Texto:
 ---
 {texto_extraido[:12000]}
 ---
-
-Retorne ESTRITAMENTE um JSON no seguinte formato (sem marcações markdown, apenas o JSON):
-{{
-"roteiro": "nome dos roteiristas ou null",
-"ilustrador": "nome dos desenhistas ou null",
-"capa": "url da imagem ou null",
-"valor": 27.90,
-"resumo": "resumo da história ou null"
-}}
-"""
-            import gemini_service
-            cliente = gemini_service.get_gemini_client()
-            
-            resposta = None
-            ultimo_erro = None
-            modelos_para_tentar = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash']
-            for modelo in modelos_para_tentar:
-                try:
-                    resposta = cliente.models.generate_content(
-                        model=modelo,
-                        contents=prompt_llm,
-                    )
-                    if resposta and resposta.text:
-                        break # Se funcionou, sai do loop
-                except Exception as ai_err:
-                    ultimo_erro = ai_err
-                    # Tenta o próximo modelo em caso de 429 (cota), 503, 504, timeout, etc.
-                    continue
-            
-            if not resposta or not resposta.text:
-                st.error(f"Todos os modelos da IA falharam ou estão sem cota no momento. Detalhe: {ultimo_erro}")
-                return
-            
-            if len(texto_extraido) < 1000:
-                st.warning("Atenção: A página extraída tem menos de 1000 caracteres. É muito provável que o Cloudflare tenha bloqueado o robô na tela 'Just a moment...', o que pode resultar em dados vazios.")
-            
-            dados = gemini_service.limpar_e_parsear_json_dict(resposta.text)
-            
-            if dados:
-                campos_update = []
-                valores_update = []
-                if dados.get("roteiro") and dados["roteiro"] != "null":
-                    campos_update.append("escritor = ?")
-                    valores_update.append(dados["roteiro"])
-                if dados.get("ilustrador") and dados["ilustrador"] != "null":
-                    campos_update.append("ilustrador = ?")
-                    valores_update.append(dados["ilustrador"])
-                if dados.get("resumo") and dados["resumo"] != "null":
-                    campos_update.append("resumo = ?")
-                    valores_update.append(dados["resumo"])
-                if dados.get("valor") is not None:
-                    try:
-                        v = float(dados["valor"])
-                        campos_update.append("valor = ?")
-                        valores_update.append(v)
-                    except:
-                        pass
-                if dados.get("capa") and dados["capa"] != "null":
-                    campos_update.append("capa = ?")
-                    valores_update.append(dados["capa"])
-                
-                if campos_update:
-                    valores_update.append(val_id)
-                    sql_update = f"UPDATE hqs SET {', '.join(campos_update)} WHERE id = ?"
-                    if database.is_using_turso():
-                        database.executar_turso_query(sql_update, valores_update)
-                    else:
-                        conn = database.get_sqlite_connection()
+Retorne JSON com chaves: roteiro, ilustrador, valor, resumo, capa, link_edicao."""
+                    cliente = gemini_service.get_gemini_client()
+                    resp_man = None
+                    for mod in ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite']:
                         try:
-                            c = conn.cursor()
-                            c.execute(sql_update, tuple(valores_update))
-                            conn.commit()
-                        finally:
-                            conn.close()
-                    
-                    st.success("Dados salvos com sucesso no Banco de Dados!")
-                    
-                    # Mostra visualmente o que foi extraído
-                    st.markdown("### Resumo da Extração")
-                    col_img, col_dados = st.columns([1, 2])
-                    with col_img:
-                        if dados.get("capa") and dados["capa"] != "null":
-                            st.image(dados["capa"], use_container_width=True)
-                        else:
-                            st.info("Nenhuma capa encontrada.")
-                    with col_dados:
-                        st.write(f"**Roteiro:** {dados.get('roteiro', 'N/A')}")
-                        st.write(f"**Ilustrador:** {dados.get('ilustrador', 'N/A')}")
-                        st.write(f"**Preço Capa:** R$ {dados.get('valor', 'N/A')}")
-                        st.write(f"**Resumo:** {dados.get('resumo', 'N/A')}")
-                    
-                    st.info("A página será recarregada em 5 segundos para atualizar a Edição do Dia...")
-                    time.sleep(5)
-                    st.rerun()
-                else:
-                    st.warning("Nenhum dado novo encontrado para atualizar. (Isso pode acontecer se o site bloqueou a leitura ou a IA não encontrou dados).")
-                    st.json(dados)
+                            resp_man = cliente.models.generate_content(model=mod, contents=prompt_man)
+                            if resp_man and resp_man.text:
+                                break
+                        except Exception:
+                            continue
+                    dados_man = gemini_service.limpar_e_parsear_json_dict(resp_man.text) if resp_man and resp_man.text else {}
+                    if dados_man:
+                        campos_u = []
+                        vals_u = []
+                        if dados_man.get("roteiro") and str(dados_man["roteiro"]).lower() not in ["null", ""]:
+                            campos_u.append("escritor = ?")
+                            vals_u.append(str(dados_man["roteiro"]))
+                        if dados_man.get("ilustrador") and str(dados_man["ilustrador"]).lower() not in ["null", ""]:
+                            campos_u.append("ilustrador = ?")
+                            vals_u.append(str(dados_man["ilustrador"]))
+                        if dados_man.get("resumo") and str(dados_man["resumo"]).lower() not in ["null", ""]:
+                            campos_u.append("resumo = ?")
+                            vals_u.append(str(dados_man["resumo"]))
+                        if dados_man.get("valor") is not None:
+                            try:
+                                v = float(dados_man["valor"])
+                                if v > 0:
+                                    campos_u.append("valor = ?")
+                                    vals_u.append(v)
+                            except Exception:
+                                pass
+                        if campos_u:
+                            vals_u.append(val_id)
+                            sql_u = f"UPDATE hqs SET {', '.join(campos_u)} WHERE id = ?"
+                            if database.is_using_turso():
+                                database.executar_turso_query(sql_u, vals_u)
+                            else:
+                                conn = database.get_sqlite_connection()
+                                try:
+                                    c = conn.cursor()
+                                    c.execute(sql_u, tuple(vals_u))
+                                    conn.commit()
+                                finally:
+                                    conn.close()
+                            st.success("Dados manuais salvos com sucesso!")
+                            time.sleep(2)
+                            st.rerun()
 
 
 @st.dialog("🔍 Buscar Dados (Guia dos Quadrinhos)", width="large")

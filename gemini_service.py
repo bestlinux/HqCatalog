@@ -3743,6 +3743,148 @@ def extrair_dados_texto_ou_html_gq(conteudo: str, url_orig: str = "") -> Dict[st
 
 
 # =============================================================
+# INTEGRAÇÃO RESERP.AI (GOOGLE SEARCH SERP ENGINE)
+# =============================================================
+DEFAULT_RESERP_API_KEY = os.getenv("RESERP_API_KEY", "HROQunnPEHw2JlSTbfl_lYxLKq0D9mM7QHXf_QxIY5M")
+
+
+def pesquisar_reserp_google(
+    termo_busca: str,
+    api_key: Optional[str] = None,
+    timeout: int = 15
+) -> List[Dict[str, Any]]:
+    """
+    Executa busca no Google via API do Reserp.ai (sem bloqueios de Cloudflare ou IP).
+    Retorna lista de resultados com 'title', 'url', 'text'/'snippet'.
+    """
+    if not termo_busca or requests is None:
+        return []
+    key = api_key or os.getenv("RESERP_API_KEY") or DEFAULT_RESERP_API_KEY
+    try:
+        google_search_url = f"https://www.google.com/search?q={urllib.parse.quote(termo_busca)}&hl=pt-BR&gl=br"
+        res_resp = requests.post(
+            "https://api.reserp.ai/v2/serp/search",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json"
+            },
+            json={"url": google_search_url},
+            timeout=timeout
+        )
+        if res_resp.status_code == 200:
+            r_data = res_resp.json()
+            return r_data.get("results", [])
+    except Exception as e:
+        print(f"Erro Reserp: {e}")
+    return []
+
+
+def extrair_metadados_item_reserp(r: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Extrai com precisão o título real da página, url canônica e snippet a partir do payload do Reserp.ai.
+    """
+    url = r.get("url") or ""
+    raw_text = r.get("text") or r.get("snippet") or ""
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+
+    titulo = ""
+    resumo_lines = []
+    if len(lines) >= 3 and (lines[1].startswith("http") or "www." in lines[1] or "/" in lines[1]):
+        titulo = lines[2]
+        resumo_lines = lines[3:]
+    elif len(lines) >= 2 and (lines[0].startswith("http") or "www." in lines[0]):
+        titulo = lines[1]
+        resumo_lines = lines[2:]
+    elif len(lines) >= 1:
+        titulo = lines[0]
+        resumo_lines = lines[1:]
+    else:
+        titulo = url
+
+    # Remove artefatos de cabeçalho comuns do Google
+    if titulo.lower().startswith("https://") or titulo.lower().startswith("http://"):
+        titulo = lines[0] if lines else url
+
+    resumo = " ".join(resumo_lines)
+    return {
+        "titulo": titulo or url,
+        "url": url,
+        "resumo": resumo[:300] + ("..." if len(resumo) > 300 else ""),
+        "texto_completo": raw_text
+    }
+
+
+def buscar_fontes_hq_reserp(
+    titulo: str,
+    edicao: str = "",
+    editora: str = "",
+    api_key: Optional[str] = None,
+    termo_custom: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Busca páginas e fontes de referência na web para uma HQ específica usando Reserp.ai (Google SERP).
+    Utiliza estratégia multi-etapas resiliente para encontrar a edição exata no Guia dos Quadrinhos.
+    """
+    t = (titulo or "").strip()
+    e = (edicao or "").strip()
+    ed = (editora or "").strip()
+    if ed.lower() in ["desconhecida", "não informada", "nao informada"]:
+        ed = ""
+
+    # Estratégia de busca principal
+    if termo_custom and termo_custom.strip():
+        query_principal = termo_custom.strip()
+    else:
+        query_principal = f"{t} {e} {ed} \"guia dos quadrinhos\"".strip()
+
+    raw_results = pesquisar_reserp_google(query_principal, api_key=api_key)
+
+    # Verifica se encontrou páginas diretas do Guia dos Quadrinhos (/edicao/)
+    tem_link_edicao = any("guiadosquadrinhos.com/edicao/" in (r.get("url") or "") for r in raw_results)
+    
+    # Se a busca usou site: ou aspas estritas e falhou/retornou resultados genéricos, executa fallback aberto
+    if (not tem_link_edicao or not raw_results) and ("site:" in query_principal or "\"" in query_principal):
+        query_fallback = f"{t} {e} {ed} \"guia dos quadrinhos\"".strip()
+        if query_fallback != query_principal:
+            fallback_results = pesquisar_reserp_google(query_fallback, api_key=api_key)
+            if fallback_results:
+                # Prioriza resultados que tenham a URL da edição
+                raw_results = fallback_results + [r for r in raw_results if r not in fallback_results]
+
+    fontes = []
+    link_gq = ""
+    textos = []
+    urls_vistas = set()
+
+    # Ordena para colocar páginas de edição direta (/edicao/) em primeiro lugar
+    raw_results_ordenados = sorted(
+        raw_results,
+        key=lambda item: 0 if "/edicao/" in (item.get("url") or "") else 1
+    )
+
+    for r in raw_results_ordenados:
+        meta = extrair_metadados_item_reserp(r)
+        url = meta["url"]
+        if not url or url in urls_vistas:
+            continue
+        urls_vistas.add(url)
+
+        if not link_gq and "guiadosquadrinhos.com/edicao/" in url:
+            link_gq = url
+
+        fontes.append(meta)
+        if meta["texto_completo"]:
+            textos.append(f"Fonte: {meta['titulo']} ({url})\n{meta['texto_completo']}")
+
+    return {
+        "termo_pesquisado": query_principal,
+        "fontes": fontes,
+        "link_guia_dos_quadrinhos": link_gq,
+        "texto_consolidado": "\n\n---\n\n".join(textos[:6])
+    }
+
+
+# =============================================================
 # BUSCA INTEGRADA DE DADOS: GUIA DOS QUADRINHOS
 # (Roteiro, Desenho, Preço de Capa, Imagem da Capa e Resumo)
 # =============================================================
@@ -3898,29 +4040,16 @@ def buscar_dados_guia_dos_quadrinhos(
             url_ref = url_resolvida if (url_resolvida and url_resolvida.startswith("http") and "/edicao/" in url_resolvida) else ""
 
             # --- INTEGRAÇÃO RESERP.AI ---
-            reserp_api_key = "HROQunnPEHw2JlSTbfl_lYxLKq0D9mM7QHXf_QxIY5M"
             reserp_text = ""
             try:
-                google_search_url = f"https://www.google.com/search?q={urllib.parse.quote(termo_pesquisa_gq)}&hl=pt-BR&gl=br"
-                res_resp = requests.post(
-                    "https://api.reserp.ai/v2/serp/search",
-                    headers={
-                        "Authorization": f"Bearer {reserp_api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={"url": google_search_url},
-                    timeout=15
-                )
-                if res_resp.status_code == 200:
-                    r_data = res_resp.json()
-                    results = r_data.get("results", [])
-                    if not url_ref and results:
-                        for r in results:
-                            u = r.get("url", "")
-                            if "guiadosquadrinhos.com/edicao/" in u:
-                                url_ref = u
-                                break
-                    reserp_text = "\n\n".join([r.get("text", "") for r in results[:5] if r.get("text")])
+                results = pesquisar_reserp_google(termo_pesquisa_gq)
+                if not url_ref and results:
+                    for r in results:
+                        u = r.get("url", "")
+                        if "guiadosquadrinhos.com/edicao/" in u:
+                            url_ref = u
+                            break
+                reserp_text = "\n\n".join([r.get("text", "") for r in results[:5] if r.get("text")])
             except Exception as e:
                 print(f"Erro Reserp: {e}")
 
