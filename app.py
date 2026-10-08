@@ -371,8 +371,11 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
 
         if st.button("🚀 Extrair Dados com IA (Gemini)", key=f"btn_extrair_reserp_{val_id}", type="primary", use_container_width=True):
             with st.spinner("🤖 Interpretando dados das fontes com a IA Gemini..."):
-                prompt_llm = f"""Você é um extrator de dados ESTRITO da enciclopédia GUIA DOS QUADRINHOS.
-Seu objetivo é extrair UNICAMENTE informações confirmadas para a EDIÇÃO BRASILEIRA: "{titulo}" - Edição/Volume: "{edicao}" (Editora: {editora}).
+                prompt_llm = f"""Você é o especialista mestre na enciclopédia GUIA DOS QUADRINHOS e nos quadrinhos publicados no Brasil.
+Seu objetivo é extrair e estruturar com máxima precisão a ficha técnica completa para a EDIÇÃO BRASILEIRA:
+Título: "{titulo}"
+Edição/Volume: "{edicao}"
+Editora: "{editora}"
 
 Fontes e textos coletados na web:
 ---
@@ -380,15 +383,13 @@ Fontes e textos coletados na web:
 ---
 Link oficial da edição no Guia dos Quadrinhos: {link_gq_encontrado or 'Não identificado'}
 
-REGRAS CRÍTICAS CONTRA ALUCINAÇÃO (LEIA COM MÁXIMA ATENÇÃO):
-1. BASEIE-SE ESTRITAMENTE NO TEXTO FORNECIDO: Extraia APENAS o que estiver explicitamente escrito nos blocos de texto acima.
-2. É ESTRITAMENTE PROIBIDO inventar, deduzir ou resgatar histórias, roteiristas ou desenhistas da sua memória para outras séries/editoras (exemplo: NÃO traga dados da Panini se a edição for da Abril, e vice-versa; NÃO invente histórias de outras edições).
-3. Se os textos/snippets acima NÃO contiverem a lista detalhada de histórias desta edição específica, retorne "resumo": "" (ou descreva apenas os dados gerais comprovados no texto fornecido). NÃO invente histórias como "Planeta X", "Ela Deita com Anjos", "A Caminho de Casa", "O Beijo da Morte" etc., se não constarem no texto acima.
-4. "roteiro": Extrair APENAS os roteiristas citados no texto fornecido. Se não houver nenhum explicitamente citado, retorne "".
-5. "ilustrador": Extrair APENAS os ilustradores/artistas citados no texto fornecido. Se não houver nenhum, retorne "".
-6. "valor": Preço oficial de capa em reais encontrado no texto (número float, ex: 2.30 ou null).
-7. "capa": URL direta da capa se identificada no texto ou padrão ShowImage.aspx.
-8. "link_edicao": Link canônico oficial da edição (ex: "{link_gq_encontrado}").
+DIRETRIZES DE EXTRAÇÃO E PREENCHIMENTO:
+1. "roteiro": Identifique o(s) roteirista(s) principal(is) desta edição específica "{titulo} nº {edicao}" da editora "{editora}". Se houver mais de um, separe por vírgula.
+2. "ilustrador": Identifique o(s) desenhista(s)/artista(s) desta edição específica.
+3. "valor": Preço oficial de capa em reais (número float, ex: 4.40 se presente no texto/snippet, ou 0.0).
+4. "resumo": Monte um resumo rico e fiel contendo a sinopse da edição e a lista de histórias que compõem este volume específico da {editora}.
+5. "capa": Extraia ou confirme a URL da imagem da capa oficial da edição (ShowImage.aspx ou link de imagem).
+6. "link_edicao": Link canônico oficial da edição no Guia dos Quadrinhos (ex: "{link_gq_encontrado}").
 
 Retorne ESTRITAMENTE um JSON com as chaves:
 {{
