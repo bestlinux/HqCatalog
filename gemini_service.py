@@ -124,7 +124,7 @@ def get_gemini_client(api_key: Optional[str] = None) -> Any:
         )
     if types is not None and hasattr(types, "HttpOptions"):
         try:
-            return genai.Client(api_key=key, http_options=types.HttpOptions(timeout=12000))
+            return genai.Client(api_key=key, http_options=types.HttpOptions(timeout=90000))
         except Exception:
             pass
     return genai.Client(api_key=key)
@@ -979,7 +979,7 @@ def buscar_capas_online(
     1. Bing Images Scraper (Imagens reais em HD de Panini, Amazon, Guia dos Quadrinhos, MercadoLivre, ComicVine)
     2. Apple Books / iTunes Search API (Artes oficiais em alta resolução 800x800)
     3. OpenLibrary Covers API
-    4. SerpApi Google Images (se configurada)
+    4. Reserp.ai Google Search (Capas e Páginas do Guia dos Quadrinhos)
     
     Aplica validação concorrente ultra-rápida (HTTP HEAD/GET) para garantir que ZERO imagens venham quebradas
     e retorna o resultado em menos de 3 segundos.
@@ -1089,76 +1089,72 @@ def buscar_capas_online(
             termos_busca.append(v_en)
             break
 
-    # 1. PROVEDOR 1: Apple Books / iTunes Search API (BR e US em paralelo)
+    # 1. PROVEDOR 1: Bing Images Scraper (Imagens reais em HD de Panini, Excelsior, MercadoLivre, We-R-Comics, etc.)
     if requests is not None:
-        def _fetch_itunes(termo_e_pais):
-            termo, pais = termo_e_pais
-            try:
-                r_it = requests.get(
-                    "https://itunes.apple.com/search",
-                    params={"term": termo, "media": "ebook", "country": pais, "limit": 6},
-                    headers=headers_web,
-                    timeout=2.0
-                )
-                if r_it.status_code == 200:
-                    return r_it.json().get("results", [])
-            except Exception:
-                pass
-            return []
-
-        payload_it = [(t, "BR") for t in termos_busca[:2]] + [(t, "US") for t in termos_busca[:2]]
-        with ThreadPoolExecutor(max_workers=4) as ex_it:
-            for results in ex_it.map(_fetch_itunes, payload_it):
-                for item in results:
-                    art = item.get("artworkUrl100") or ""
-                    item_tit = item.get("trackName") or ""
-                    if art:
-                        highres = art.replace("100x100bb.jpg", "800x800bb.jpg").replace("100x100bb.png", "800x800bb.png")
-                        add_candidata(highres, item_tit, "Apple Books (HD Oficial)", art)
-
-    # 2. PROVEDOR 2: OpenLibrary Covers API
-    if requests is not None:
-        def _fetch_openlibrary(termo):
-            try:
-                r_ol = requests.get(
-                    "https://openlibrary.org/search.json",
-                    params={"q": termo, "limit": 6},
-                    headers={"User-Agent": "HqCatalog/1.0"},
-                    timeout=2.0
-                )
-                if r_ol.status_code == 200:
-                    return r_ol.json().get("docs", [])
-            except Exception:
-                pass
-            return []
-
-        with ThreadPoolExecutor(max_workers=3) as ex_ol:
-            for docs in ex_ol.map(_fetch_openlibrary, termos_busca[:3]):
-                for doc in docs:
-                    cover_i = doc.get("cover_i")
-                    doc_tit = doc.get("title") or ""
-                    if cover_i:
-                        c_url = f"https://covers.openlibrary.org/b/id/{cover_i}-L.jpg"
-                        c_thumb = f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg"
-                        add_candidata(c_url, doc_tit, "OpenLibrary (HD)", c_thumb)
-
-    # 3. PROVEDOR 3: SerpApi Google Images (se configurada e com cota)
-    serp_key = os.getenv("SERPAPI_API_KEY", "")
-    if serp_key and len(capas_candidatas) < limite * 2:
         try:
-            import serpapi
-            client_serp = serpapi.Client(api_key=serp_key)
-            query_serp = f"{titulo_limpo} {edicao} {editora} capa gibi HQ".strip()
-            res_serp = client_serp.search({"engine": "google_images", "q": query_serp, "gl": "br", "hl": "pt-br", "num": 8})
-            for img_it in res_serp.get("images_results", []):
-                orig = img_it.get("original") or ""
-                thumb = img_it.get("thumbnail") or ""
-                tit_img = img_it.get("title") or titulo_limpo
-                url_final = thumb if ("guiadosquadrinhos.com" in orig.lower() or "ShowImage.aspx" in orig) else (orig or thumb)
-                if url_final:
-                    add_candidata(url=url_final, tit=tit_img, fonte="Google Images (HD)", thumb=thumb or url_final)
-        except Exception:
-            pass
+            queries_bing = [
+                f"{titulo_limpo} {edicao} {editora} capa gibi".strip(),
+                f"{titulo_sem_pont} {num_num} {editora} capa".strip() if num_num else f"{titulo_sem_pont} {editora} capa".strip()
+            ]
+            for q_b in queries_bing:
+                url_b = f"https://www.bing.com/images/search?q={urllib.parse.quote(q_b)}&FORM=HDRSC2"
+                r_b = requests.get(url_b, headers=headers_web, timeout=3.5)
+                if r_b.status_code == 200:
+                    m_urls = re.findall(r'murl&quot;:&quot;(http[^&]+)&quot;.*?t1&quot;:&quot;([^&]+)&quot;', r_b.text)
+                    for m_u, m_t in m_urls:
+                        add_candidata(m_u, html.unescape(m_t), "Bing Imagens (Web HD)", m_u)
+                    if not m_urls:
+                        raw_items = re.findall(r'm="({.*?})"', r_b.text)
+                        for raw in raw_items:
+                            try:
+                                import json as _json
+                                d_b = _json.loads(html.unescape(raw))
+                                u_b = d_b.get("murl")
+                                t_b = d_b.get("t") or d_b.get("desc") or titulo_limpo
+                                th_b = d_b.get("turl") or u_b
+                                if u_b:
+                                    add_candidata(u_b, t_b, "Bing Imagens (Web HD)", th_b)
+                            except Exception:
+                                pass
+                if len(capas_candidatas) >= limite:
+                    break
+        except Exception as ex_bing:
+            print(f"[Aviso Bing Images Scraper: {ex_bing}]")
+
+    # 2. PROVEDOR 2: Reserp.ai Google Search & Comic Store HD Covers
+    if requests is not None:
+        try:
+            q_reserp = f"{titulo_limpo} {edicao} {editora} capa gibi".strip()
+            res_reserp = pesquisar_reserp_google(q_reserp, timeout=8)
+            paginas_para_og = []
+            for r_item in res_reserp:
+                r_url = r_item.get("url") or ""
+                r_tit = r_item.get("title") or (r_item.get("text", "").splitlines()[0] if r_item.get("text") else titulo_limpo)
+                
+                # Se o item do Reserp possuir thumbnail direta
+                thumb_reserp = r_item.get("thumbnail") or r_item.get("thumbnail_url") or r_item.get("image") or r_item.get("og_image")
+                if thumb_reserp and isinstance(thumb_reserp, str) and thumb_reserp.startswith("http"):
+                    add_candidata(
+                        url=thumb_reserp,
+                        tit=r_tit or titulo_limpo,
+                        fonte="Google Imagens (Reserp.ai)",
+                        thumb=thumb_reserp
+                    )
+                elif any(loja in r_url for loja in ["excelsiorcomics", "mercadolivre", "shopee", "rika.com.br", "planetagibi", "seborsraridades", "estantevirtual", "loja.corsaria"]):
+                    paginas_para_og.append((r_url, r_tit))
+            
+            if paginas_para_og:
+                with ThreadPoolExecutor(max_workers=5) as ex_og:
+                    futures = [ex_og.submit(extrair_og_image, p_url) for p_url, _ in paginas_para_og]
+                    for (p_url, p_tit), fut in zip(paginas_para_og, futures):
+                        try:
+                            og_img = fut.result()
+                            if og_img:
+                                add_candidata(og_img, p_tit, "Loja de Quadrinhos (Web)", og_img)
+                        except Exception:
+                            pass
+        except Exception as ex_rc:
+            print(f"[Aviso Reserp.ai Busca de Capas: {ex_rc}]")
 
     # -------------------------------------------------------------
     # VALIDAÇÃO CONCORRENTE RÁPIDA (Zero imagens quebradas)
@@ -1211,7 +1207,12 @@ def buscar_capas_online(
     # Ranking e pontuação de relevância das capas validadas
     def _score_capa(item: Dict[str, str]) -> int:
         tit_c = normalizar_str_busca(item.get("titulo", ""))
+        fonte = (item.get("fonte") or "").lower()
         score = 0
+        if "guia dos quadrinhos" in fonte:
+            score += 150
+        elif "reserp" in fonte or "google" in fonte:
+            score += 50
         if palavras_titulo and all(p in tit_c for p in palavras_titulo):
             score += 60
         for p in palavras_titulo:
@@ -1219,13 +1220,13 @@ def buscar_capas_online(
                 score += 15
         if num_num:
             if f"n {num_num}" in tit_c or f"nº {num_num}" in tit_c or f"vol {num_num}" in tit_c or f"volume {num_num}" in tit_c or f" {num_num} " in f" {tit_c} ":
-                score += 40
+                score += 50
             else:
                 m_outro = re.findall(r"\b(?:vol(?:ume)?|n[oº°]?|#)\s*(\d+)\b", tit_c)
                 if m_outro and num_num not in m_outro:
-                    score -= 25
+                    score -= 50
         if editora and normalizar_str_busca(editora) in tit_c:
-            score += 20
+            score += 30
         return score
 
     capas_validadas.sort(key=_score_capa, reverse=True)
@@ -3185,28 +3186,52 @@ def obter_dados_canonicos_guia_dos_quadrinhos(titulo: str, edicao: str = "", edi
 def derivar_url_capa_guia_dos_quadrinhos(url_edicao: str, editora: str = "", edicao: str = "") -> str:
     """
     Deriva a URL direta de ShowImage.aspx a partir da URL da edição no Guia dos Quadrinhos.
-    Exemplo: https://www.guiadosquadrinhos.com/edicao/wolverine21/wo00302/8733
-    -> https://www.guiadosquadrinhos.com/edicao/ShowImage.aspx?id=8733&path=abril/w/wo00302021.jpg&w=400&h=573
+    Exemplo: https://www.guiadosquadrinhos.com/edicao/x-men-1-serie-n-120/xmn0303/8962
+    -> http://www.guiadosquadrinhos.com/edicao/ShowImage.aspx?id=8962&path=abril/x/xmn03030120.jpg
     """
     if not url_edicao or "/edicao/" not in url_edicao:
         return ""
-    m = re.search(r"/edicao/[^/]+/([a-zA-Z0-9]+)/(\d+)", url_edicao)
+    m = re.search(r"/edicao/([^/]+)/([a-zA-Z0-9]+)/(\d+)", url_edicao)
     if not m:
         return ""
-    codigo_serie, id_edicao = m.group(1), m.group(2)
+    slug_edicao, codigo_serie, id_edicao = m.group(1), m.group(2), m.group(3)
+    
     num_num = re.sub(r"[^\d]", "", edicao or "")
     if not num_num:
-        return ""
+        m_slug = re.search(r"-n-(\d+)", slug_edicao)
+        if m_slug:
+            num_num = m_slug.group(1)
+        else:
+            m_slug_any = re.findall(r"\d+", slug_edicao)
+            if m_slug_any:
+                num_num = m_slug_any[-1]
+
+    if not num_num:
+        return f"http://www.guiadosquadrinhos.com/edicao/ShowImage.aspx?id={id_edicao}"
+
     try:
         num_int = int(num_num)
-        ed_pad = f"{num_int:03d}" if num_int < 1000 else f"{num_int:04d}"
+        ed_pad = f"{num_int:04d}"
     except Exception:
-        ed_pad = num_num.zfill(3)
+        ed_pad = num_num.zfill(4)
 
     edit_slug = normalizar_str_busca(editora).strip() if editora else "abril"
+    if "panini" in edit_slug:
+        edit_slug = "panini"
+    elif "abril" in edit_slug:
+        edit_slug = "abril"
+    elif "globo" in edit_slug:
+        edit_slug = "globo"
+    elif "bloch" in edit_slug:
+        edit_slug = "bloch"
+    elif "eaglemoss" in edit_slug:
+        edit_slug = "eaglemoss"
+    elif "salvat" in edit_slug:
+        edit_slug = "salvat"
+
     sub_letra = codigo_serie[0].lower() if codigo_serie else "a"
     path_img = f"{edit_slug}/{sub_letra}/{codigo_serie}{ed_pad}.jpg"
-    return f"https://www.guiadosquadrinhos.com/edicao/ShowImage.aspx?id={id_edicao}&path={path_img}&w=400&h=573"
+    return f"http://www.guiadosquadrinhos.com/edicao/ShowImage.aspx?id={id_edicao}&path={path_img}"
 
 
 # =============================================================
@@ -3463,66 +3488,113 @@ def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dic
     if m_for:
         res["formato"] = m_for.group(1).strip()
 
-    # Capa oficial no Guia dos Quadrinhos
-    for img in soup.find_all("img"):
-        src = img.get("src") or ""
-        if "ShowImage.aspx" in src and "path=" in src:
-            if "guiadosquadrinhos.com" in src:
-                idx_gq = src.find("guiadosquadrinhos.com")
-                src = "https://www." + src[idx_gq:]
-            elif not src.startswith("http"):
-                src = f"https://www.guiadosquadrinhos.com/{src.lstrip('/')}"
-            res["capa_url"] = src
-            break
+    # Capa oficial no Guia dos Quadrinhos (id="ampliar_capa" ou tags img)
+    ampliar_tag = soup.find(id="ampliar_capa")
+    if ampliar_tag:
+        href_amp = ampliar_tag.get("href") or ""
+        img_amp = ampliar_tag.find("img")
+        src_amp = img_amp.get("src") if img_amp else ""
+        cand = href_amp or src_amp
+        if cand:
+            if cand.startswith("/"):
+                cand = "https://www.guiadosquadrinhos.com" + cand
+            elif not cand.startswith("http"):
+                cand = "https://www.guiadosquadrinhos.com/" + cand
+            res["capa_url"] = cand
 
-    # Histórias (div.historia e nós irmãos correspondentes)
-    hists_divs = soup.find_all("div", class_="historia")
+    if not res.get("capa_url"):
+        for img in soup.find_all("img"):
+            src = img.get("src") or ""
+            if "ShowImage.aspx" in src and "path=" in src:
+                if "guiadosquadrinhos.com" in src:
+                    idx_gq = src.find("guiadosquadrinhos.com")
+                    src = "https://www." + src[idx_gq:]
+                elif not src.startswith("http"):
+                    src = f"https://www.guiadosquadrinhos.com/{src.lstrip('/')}"
+                res["capa_url"] = src
+                break
+
+    # Se ainda não encontrou e temos a URL da edição, deriva a URL da capa
+    if not res.get("capa_url") and url_orig:
+        derived = derivar_url_capa_guia_dos_quadrinhos(url_orig, res.get("editora", ""), res.get("edicao", ""))
+        if derived:
+            res["capa_url"] = derived
+
+    # Histórias (div.historia e nós irmãos correspondentes até a próxima div.historia)
+    hists_divs = soup.find_all(lambda tag: tag.name == "div" and tag.get("class") and "historia" in tag.get("class"))
     roteiristas_set = []
     desenhistas_set = []
+    artistas_gerais_set = []
     historias_lista = []
 
     for h_div in hists_divs:
         tit_hist = h_div.get_text(strip=True)
+        if not tit_hist:
+            continue
+            
         personagens_hist = []
         rot_hist = []
         art_hist = []
         origem_hist = ""
+        sinopse_textos = []
 
         curr = h_div.next_sibling
         tipo_campo = None
 
         while curr:
+            # Para ao encontrar a próxima história
             if hasattr(curr, "get") and curr.get("class") and "historia" in curr.get("class"):
                 break
+            
+            # Se for elemento HTML
             if hasattr(curr, "name") and curr.name:
+                # Se for container de comentários, rodapé ou propagandas, encerra
+                c_class = str(curr.get("class") or "").lower()
+                c_id = str(curr.get("id") or "").lower()
+                if any(x in c_class or x in c_id for x in ["comentario", "rodape", "footer", "publicidade", "banner"]):
+                    break
+                
                 txt_node = curr.get_text(strip=True)
                 if curr.name == "strong":
                     if "Personagens:" in txt_node:
                         tipo_campo = "personagens"
                     elif any(w in txt_node for w in ["Roteiro:", "Argumento:", "Texto:"]):
                         tipo_campo = "roteiro"
-                    elif any(w in txt_node for w in ["Desenho:", "Arte:", "Arte-Final:"]):
+                    elif any(w in txt_node for w in ["Desenho:", "Arte:", "Arte-Final:", "Cores:"]):
                         tipo_campo = "arte"
                     else:
                         tipo_campo = None
                 elif curr.name == "a":
                     if tipo_campo == "personagens":
-                        if txt_node not in personagens_hist:
+                        if txt_node and txt_node not in personagens_hist:
                             personagens_hist.append(txt_node)
                     elif tipo_campo == "roteiro":
-                        if txt_node not in rot_hist:
+                        if txt_node and txt_node not in rot_hist:
                             rot_hist.append(txt_node)
-                        if txt_node not in roteiristas_set:
+                        if txt_node and txt_node not in roteiristas_set:
                             roteiristas_set.append(txt_node)
                     elif tipo_campo == "arte":
-                        if txt_node not in art_hist:
+                        if txt_node and txt_node not in art_hist:
                             art_hist.append(txt_node)
-                        if txt_node not in desenhistas_set:
+                        if txt_node and txt_node not in desenhistas_set:
                             desenhistas_set.append(txt_node)
+                        if txt_node and txt_node not in artistas_gerais_set:
+                            artistas_gerais_set.append(txt_node)
                     elif "Publicada pela primeira vez" in txt_node or (curr.previous_sibling and "Publicada pela primeira vez" in str(curr.previous_sibling)):
                         origem_hist = txt_node
                 elif "Publicada pela primeira vez em" in txt_node:
                     origem_hist = txt_node.replace("Publicada pela primeira vez em", "").strip()
+                elif curr.name in ["p", "span", "div"] and txt_node:
+                    # Captura texto de sinopse/enredo que não seja cabeçalho de metadados
+                    if not any(k in txt_node.lower() for k in ["personagens:", "roteiro:", "desenho:", "publicada pela primeira"]):
+                        if len(txt_node) > 10 and txt_node not in sinopse_textos:
+                            sinopse_textos.append(txt_node)
+            elif isinstance(curr, str):
+                # Texto puro entre tags
+                s_raw = curr.strip()
+                if s_raw and len(s_raw) > 10 and not any(k in s_raw.lower() for k in ["personagens:", "roteiro:", "desenho:"]):
+                    if s_raw not in sinopse_textos:
+                        sinopse_textos.append(s_raw)
 
             curr = curr.next_sibling
 
@@ -3531,29 +3603,36 @@ def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dic
             "personagens": ", ".join(personagens_hist),
             "roteiro": ", ".join(rot_hist),
             "arte": ", ".join(art_hist),
-            "origem": origem_hist
+            "origem": origem_hist,
+            "sinopse": " ".join(sinopse_textos)
         })
 
-    res["roteiro"] = ", ".join(roteiristas_set)
-    res["desenho"] = ", ".join(desenhistas_set)
+    # Regra: Se não houver campo de Roteiro/Argumento, usa o campo Arte para o Roteiro
+    if not roteiristas_set and artistas_gerais_set:
+        res["roteiro"] = ", ".join(artistas_gerais_set)
+    else:
+        res["roteiro"] = ", ".join(roteiristas_set)
+
+    res["desenho"] = ", ".join(desenhistas_set) if desenhistas_set else ", ".join(artistas_gerais_set)
     res["historias"] = historias_lista
 
-    # Resumo consolidado das histórias
+    # Resumo consolidado de todas as histórias (div.historia) com detalhes completos
     if historias_lista:
-        linhas_resumo = [f"Edição compilando {len(historias_lista)} histórias:"]
+        linhas_resumo = []
         for idx, h in enumerate(historias_lista, start=1):
-            info_h = [f"{idx}. «{h['titulo']}»"]
-            det = []
+            bloco_h = [f"{idx}. «{h['titulo']}»"]
             if h.get("origem"):
-                det.append(f"Origem: {h['origem']}")
+                bloco_h.append(f"   • Publicação Original: {h['origem']}")
             if h.get("roteiro"):
-                det.append(f"Roteiro: {h['roteiro']}")
+                bloco_h.append(f"   • Roteiro: {h['roteiro']}")
             if h.get("arte"):
-                det.append(f"Arte: {h['arte']}")
-            if det:
-                info_h.append(f"({'; '.join(det)})")
-            linhas_resumo.append(" ".join(info_h))
-        res["resumo"] = "\n".join(linhas_resumo)
+                bloco_h.append(f"   • Arte/Desenho: {h['arte']}")
+            if h.get("personagens"):
+                bloco_h.append(f"   • Personagens: {h['personagens']}")
+            if h.get("sinopse"):
+                bloco_h.append(f"   • Sinopse: {h['sinopse']}")
+            linhas_resumo.append("\n".join(bloco_h))
+        res["resumo"] = "\n\n".join(linhas_resumo)
 
     return res
 
@@ -3568,7 +3647,7 @@ def extrair_dados_texto_ou_html_gq(conteudo: str, url_orig: str = "") -> Dict[st
         return {}
     
     # Se for HTML com tags, usa o parser HTML
-    if "<div" in conteudo or "<html" in conteudo or "<body" in conteudo:
+    if "<div" in conteudo or "<html" in conteudo or "<body" in conteudo or "<table" in conteudo:
         return extrair_dados_html_guia_dos_quadrinhos(conteudo, url_orig)
 
     res = {
@@ -3623,6 +3702,7 @@ def extrair_dados_texto_ou_html_gq(conteudo: str, url_orig: str = "") -> Dict[st
     # Roteiristas, Desenhistas e Histórias
     roteiristas = []
     desenhistas = []
+    artistas_gerais = []
     historias = []
     linhas = [l.strip() for l in conteudo.splitlines() if l.strip()]
 
@@ -3640,13 +3720,19 @@ def extrair_dados_texto_ou_html_gq(conteudo: str, url_orig: str = "") -> Dict[st
                 d_clean = d_item.strip()
                 if d_clean and d_clean not in desenhistas and len(d_clean) > 2:
                     desenhistas.append(d_clean)
+                if d_clean and d_clean not in artistas_gerais and len(d_clean) > 2:
+                    artistas_gerais.append(d_clean)
         elif (i + 1 < len(linhas)) and any(linhas[i+1].lower().startswith(k) for k in ["personagens:", "roteiro:", "argumento:"]):
             if not any(line_s.lower().startswith(ign) for ign in ["personagens:", "roteiro:", "argumento:", "desenho:", "arte:", "cores:", "letrista:", "tradutor:", "publicada", "histórias", "ficha técnica", "publicado em", "editora", "licenciador", "gênero", "status", "número de páginas", "formato", "preço"]):
                 if line_s not in historias and len(line_s) > 2:
                     historias.append(line_s)
 
-    res["roteiro"] = ", ".join(roteiristas)
-    res["desenho"] = ", ".join(desenhistas)
+    if not roteiristas and artistas_gerais:
+        res["roteiro"] = ", ".join(artistas_gerais)
+    else:
+        res["roteiro"] = ", ".join(roteiristas)
+
+    res["desenho"] = ", ".join(desenhistas) if desenhistas else ", ".join(artistas_gerais)
 
     # Capa (ShowImage.aspx ou URL de imagem)
     m_capa = re.search(r'(https?://[^\s"\'<>]*ShowImage\.aspx[^\s"\'<>]*)', conteudo, re.I)
@@ -3856,11 +3942,71 @@ def buscar_fontes_hq_reserp(
     textos = []
     urls_vistas = set()
 
-    # Ordena para colocar páginas de edição direta (/edicao/) em primeiro lugar
-    raw_results_ordenados = sorted(
-        raw_results,
-        key=lambda item: 0 if "/edicao/" in (item.get("url") or "") else 1
-    )
+    # Identifica primeiramente se há link de edição direta
+    for r in raw_results:
+        u = r.get("url") or ""
+        if "guiadosquadrinhos.com/edicao/" in u:
+            link_gq = u
+            break
+
+    # Se identificou o link da edição ou tem edição/título específicos, faz uma busca direcionada de enriquecimento
+    snippets_enriquecimento = []
+    if link_gq or (t and e):
+        m_slug = re.search(r"/edicao/([^/]+)/", link_gq) if link_gq else None
+        slug = m_slug.group(1) if m_slug else ""
+        
+        queries_enriquecimento = []
+        if slug:
+            queries_enriquecimento.append(f'"{slug}" site:guiadosquadrinhos.com')
+        if t and e:
+            queries_enriquecimento.append(f'"{t}" "{e}" "{ed}" "Argumento"')
+            queries_enriquecimento.append(f'"{t} 1ª Série - nº {e}/{ed}"' if ed else f'"{t} - nº {e}"')
+
+        for q_enr in queries_enriquecimento[:2]:
+            try:
+                res_enr = pesquisar_reserp_google(q_enr, api_key=api_key)
+                for r_enr in res_enr:
+                    u_enr = r_enr.get("url") or ""
+                    if (link_gq and u_enr == link_gq) or (slug and slug in u_enr) or ("guiadosquadrinhos.com/edicao/" in u_enr):
+                        if not link_gq and "guiadosquadrinhos.com/edicao/" in u_enr:
+                            link_gq = u_enr
+                        txt_enr = r_enr.get("text") or r_enr.get("snippet") or ""
+                        if txt_enr and txt_enr not in snippets_enriquecimento:
+                            snippets_enriquecimento.append(txt_enr)
+                            # Adiciona também aos raw_results no topo
+                            raw_results.insert(0, r_enr)
+            except Exception:
+                pass
+
+        m_id = re.search(r"/(\d+)$", link_gq) if link_gq else None
+        id_ed_str = m_id.group(1) if m_id else ""
+
+        def calc_prioridade(item):
+            u = item.get("url") or ""
+            txt = (item.get("text") or item.get("snippet") or "").lower()
+            # 0: URL exata da edição no Guia dos Quadrinhos
+            if link_gq and u == link_gq:
+                return 0
+            # 1: URL com o mesmo ID da edição
+            if id_ed_str and f"/{id_ed_str}" in u:
+                return 1
+            # 2: URL que contém o slug da edição
+            if slug and slug in u:
+                return 2
+            # 3: Texto que menciona explicitamente a edição buscada
+            if e and (f"nº {e}" in txt or f"n° {e}" in txt or f"n. {e}" in txt or f"#{e}" in txt or f" {e}/" in txt or f"edição {e}" in txt):
+                return 3
+            # 4: Outras edições do Guia dos Quadrinhos (rebaixadas para evitar contaminação)
+            if "/edicao/" in u:
+                return 5
+            return 4
+
+        raw_results_ordenados = sorted(raw_results, key=calc_prioridade)
+    else:
+        raw_results_ordenados = sorted(
+            raw_results,
+            key=lambda item: 0 if "/edicao/" in (item.get("url") or "") else 1
+        )
 
     for r in raw_results_ordenados:
         meta = extrair_metadados_item_reserp(r)

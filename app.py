@@ -314,11 +314,19 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
         btn_limpar = st.button("🔄 Nova Busca", key=f"btn_limpar_reserp_{val_id}", use_container_width=True)
 
     session_reserp_key = f"reserp_fontes_data_{val_id}"
-    if btn_limpar and session_reserp_key in st.session_state:
-        del st.session_state[session_reserp_key]
+    termo_cache_key = f"termo_reserp_cache_{val_id}"
+    input_key = f"input_reserp_query_{val_id}"
+
+    if btn_limpar:
+        st.session_state.pop(session_reserp_key, None)
+        st.session_state.pop(termo_cache_key, None)
+        st.session_state.pop(input_key, None)
         st.rerun()
 
-    if btn_pesquisar or (session_reserp_key not in st.session_state):
+    termo_mudou = st.session_state.get(termo_cache_key) != termo_busca.strip()
+    sem_fontes = not bool(st.session_state.get(session_reserp_key, {}).get("fontes"))
+
+    if btn_pesquisar or termo_mudou or (session_reserp_key not in st.session_state) or sem_fontes:
         with st.spinner("🔍 Consultando Google via Reserp.ai (sem bloqueios)..."):
             fn_fontes = getattr(gemini_service, "buscar_fontes_hq_reserp", None)
             dados_fontes = {}
@@ -333,16 +341,17 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
                 except Exception as ex_f:
                     st.error(f"Erro na consulta Reserp.ai: {ex_f}")
             st.session_state[session_reserp_key] = dados_fontes
+            st.session_state[termo_cache_key] = termo_busca.strip()
 
     res_busca = st.session_state.get(session_reserp_key, {})
-    fontes_lista = res_busca.get("fontes", [])
+    fontes_lista = res_busca.get("fontes", [])[:2]
     link_gq_encontrado = res_busca.get("link_guia_dos_quadrinhos", "")
     texto_reserp = res_busca.get("texto_consolidado", "")
 
     if fontes_lista:
         st.success(f"✨ Encontrada(s) **{len(fontes_lista)}** fonte(s) na web!")
         
-        for idx, fonte in enumerate(fontes_lista[:4]):
+        for idx, fonte in enumerate(fontes_lista):
             f_tit = fonte.get("titulo") or "Página Encontrada"
             f_url = fonte.get("url") or ""
             f_res = fonte.get("resumo") or ""
@@ -358,24 +367,31 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
         st.markdown("---")
         st.markdown("#### 🤖 Extração Inteligente com IA")
         
-        if st.button("🚀 Extrair Dados das Fontes e Salvar no Banco", key=f"btn_extrair_reserp_{val_id}", type="primary", use_container_width=True):
+        session_extraidos_key = f"dados_extraidos_fonte_{val_id}"
+
+        if st.button("🚀 Extrair Dados com IA (Gemini)", key=f"btn_extrair_reserp_{val_id}", type="primary", use_container_width=True):
             with st.spinner("🤖 Interpretando dados das fontes com a IA Gemini..."):
-                prompt_llm = f"""Você é um especialista em catálogo de Histórias em Quadrinhos e enciclopédias editoriais.
-Analise os dados e textos extraídos via busca web (Reserp.ai / Google) sobre a edição: "{titulo}".
+                prompt_llm = f"""Você é o especialista mestre na enciclopédia GUIA DOS QUADRINHOS (guiadosquadrinhos.com).
+Analise com precisão absoluta as fontes e snippets para a EDIÇÃO BRASILEIRA: "{titulo}" - Edição/Volume: "{edicao}" (Editora: {editora}).
 
-Fontes e textos da web:
+Fontes e textos coletados na web:
 ---
-{texto_reserp[:12000]}
+{texto_reserp[:14000]}
 ---
-Link oficial da edição: {link_gq_encontrado or 'Não identificado'}
+Link oficial da edição no Guia dos Quadrinhos: {link_gq_encontrado or 'Não identificado'}
 
-Extraia com total fidelidade:
-1. "roteiro": Nome dos roteiristas / escritores (ex: "Alan Moore, Dave Gibbons").
-2. "ilustrador": Nome dos desenhistas / arte (ex: "Dave Gibbons").
-3. "valor": Preço de capa em reais (float numérico, ex: 29.90, ou null se não houver).
-4. "resumo": Sinopse / resumo completo das histórias contidas nesta edição.
-5. "capa": URL direta da imagem da capa se encontrada em alta resolução (ou null).
-6. "link_edicao": Link canônico da edição no Guia dos Quadrinhos se presente (ou "{link_gq_encontrado}").
+DIRETRIZES DE FIDELIDADE:
+1. FOCO EXCLUSIVO: Concentre-se apenas nas informações que pertencem à edição {edicao} da publicação brasileira "{titulo}" (Editora: {editora}). Ignore dados de outras edições.
+2. REGRA DE EXTRAÇÃO DE HISTÓRIAS (TAG <div class="historia">):
+   - Extraia TODAS as histórias da edição. Cada história começa em sua tag <div class="historia">Título</div> (ou pelo título da história) e vai até a próxima tag de história.
+   - Quando não houver mais tags de história, encerra a lista.
+   - Para cada história, capture todos os dados: Título, Publicação Original, Roteiristas/Argumentistas, Artistas/Desenhistas, Personagens e Sinopse/Enredo.
+   - No campo "resumo", monte o resumo completo compilando todas as histórias enumeradas.
+3. "roteiro": Extrair TODOS os roteiristas de todas as histórias da edição brasileira (separados por vírgula). Se não houver roteirista informado, use os ilustradores.
+4. "ilustrador": Extrair TODOS os artistas/desenhistas de todas as histórias da edição (separados por vírgula).
+5. "valor": Preço oficial de capa em reais (número float, ex: 2.30 ou 29.90, ou null).
+6. "capa": Extrair a URL direta da imagem da capa da edição (formato ShowImage.aspx ou tag <meta property="og:image">).
+7. "link_edicao": Link canônico direto da página da edição no Guia dos Quadrinhos (ex: "{link_gq_encontrado}").
 
 Retorne ESTRITAMENTE um JSON com as chaves:
 {{
@@ -388,16 +404,35 @@ Retorne ESTRITAMENTE um JSON com as chaves:
 }}
 """
                 cliente = gemini_service.get_gemini_client()
-                modelos = ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite']
+                modelos = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite']
                 resposta = None
+                modelo_usado = None
                 ultimo_erro = None
+                config_gen = None
+                if gemini_service.types is not None and hasattr(gemini_service.types, "GenerateContentConfig"):
+                    try:
+                        config_gen = gemini_service.types.GenerateContentConfig(
+                            temperature=0.1,
+                            response_mime_type="application/json"
+                        )
+                    except Exception:
+                        config_gen = None
+
                 for mod in modelos:
                     try:
-                        resposta = cliente.models.generate_content(
-                            model=mod,
-                            contents=prompt_llm
-                        )
+                        if config_gen is not None:
+                            resposta = cliente.models.generate_content(
+                                model=mod,
+                                contents=prompt_llm,
+                                config=config_gen
+                            )
+                        else:
+                            resposta = cliente.models.generate_content(
+                                model=mod,
+                                contents=prompt_llm
+                            )
                         if resposta and resposta.text:
+                            modelo_usado = mod
                             break
                     except Exception as ai_err:
                         ultimo_erro = ai_err
@@ -405,74 +440,224 @@ Retorne ESTRITAMENTE um JSON com as chaves:
 
                 if not resposta or not resposta.text:
                     st.error(f"Erro ao processar com a IA: {ultimo_erro}")
-                    return
-
-                dados = gemini_service.limpar_e_parsear_json_dict(resposta.text)
-                if dados:
-                    campos_update = []
-                    valores_update = []
-                    
-                    if dados.get("roteiro") and str(dados["roteiro"]).lower() not in ["null", "none", ""]:
-                        campos_update.append("escritor = ?")
-                        valores_update.append(str(dados["roteiro"]).strip())
-                    if dados.get("ilustrador") and str(dados["ilustrador"]).lower() not in ["null", "none", ""]:
-                        campos_update.append("ilustrador = ?")
-                        valores_update.append(str(dados["ilustrador"]).strip())
-                    if dados.get("resumo") and str(dados["resumo"]).lower() not in ["null", "none", ""]:
-                        campos_update.append("resumo = ?")
-                        valores_update.append(str(dados["resumo"]).strip())
-                    if dados.get("valor") is not None:
+                else:
+                    dados = gemini_service.limpar_e_parsear_json_dict(resposta.text)
+                    if dados:
+                        if modelo_usado:
+                            dados["_modelo_usado"] = modelo_usado
+                            st.session_state[f"fonte_modelo_usado_{val_id}"] = modelo_usado
+                        st.session_state[session_extraidos_key] = dados
+                        # Popula campos editáveis
+                        st.session_state[f"fonte_input_roteiro_{val_id}"] = dados.get("roteiro") or ""
+                        st.session_state[f"fonte_input_ilustrador_{val_id}"] = dados.get("ilustrador") or ""
                         try:
-                            v = float(dados["valor"])
-                            if v > 0:
-                                campos_update.append("valor = ?")
-                                valores_update.append(v)
+                            st.session_state[f"fonte_input_valor_{val_id}"] = float(dados.get("valor") or 0.0)
                         except Exception:
-                            pass
-                    if dados.get("capa") and str(dados["capa"]).startswith("http"):
-                        campos_update.append("capa = ?")
-                        valores_update.append(str(dados["capa"]).strip())
-                    link_salvar = dados.get("link_edicao") or link_gq_encontrado
-                    if link_salvar and str(link_salvar).startswith("http"):
-                        campos_update.append("link_edicao = ?")
-                        valores_update.append(str(link_salvar).strip())
-
-                    if campos_update:
-                        valores_update.append(val_id)
-                        sql_update = f"UPDATE hqs SET {', '.join(campos_update)} WHERE id = ?"
-                        if database.is_using_turso():
-                            database.executar_turso_query(sql_update, valores_update)
-                        else:
-                            conn = database.get_sqlite_connection()
-                            try:
-                                c = conn.cursor()
-                                c.execute(sql_update, tuple(valores_update))
-                                conn.commit()
-                            finally:
-                                conn.close()
-
-                        st.success("✅ Dados atualizados com sucesso no Banco de Dados!")
+                            st.session_state[f"fonte_input_valor_{val_id}"] = 0.0
+                        st.session_state[f"fonte_input_resumo_{val_id}"] = dados.get("resumo") or ""
                         
-                        col_img, col_dados = st.columns([1, 2])
-                        with col_img:
-                            if dados.get("capa") and str(dados["capa"]).startswith("http"):
-                                st.image(dados["capa"], caption="Capa Encontrada", use_container_width=True)
-                            else:
-                                st.info("Sem imagem nova de capa.")
-                        with col_dados:
-                            st.write(f"**Roteiro:** {dados.get('roteiro') or 'N/A'}")
-                            st.write(f"**Ilustrador:** {dados.get('ilustrador') or 'N/A'}")
-                            if dados.get('valor'):
-                                st.write(f"**Preço de Capa:** R$ {float(dados['valor']):.2f}".replace(".", ","))
-                            if link_salvar:
-                                st.write(f"**Link:** [{link_salvar}]({link_salvar})")
-                            st.write(f"**Resumo:** {dados.get('resumo') or 'N/A'}")
+                        link_final_ed = dados.get("link_edicao") or link_gq_encontrado or ""
+                        st.session_state[f"fonte_input_link_{val_id}"] = link_final_ed
+                        
+                        # Resolução de Capa (id="ampliar_capa" / <meta property="og:image"> / ShowImage.aspx)
+                        capa_extraida = dados.get("capa") or ""
+                        if link_final_ed and "/edicao/" in link_final_ed:
+                            fn_der_capa = getattr(gemini_service, "derivar_url_capa_guia_dos_quadrinhos", None)
+                            if fn_der_capa:
+                                url_der = fn_der_capa(link_final_ed, editora=editora, edicao=edicao)
+                                if url_der and (not capa_extraida or "ShowImage.aspx" not in capa_extraida or not capa_extraida.startswith("http")):
+                                    capa_extraida = url_der
+                        
+                        # Executa a mesma Busca de Capas online para obter as opções em alta definição
+                        termo_capa_busca = f"{titulo} {edicao} {editora}".strip()
+                        capas_encontradas = gemini_service.buscar_capas_online(
+                            titulo=termo_capa_busca,
+                            edicao=edicao,
+                            editora=editora,
+                            escritor=dados.get("roteiro") or "",
+                            limite=12
+                        )
+                        
+                        if capa_extraida and str(capa_extraida).startswith("http"):
+                            if not any(c.get("url") == capa_extraida for c in capas_encontradas):
+                                capas_encontradas.insert(0, {
+                                    "url": capa_extraida,
+                                    "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos Oficial)",
+                                    "fonte": "Guia dos Quadrinhos",
+                                    "thumbnail": capa_extraida
+                                    })
+                        
+                        st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
+                        if capas_encontradas:
+                            st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
+                        elif capa_extraida and str(capa_extraida).startswith("http"):
+                            st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_extraida).strip()
+                            
+                        st.success(f"✅ Dados e opções de capas extraídos com sucesso via **{modelo_usado or 'Gemini'}**! Revise os campos abaixo.")
 
-                        st.info("Atualizando página em 3 segundos...")
-                        time.sleep(3)
+        # Se houver dados extraídos (ou dados já existentes), exibe o formulário de validação e edição
+        dados_salvar = st.session_state.get(session_extraidos_key)
+        if dados_salvar:
+            with st.container(border=True):
+                st.markdown("### 📝 Validar e Salvar Dados da Edição")
+                mod_usado = st.session_state.get(f"fonte_modelo_usado_{val_id}") or (dados_salvar.get("_modelo_usado") if isinstance(dados_salvar, dict) else None)
+                if mod_usado:
+                    st.info(f"🤖 **Modelo de IA utilizado na extração:** `{mod_usado}`")
+                st.caption("Revise ou edite as informações abaixo antes de gravar no banco de dados:")
+
+                if f"fonte_input_capa_{val_id}" not in st.session_state:
+                    st.session_state[f"fonte_input_capa_{val_id}"] = hq_alvo.get("capa") or ""
+                if f"fonte_input_roteiro_{val_id}" not in st.session_state:
+                    st.session_state[f"fonte_input_roteiro_{val_id}"] = hq_alvo.get("escritor") if hq_alvo.get("escritor") != "Não informado" else ""
+                if f"fonte_input_ilustrador_{val_id}" not in st.session_state:
+                    st.session_state[f"fonte_input_ilustrador_{val_id}"] = hq_alvo.get("ilustrador") if hq_alvo.get("ilustrador") != "Não informado" else ""
+                if f"fonte_input_valor_{val_id}" not in st.session_state:
+                    st.session_state[f"fonte_input_valor_{val_id}"] = float(hq_alvo.get("valor") or 0.0)
+                if f"fonte_input_link_{val_id}" not in st.session_state:
+                    st.session_state[f"fonte_input_link_{val_id}"] = hq_alvo.get("link_edicao") or ""
+                if f"fonte_input_resumo_{val_id}" not in st.session_state:
+                    st.session_state[f"fonte_input_resumo_{val_id}"] = hq_alvo.get("resumo") or ""
+
+                col_form_c1, col_form_c2 = st.columns([1, 1])
+                with col_form_c1:
+                    st.text_input("✍️ Roteirista(s):", key=f"fonte_input_roteiro_{val_id}")
+                    st.text_input("🎨 Ilustrador(es) / Arte:", key=f"fonte_input_ilustrador_{val_id}")
+                    st.number_input("💰 Preço de Capa (R$):", min_value=0.0, step=0.50, format="%.2f", key=f"fonte_input_valor_{val_id}")
+                with col_form_c2:
+                    st.text_input("🔗 Link Oficial da Edição (Guia dos Quadrinhos):", key=f"fonte_input_link_{val_id}")
+                    st.text_area("📝 Resumo / Sinopse da Edição:", height=108, key=f"fonte_input_resumo_{val_id}")
+
+                st.markdown("---")
+                st.markdown("#### 🖼️ Capa da Edição")
+                
+                capas_disponiveis = st.session_state.get(f"fonte_capas_encontradas_{val_id}", [])
+                capa_selecionada = st.session_state.get(f"fonte_input_capa_{val_id}") or ""
+                
+                # Exibição da capa selecionada
+                if capa_selecionada:
+                    col_prev1, col_prev2 = st.columns([1.2, 3])
+                    with col_prev1:
+                        st.image(capa_selecionada, width=160, caption="Capa Selecionada")
+                    with col_prev2:
+                        st.success("✅ **Capa ativa selecionada para este quadrinho.**")
+                        st.caption(f"🔗 `{capa_selecionada[:80]}...`" if len(capa_selecionada) > 80 else f"🔗 `{capa_selecionada}`")
+                else:
+                    st.info("🖼️ Nenhuma capa selecionada ainda.")
+
+                # Galeria de opções de capas encontradas na web
+                if capas_disponiveis:
+                    st.markdown(f"**Opções de capas encontradas ({len(capas_disponiveis)}):** *Escolha a capa desejada e clique em **Selecionar**.*")
+                    for i in range(0, len(capas_disponiveis), 3):
+                        cols_c = st.columns(3, gap="small")
+                        for j in range(3):
+                            idx_c = i + j
+                            if idx_c < len(capas_disponiveis):
+                                item_c = capas_disponiveis[idx_c]
+                                u_c = item_c.get("url") or ""
+                                t_c = item_c.get("titulo") or titulo
+                                f_c = item_c.get("fonte") or "Web"
+                                is_sel = (capa_selecionada == u_c)
+                                with cols_c[j]:
+                                    with st.container(border=True):
+                                        st.image(u_c, use_container_width=True)
+                                        st.caption(f"**{t_c[:50]}**\n\n*{f_c}*")
+                                        if is_sel:
+                                            st.button("✅ Selecionada", key=f"btn_capa_sel_{val_id}_{idx_c}", disabled=True, use_container_width=True)
+                                        else:
+                                            if st.button("👉 Selecionar", key=f"btn_capa_sel_{val_id}_{idx_c}", use_container_width=True, type="secondary"):
+                                                st.session_state[f"fonte_input_capa_{val_id}"] = u_c
+
+                with st.expander("🔗 Informar URL manual da capa (opcional)", expanded=False):
+                    url_manual = st.text_input("URL direta da imagem:", key=f"input_manual_capa_url_{val_id}", placeholder="https://.../capa.jpg")
+                    if url_manual:
+                        if st.button("Aplicar URL", key=f"btn_aplicar_manual_capa_{val_id}"):
+                            st.session_state[f"fonte_input_capa_{val_id}"] = url_manual.strip()
+
+                st.markdown("---")
+                col_sv1, col_sv2 = st.columns([2, 1])
+                with col_sv1:
+                    if st.button("💾 Confirmar e Salvar no Banco de Dados", key=f"btn_confirmar_salvar_fonte_{val_id}", type="primary", use_container_width=True):
+                        # Pega valores atuais dos inputs
+                        rot_final = (st.session_state.get(f"fonte_input_roteiro_{val_id}") or "").strip()
+                        ilu_final = (st.session_state.get(f"fonte_input_ilustrador_{val_id}") or "").strip()
+                        val_final = float(st.session_state.get(f"fonte_input_valor_{val_id}") or 0.0)
+                        link_final = (st.session_state.get(f"fonte_input_link_{val_id}") or "").strip()
+                        res_final = (st.session_state.get(f"fonte_input_resumo_{val_id}") or "").strip()
+                        capa_final = (st.session_state.get(f"fonte_input_capa_{val_id}") or "").strip()
+
+                        campos_update = []
+                        valores_update = []
+                        
+                        if rot_final:
+                            campos_update.append("escritor = ?")
+                            valores_update.append(rot_final)
+                        if ilu_final:
+                            campos_update.append("ilustrador = ?")
+                            valores_update.append(ilu_final)
+                        if res_final:
+                            campos_update.append("resumo = ?")
+                            valores_update.append(res_final)
+                        if val_final > 0:
+                            campos_update.append("valor = ?")
+                            valores_update.append(val_final)
+                        if capa_final and (capa_final.startswith("http") or capa_final.startswith("data:image")):
+                            capa_salvar = capa_final
+                            if capa_final.startswith("http"):
+                                try:
+                                    b64_dl = gemini_service.baixar_imagem_url_base64(capa_final)
+                                    if b64_dl:
+                                        capa_salvar = b64_dl
+                                except Exception:
+                                    pass
+                            campos_update.append("capa = ?")
+                            valores_update.append(capa_salvar)
+                        if link_final and link_final.startswith("http"):
+                            campos_update.append("link_edicao = ?")
+                            valores_update.append(link_final)
+
+                        if campos_update:
+                            valores_update.append(val_id)
+                            sql_update = f"UPDATE hqs SET {', '.join(campos_update)} WHERE id = ?"
+                            try:
+                                if database.is_using_turso():
+                                    database.executar_turso_query(sql_update, valores_update)
+                                else:
+                                    conn = database.get_sqlite_connection()
+                                    try:
+                                        c = conn.cursor()
+                                        c.execute(sql_update, tuple(valores_update))
+                                        conn.commit()
+                                    finally:
+                                        conn.close()
+
+                                # Limpa estados temporários
+                                st.session_state.pop(session_extraidos_key, None)
+                                st.session_state.pop(session_reserp_key, None)
+                                st.session_state.pop(termo_cache_key, None)
+                                st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
+                                st.session_state.pop(f"fonte_input_capa_{val_id}", None)
+                                st.session_state.pop(f"fonte_input_roteiro_{val_id}", None)
+                                st.session_state.pop(f"fonte_input_ilustrador_{val_id}", None)
+                                st.session_state.pop(f"fonte_input_valor_{val_id}", None)
+                                st.session_state.pop(f"fonte_input_link_{val_id}", None)
+                                st.session_state.pop(f"fonte_input_resumo_{val_id}", None)
+                                st.session_state.pop(f"fonte_modelo_usado_{val_id}", None)
+                                st.success("🎉 Edição atualizada com sucesso no banco de dados!")
+                                time.sleep(1.5)
+                                st.rerun()
+                            except Exception as ex_db:
+                                st.error(f"Erro ao salvar no banco de dados: {ex_db}")
+                        else:
+                            st.warning("Nenhum dado informado para atualizar.")
+
+                with col_sv2:
+                    if st.button("❌ Cancelar", key=f"btn_canc_form_fonte_{val_id}", use_container_width=True):
+                        st.session_state.pop(session_extraidos_key, None)
+                        st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
+                        st.session_state.pop(f"fonte_input_capa_{val_id}", None)
+                        st.session_state.pop(f"fonte_modelo_usado_{val_id}", None)
                         st.rerun()
-                    else:
-                        st.warning("Nenhum dado novo encontrado para atualizar.")
+
     else:
         st.warning("Nenhuma fonte encontrada automaticamente via Reserp.ai. Você pode ajustar o termo de busca acima ou colar o conteúdo manualmente abaixo.")
 
@@ -496,59 +681,55 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                             st.error(f"Erro ao acessar link: {e}")
                             return
                     
-                    prompt_man = f"""Você é um especialista em HQs. Aqui está o texto extraído da página:
-"{titulo}"
-Texto:
+                    dados_man = {}
+                    # 1. Tenta extração determinística de HTML/Texto do Guia dos Quadrinhos (<div class="historia">)
+                    if "<div" in texto_extraido or "class=" in texto_extraido or "historia" in texto_extraido.lower() or "personagens:" in texto_extraido.lower():
+                        dados_man = gemini_service.extrair_dados_texto_ou_html_gq(texto_extraido)
+                    
+                    # 2. Se não extraiu completamente ou precisa de IA, complementa com Gemini
+                    if not dados_man or not dados_man.get("resumo"):
+                        prompt_man = f"""Você é o especialista na enciclopédia Guia dos Quadrinhos (guiadosquadrinhos.com).
+Analise com precisão o HTML/Texto copiado da página para: "{titulo}".
+Texto/HTML:
 ---
-{texto_extraido[:12000]}
+{texto_extraido[:14000]}
 ---
-Retorne JSON com chaves: roteiro, ilustrador, valor, resumo, capa, link_edicao."""
-                    cliente = gemini_service.get_gemini_client()
-                    resp_man = None
-                    for mod in ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite']:
-                        try:
-                            resp_man = cliente.models.generate_content(model=mod, contents=prompt_man)
-                            if resp_man and resp_man.text:
-                                break
-                        except Exception:
-                            continue
-                    dados_man = gemini_service.limpar_e_parsear_json_dict(resp_man.text) if resp_man and resp_man.text else {}
-                    if dados_man:
-                        campos_u = []
-                        vals_u = []
-                        if dados_man.get("roteiro") and str(dados_man["roteiro"]).lower() not in ["null", ""]:
-                            campos_u.append("escritor = ?")
-                            vals_u.append(str(dados_man["roteiro"]))
-                        if dados_man.get("ilustrador") and str(dados_man["ilustrador"]).lower() not in ["null", ""]:
-                            campos_u.append("ilustrador = ?")
-                            vals_u.append(str(dados_man["ilustrador"]))
-                        if dados_man.get("resumo") and str(dados_man["resumo"]).lower() not in ["null", ""]:
-                            campos_u.append("resumo = ?")
-                            vals_u.append(str(dados_man["resumo"]))
-                        if dados_man.get("valor") is not None:
+REGRA DE HISTÓRIAS:
+- Capture cada história (iniciando em <div class="historia">Título</div> até a próxima história).
+- Monte o resumo completo com todas as histórias (Título, Publicação Original, Roteiro, Arte, Personagens e Sinopse).
+- Extraia roteiro, ilustrador, valor (float), resumo, capa, link_edicao em formato JSON."""
+                        cliente = gemini_service.get_gemini_client()
+                        resp_man = None
+                        for mod in ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash']:
                             try:
-                                v = float(dados_man["valor"])
-                                if v > 0:
-                                    campos_u.append("valor = ?")
-                                    vals_u.append(v)
+                                resp_man = cliente.models.generate_content(model=mod, contents=prompt_man)
+                                if resp_man and resp_man.text:
+                                    break
                             except Exception:
-                                pass
-                        if campos_u:
-                            vals_u.append(val_id)
-                            sql_u = f"UPDATE hqs SET {', '.join(campos_u)} WHERE id = ?"
-                            if database.is_using_turso():
-                                database.executar_turso_query(sql_u, vals_u)
+                                continue
+                        dados_ia = gemini_service.limpar_e_parsear_json_dict(resp_man.text) if resp_man and resp_man.text else {}
+                        if dados_ia:
+                            if not dados_man:
+                                dados_man = dados_ia
                             else:
-                                conn = database.get_sqlite_connection()
-                                try:
-                                    c = conn.cursor()
-                                    c.execute(sql_u, tuple(vals_u))
-                                    conn.commit()
-                                finally:
-                                    conn.close()
-                            st.success("Dados manuais salvos com sucesso!")
-                            time.sleep(2)
-                            st.rerun()
+                                for k, v in dados_ia.items():
+                                    if not dados_man.get(k) and v:
+                                        dados_man[k] = v
+
+                    if dados_man:
+                        st.session_state[session_extraidos_key] = dados_man
+                        st.session_state[f"fonte_input_roteiro_{val_id}"] = dados_man.get("roteiro") or ""
+                        st.session_state[f"fonte_input_ilustrador_{val_id}"] = dados_man.get("ilustrador") or dados_man.get("desenho") or ""
+                        try:
+                            st.session_state[f"fonte_input_valor_{val_id}"] = float(dados_man.get("valor") or dados_man.get("preco_capa") or 0.0)
+                        except Exception:
+                            st.session_state[f"fonte_input_valor_{val_id}"] = 0.0
+                        st.session_state[f"fonte_input_resumo_{val_id}"] = dados_man.get("resumo") or ""
+                        st.session_state[f"fonte_input_link_{val_id}"] = dados_man.get("link_edicao") or dados_man.get("url_edicao") or ""
+                        if dados_man.get("capa_url") and not st.session_state.get(f"fonte_input_capa_{val_id}"):
+                            st.session_state[f"fonte_input_capa_{val_id}"] = dados_man["capa_url"]
+                        st.success("✅ Conteúdo processado com sucesso! Revise os campos acima.")
+
 
 
 @st.dialog("🔍 Buscar Dados (Guia dos Quadrinhos)", width="large")
@@ -963,10 +1144,13 @@ def dialog_buscar_capa(id_padrao: Optional[int] = None):
         btn_pesquisar = st.button("🔎 Pesquisar", key=f"dlg_btn_pesquisar_capa_{hq_alvo['id']}", use_container_width=True, type="primary")
 
     session_res_key = f"capas_encontradas_{hq_alvo['id']}"
+    termo_cache_key = f"termo_capa_anterior_{hq_alvo['id']}"
     
-    # Busca automaticamente ao abrir ou ao clicar no botão
-    if btn_pesquisar or session_res_key not in st.session_state:
-        with st.spinner("🔍 Buscando capas em alta resolução na internet..."):
+    termo_mudou = st.session_state.get(termo_cache_key) != termo_busca.strip()
+    
+    # Busca automaticamente ao abrir ou quando o termo mudar ou ao clicar no botão
+    if btn_pesquisar or termo_mudou or session_res_key not in st.session_state:
+        with st.spinner("🔍 Buscando capas no Google e Guia dos Quadrinhos via Reserp.ai..."):
             resultados = gemini_service.buscar_capas_online(
                 titulo=termo_busca,
                 edicao=hq_alvo.get("edicao") or "",
@@ -975,6 +1159,7 @@ def dialog_buscar_capa(id_padrao: Optional[int] = None):
                 limite=15
             )
             st.session_state[session_res_key] = resultados
+            st.session_state[termo_cache_key] = termo_busca.strip()
 
     capas = st.session_state.get(session_res_key, [])
 
@@ -3341,14 +3526,11 @@ if hq_dia:
             
             col_btn_c1, col_btn_c2 = st.columns(2)
             with col_btn_c1:
-                if st.button("🔍 Buscar Dados", key="btn_buscar_dados_dia", use_container_width=True, type="primary" if not tem_capa else "secondary", help="Buscar Roteiro, Desenho, Preço de Capa e Imagem no Guia dos Quadrinhos"):
-                    dialog_buscar_dados(int(hq_dia["id"]))
+                if st.button("🌐 Buscar Fonte", key="btn_buscar_fonte_dia", use_container_width=True, type="primary" if not tem_capa else "secondary", help="Busca a fonte da HQ via Google e Reserp.ai"):
+                    dialog_buscar_fonte(int(hq_dia["id"]))
             with col_btn_c2:
                 if st.button("🖼️ Buscar Capas", key="btn_buscar_capa_dia", use_container_width=True, help="Procurar opções de capa desta HQ na internet"):
                     dialog_buscar_capa(int(hq_dia["id"]))
-
-            if st.button("🌐 Buscar Fonte", key="btn_buscar_fonte_dia", use_container_width=True, help="Busca a fonte da HQ via Google e Playwright"):
-                dialog_buscar_fonte(int(hq_dia["id"]))
 
             col_btn_c3, col_btn_c4 = st.columns(2)
             with col_btn_c3:

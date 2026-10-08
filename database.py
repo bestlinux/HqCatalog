@@ -20,6 +20,12 @@ try:
 except ImportError:
     libsql_client = None
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import jev_engine
 
 DB_DEFAULT_PATH = os.getenv("DB_PATH", "hqs_inventario.db")
@@ -50,48 +56,211 @@ def get_turso_credentials() -> tuple[Optional[str], Optional[str]]:
     return url, token
 
 
+import time
+import base64
+import requests
+
+class TursoRow(tuple):
+    """Representação leve e compatível de uma linha retornada pelo Turso Cloud."""
+    def __new__(cls, values, cols_map):
+        inst = super().__new__(cls, values)
+        inst._cols_map = cols_map
+        return inst
+
+    def __getitem__(self, item):
+        if isinstance(item, str):
+            idx = self._cols_map.get(item)
+            if idx is None:
+                raise KeyError(f"Coluna '{item}' não encontrada na linha.")
+            return super().__getitem__(idx)
+        return super().__getitem__(item)
+
+    def __contains__(self, key):
+        return key in self._cols_map
+
+    def keys(self):
+        return list(self._cols_map.keys())
+
+    def get(self, key, default=None):
+        if key in self._cols_map:
+            return self[key]
+        return default
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {k: self[idx] for k, idx in self._cols_map.items()}
+
+    def __iter__(self):
+        return super().__iter__()
+
+class TursoResultSet:
+    """Conjunto de resultados de consulta compatível com ResultSet do libsql/sqlite."""
+    def __init__(self, columns: List[str], rows: List[TursoRow], last_insert_rowid: Optional[int] = None, rows_affected: int = 0):
+        self.columns = tuple(columns)
+        self.rows = rows
+        self.last_insert_rowid = last_insert_rowid
+        self.rows_affected = rows_affected
+
+def _serializar_param_turso(val: Any) -> Dict[str, Any]:
+    if val is None:
+        return {"type": "null"}
+    elif isinstance(val, bool):
+        return {"type": "integer", "value": "1" if val else "0"}
+    elif isinstance(val, int):
+        return {"type": "integer", "value": str(val)}
+    elif isinstance(val, float):
+        return {"type": "float", "value": val}
+    elif isinstance(val, (bytes, bytearray)):
+        return {"type": "blob", "base64": base64.b64encode(val).decode("ascii")}
+    else:
+        return {"type": "text", "value": str(val)}
+
+def _deserializar_valor_turso(v: Any) -> Any:
+    if not isinstance(v, dict):
+        return v
+    vtype = v.get("type")
+    if vtype == "null":
+        return None
+    elif vtype == "integer":
+        return int(v.get("value", 0))
+    elif vtype == "float":
+        return float(v.get("value", 0.0))
+    elif vtype == "text":
+        return str(v.get("value", ""))
+    elif vtype == "blob":
+        return base64.b64decode(v.get("base64", ""))
+    return v.get("value")
+
+_TURSO_HTTP_SESSION = None
+
+def get_turso_session() -> requests.Session:
+    global _TURSO_HTTP_SESSION
+    if _TURSO_HTTP_SESSION is None:
+        _TURSO_HTTP_SESSION = requests.Session()
+    return _TURSO_HTTP_SESSION
+
 def is_using_turso() -> bool:
     """Verifica se o banco está configurado para usar o Turso Cloud."""
     url, token = get_turso_credentials()
-    return bool(url and token and libsql_client is not None)
-
-
-import time
+    return bool(url and token)
 
 def get_turso_client():
-    """Retorna um cliente síncrono do Turso."""
+    """Retorna compatibilidade retroativa para código que chama get_turso_client()."""
     url, token = get_turso_credentials()
     if not url or not token:
         raise ValueError("Credenciais do Turso não configuradas.")
-    # Converte libsql:// para https:// se necessário para compatibilidade HTTP
-    clean_url = url.replace("libsql://", "https://")
-    return libsql_client.create_client_sync(url=clean_url, auth_token=token)
+    if libsql_client is not None:
+        clean_url = url.replace("libsql://", "https://")
+        return libsql_client.create_client_sync(url=clean_url, auth_token=token)
+    return None
 
+def executar_turso_query(sql: str, params: Optional[List[Any]] = None, max_retries: int = 3) -> TursoResultSet:
+    """
+    Executa uma consulta no Turso Cloud via HTTP Pipeline de alta performance,
+    com retentativa automática e zero risco de travamento de threads no Windows/Python 3.14.
+    """
+    url, token = get_turso_credentials()
+    if not url or not token:
+        raise ValueError("Credenciais do Turso não configuradas.")
 
-def executar_turso_query(sql: str, params: Optional[List[Any]] = None, max_retries: int = 3) -> Any:
-    """
-    Executa uma consulta no Turso Cloud com retentativa automática e backoff para falhas transitórias de rede
-    (ex: WinError 121, timeouts, instabilidades temporárias de conexão com aiohttp).
-    """
+    endpoint = url.replace("libsql://", "https://").rstrip("/") + "/v2/pipeline"
+    session = get_turso_session()
+
     clean_params = params if params is not None else []
-    ultimo_erro = None
+    args = [_serializar_param_turso(p) for p in clean_params]
+    payload = {
+        "requests": [
+            {"type": "execute", "stmt": {"sql": sql, "args": args}},
+            {"type": "close"}
+        ]
+    }
 
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    ultimo_erro = None
     for tentativa in range(1, max_retries + 1):
-        client = None
         try:
-            client = get_turso_client()
-            res = client.execute(sql, clean_params)
-            return res
+            r = session.post(endpoint, json=payload, headers=headers, timeout=12)
+            r.raise_for_status()
+            data = r.json()
+            res_block = data.get("results", [{}])[0]
+            if res_block.get("type") == "error":
+                err_msg = res_block.get("error", {}).get("message", "Erro no Turso")
+                raise RuntimeError(err_msg)
+
+            result_data = res_block.get("response", {}).get("result", {})
+            cols = [c.get("name", "") for c in result_data.get("cols", [])]
+            cols_map = {name: i for i, name in enumerate(cols)}
+
+            rows = []
+            for r_raw in result_data.get("rows", []):
+                vals = [_deserializar_valor_turso(cell) for cell in r_raw]
+                rows.append(TursoRow(vals, cols_map))
+
+            return TursoResultSet(
+                columns=cols,
+                rows=rows,
+                last_insert_rowid=result_data.get("last_insert_rowid"),
+                rows_affected=result_data.get("affected_row_count", 0)
+            )
         except Exception as ex:
             ultimo_erro = ex
             if tentativa < max_retries:
-                time.sleep(0.3 * tentativa)
-        finally:
-            if client is not None:
-                try:
-                    client.close()
-                except Exception:
-                    pass
+                time.sleep(0.2 * tentativa)
+
+    raise ultimo_erro
+
+def executar_turso_batch(statements: List[Tuple[str, Optional[List[Any]]]], max_retries: int = 3) -> List[TursoResultSet]:
+    """
+    Executa múltiplos comandos SQL no Turso Cloud em um único roundtrip HTTP atômico.
+    """
+    url, token = get_turso_credentials()
+    if not url or not token:
+        raise ValueError("Credenciais do Turso não configuradas.")
+
+    endpoint = url.replace("libsql://", "https://").rstrip("/") + "/v2/pipeline"
+    session = get_turso_session()
+
+    requests_list = []
+    for stmt_sql, stmt_params in statements:
+        args = [_serializar_param_turso(p) for p in (stmt_params or [])]
+        requests_list.append({"type": "execute", "stmt": {"sql": stmt_sql, "args": args}})
+    requests_list.append({"type": "close"})
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    ultimo_erro = None
+    for tentativa in range(1, max_retries + 1):
+        try:
+            r = session.post(endpoint, json={"requests": requests_list}, headers=headers, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+
+            results = []
+            for res_block in data.get("results", []):
+                if res_block.get("type") == "execute":
+                    result_data = res_block.get("response", {}).get("result", {})
+                    cols = [c.get("name", "") for c in result_data.get("cols", [])]
+                    cols_map = {name: i for i, name in enumerate(cols)}
+                    rows = []
+                    for r_raw in result_data.get("rows", []):
+                        vals = [_deserializar_valor_turso(cell) for cell in r_raw]
+                        rows.append(TursoRow(vals, cols_map))
+                    results.append(TursoResultSet(cols, rows, result_data.get("last_insert_rowid"), result_data.get("affected_row_count", 0)))
+                elif res_block.get("type") == "error":
+                    # Registra mas não trava batch se for erro aceitável (ex: ADD COLUMN duplicado)
+                    results.append(None)
+
+            return results
+        except Exception as ex:
+            ultimo_erro = ex
+            if tentativa < max_retries:
+                time.sleep(0.2 * tentativa)
 
     raise ultimo_erro
 
@@ -170,22 +339,30 @@ def init_db(db_path: str = DB_DEFAULT_PATH, force: bool = False) -> None:
     """
     if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
-            executar_turso_query(create_table_sql)
-            executar_turso_query(create_table_desejos_sql)
-            executar_turso_query(create_table_prateleiras_sql)
-            executar_turso_query(create_table_historico_sql)
-            try:
-                executar_turso_query(seed_prateleiras_sql)
-            except Exception:
-                pass
-            try:
-                executar_turso_query("ALTER TABLE hqs ADD COLUMN valor REAL DEFAULT 0.0")
-            except Exception:
-                pass
-            try:
-                executar_turso_query("ALTER TABLE hqs ADD COLUMN estado_conservacao TEXT DEFAULT 'Excelente'")
-            except Exception:
-                pass
+            batch_stmts = [
+                (create_table_sql, []),
+                (create_table_desejos_sql, []),
+                (create_table_prateleiras_sql, []),
+                (create_table_historico_sql, []),
+                (seed_prateleiras_sql, [])
+            ]
+            colunas_turso = [
+                ("lido", "TEXT DEFAULT 'Não Lido'"),
+                ("genero", "TEXT DEFAULT 'Outro'"),
+                ("escritor", "TEXT DEFAULT 'Não informado'"),
+                ("ilustrador", "TEXT DEFAULT 'Não informado'"),
+                ("avaliacao", "INTEGER DEFAULT 0"),
+                ("valor", "REAL DEFAULT 0.0"),
+                ("estado_conservacao", "TEXT DEFAULT 'Excelente'"),
+                ("capa", "TEXT DEFAULT ''"),
+                ("resenha", "TEXT DEFAULT ''"),
+                ("resumo", "TEXT DEFAULT ''"),
+                ("link_edicao", "TEXT DEFAULT ''")
+            ]
+            for col_nome, col_tipo in colunas_turso:
+                batch_stmts.append((f"ALTER TABLE hqs ADD COLUMN {col_nome} {col_tipo}", []))
+
+            executar_turso_batch(batch_stmts)
             _INITIALIZED_DBS.add("__turso__")
         except Exception as e:
             print(f"Aviso ao inicializar Turso: {e}")
