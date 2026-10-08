@@ -492,6 +492,104 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                             
                         st.success(f"✅ Dados e opções de capas extraídos com sucesso via **{modelo_usado or 'Gemini'}**! Revise os campos abaixo.")
 
+        # Opção manual de colar link ou texto da página (posicionada antes dos widgets para permitir extração direta)
+        with st.expander("📋 Opção Manual: Colar Link ou Texto da Página", expanded=False):
+            url_ou_texto = st.text_area("Link direto ou Texto copiado da página:", placeholder="https://www.guiadosquadrinhos.com/edicao/...", key=f"txt_url_manual_fonte_{val_id}")
+            if st.button("🚀 Processar Texto / Link Manual", key=f"btn_manual_busca_fonte_{val_id}", use_container_width=True):
+                if not url_ou_texto.strip():
+                    st.warning("Cole o link ou texto primeiro!")
+                else:
+                    with st.spinner("Processando conteúdo..."):
+                        texto_extraido = url_ou_texto.strip()
+                        if texto_extraido.startswith("http"):
+                            try:
+                                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                                r = requests.get(texto_extraido, headers=headers, timeout=10)
+                                if "Just a moment" in r.text or "Cloudflare" in r.text:
+                                    st.warning("O site bloqueou o acesso direto (Cloudflare). Copie o texto da página diretamente no seu navegador e cole aqui.")
+                                    return
+                                texto_extraido = r.text
+                            except Exception as e:
+                                st.error(f"Erro ao acessar link: {e}")
+                                return
+                        
+                        dados_man = {}
+                        # 1. Tenta extração determinística 100% fiel de HTML/Texto do Guia dos Quadrinhos (<div class="historia">)
+                        if "<div" in texto_extraido or "class=" in texto_extraido or "historia" in texto_extraido.lower() or "personagens:" in texto_extraido.lower() or "roteiro:" in texto_extraido.lower():
+                            dados_man = gemini_service.extrair_dados_texto_ou_html_gq(texto_extraido)
+                        
+                        # 2. Se não extraiu completamente ou precisa de IA, complementa com Gemini
+                        if not dados_man or not dados_man.get("resumo"):
+                            prompt_man = f"""Você é um extrator de dados estrito da enciclopédia Guia dos Quadrinhos (guiadosquadrinhos.com).
+Analise com precisão o HTML/Texto copiado da página para: "{titulo}".
+Texto/HTML:
+---
+{texto_extraido[:14000]}
+---
+REGRAS:
+- Extraia cada história individual (iniciando em <div class="historia">Título</div> até a próxima história).
+- Monte o resumo completo com todas as histórias (Título, Publicação Original, Roteiro, Arte, Personagens e Sinopse).
+- Extraia roteiro, ilustrador, valor (float), resumo, capa, link_edicao em formato JSON estrito."""
+                            cliente = gemini_service.get_gemini_client()
+                            resp_man = None
+                            mod_man_usado = None
+                            for mod in ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite']:
+                                try:
+                                    resp_man = cliente.models.generate_content(model=mod, contents=prompt_man)
+                                    if resp_man and resp_man.text:
+                                        mod_man_usado = mod
+                                        break
+                                except Exception:
+                                    continue
+                            dados_ia = gemini_service.limpar_e_parsear_json_dict(resp_man.text) if resp_man and resp_man.text else {}
+                            if dados_ia:
+                                if mod_man_usado:
+                                    dados_ia["_modelo_usado"] = mod_man_usado
+                                    st.session_state[f"fonte_modelo_usado_{val_id}"] = mod_man_usado
+                                if not dados_man:
+                                    dados_man = dados_ia
+                                else:
+                                    for k, v in dados_ia.items():
+                                        if not dados_man.get(k) and v:
+                                            dados_man[k] = v
+
+                        if dados_man:
+                            st.session_state[session_extraidos_key] = dados_man
+                            st.session_state[f"fonte_input_roteiro_{val_id}"] = dados_man.get("roteiro") or ""
+                            st.session_state[f"fonte_input_ilustrador_{val_id}"] = dados_man.get("ilustrador") or dados_man.get("desenho") or ""
+                            try:
+                                st.session_state[f"fonte_input_valor_{val_id}"] = float(dados_man.get("valor") or dados_man.get("preco_capa") or 0.0)
+                            except Exception:
+                                st.session_state[f"fonte_input_valor_{val_id}"] = 0.0
+                            st.session_state[f"fonte_input_resumo_{val_id}"] = dados_man.get("resumo") or ""
+                            st.session_state[f"fonte_input_link_{val_id}"] = dados_man.get("link_edicao") or dados_man.get("url_edicao") or ""
+                            
+                            capa_man = dados_man.get("capa_url") or dados_man.get("capa") or ""
+                            if capa_man and str(capa_man).startswith("http"):
+                                st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_man).strip()
+                            
+                            # Busca capas online se ainda não houver
+                            if not st.session_state.get(f"fonte_capas_encontradas_{val_id}"):
+                                termo_capa_busca = f"{titulo} {edicao} {editora}".strip()
+                                capas_encontradas = gemini_service.buscar_capas_online(
+                                    titulo=termo_capa_busca,
+                                    edicao=edicao,
+                                    editora=editora,
+                                    escritor=dados_man.get("roteiro") or "",
+                                    limite=12
+                                )
+                                if capa_man and str(capa_man).startswith("http"):
+                                    if not any(c.get("url") == capa_man for c in capas_encontradas):
+                                        capas_encontradas.insert(0, {
+                                            "url": capa_man,
+                                            "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos)",
+                                            "fonte": "Guia dos Quadrinhos",
+                                            "thumbnail": capa_man
+                                        })
+                                st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
+
+                            st.success("✅ Conteúdo manual processado com sucesso! Revise os campos abaixo.")
+
         # Se houver dados extraídos (ou dados já existentes), exibe o formulário de validação e edição
         dados_salvar = st.session_state.get(session_extraidos_key)
         if dados_salvar:
@@ -657,75 +755,6 @@ Retorne ESTRITAMENTE um JSON com as chaves:
 
     else:
         st.warning("Nenhuma fonte encontrada automaticamente via Reserp.ai. Você pode ajustar o termo de busca acima ou colar o conteúdo manualmente abaixo.")
-
-    with st.expander("📋 Opção Manual: Colar Link ou Texto da Página", expanded=False):
-        url_ou_texto = st.text_area("Link direto ou Texto copiado da página:", placeholder="https://www.guiadosquadrinhos.com/edicao/...", key=f"txt_url_manual_fonte_{val_id}")
-        if st.button("🚀 Processar Texto / Link Manual", key=f"btn_manual_busca_fonte_{val_id}"):
-            if not url_ou_texto.strip():
-                st.warning("Cole o link ou texto primeiro!")
-            else:
-                with st.spinner("Processando..."):
-                    texto_extraido = url_ou_texto.strip()
-                    if texto_extraido.startswith("http"):
-                        try:
-                            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-                            r = requests.get(texto_extraido, headers=headers, timeout=10)
-                            if "Just a moment" in r.text or "Cloudflare" in r.text:
-                                st.warning("O site bloqueou o acesso direto (Cloudflare). Use a busca do Reserp.ai acima ou copie o texto da página.")
-                                return
-                            texto_extraido = r.text
-                        except Exception as e:
-                            st.error(f"Erro ao acessar link: {e}")
-                            return
-                    
-                    dados_man = {}
-                    # 1. Tenta extração determinística de HTML/Texto do Guia dos Quadrinhos (<div class="historia">)
-                    if "<div" in texto_extraido or "class=" in texto_extraido or "historia" in texto_extraido.lower() or "personagens:" in texto_extraido.lower():
-                        dados_man = gemini_service.extrair_dados_texto_ou_html_gq(texto_extraido)
-                    
-                    # 2. Se não extraiu completamente ou precisa de IA, complementa com Gemini
-                    if not dados_man or not dados_man.get("resumo"):
-                        prompt_man = f"""Você é o especialista na enciclopédia Guia dos Quadrinhos (guiadosquadrinhos.com).
-Analise com precisão o HTML/Texto copiado da página para: "{titulo}".
-Texto/HTML:
----
-{texto_extraido[:14000]}
----
-REGRA DE HISTÓRIAS:
-- Capture cada história (iniciando em <div class="historia">Título</div> até a próxima história).
-- Monte o resumo completo com todas as histórias (Título, Publicação Original, Roteiro, Arte, Personagens e Sinopse).
-- Extraia roteiro, ilustrador, valor (float), resumo, capa, link_edicao em formato JSON."""
-                        cliente = gemini_service.get_gemini_client()
-                        resp_man = None
-                        for mod in ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash']:
-                            try:
-                                resp_man = cliente.models.generate_content(model=mod, contents=prompt_man)
-                                if resp_man and resp_man.text:
-                                    break
-                            except Exception:
-                                continue
-                        dados_ia = gemini_service.limpar_e_parsear_json_dict(resp_man.text) if resp_man and resp_man.text else {}
-                        if dados_ia:
-                            if not dados_man:
-                                dados_man = dados_ia
-                            else:
-                                for k, v in dados_ia.items():
-                                    if not dados_man.get(k) and v:
-                                        dados_man[k] = v
-
-                    if dados_man:
-                        st.session_state[session_extraidos_key] = dados_man
-                        st.session_state[f"fonte_input_roteiro_{val_id}"] = dados_man.get("roteiro") or ""
-                        st.session_state[f"fonte_input_ilustrador_{val_id}"] = dados_man.get("ilustrador") or dados_man.get("desenho") or ""
-                        try:
-                            st.session_state[f"fonte_input_valor_{val_id}"] = float(dados_man.get("valor") or dados_man.get("preco_capa") or 0.0)
-                        except Exception:
-                            st.session_state[f"fonte_input_valor_{val_id}"] = 0.0
-                        st.session_state[f"fonte_input_resumo_{val_id}"] = dados_man.get("resumo") or ""
-                        st.session_state[f"fonte_input_link_{val_id}"] = dados_man.get("link_edicao") or dados_man.get("url_edicao") or ""
-                        if dados_man.get("capa_url") and not st.session_state.get(f"fonte_input_capa_{val_id}"):
-                            st.session_state[f"fonte_input_capa_{val_id}"] = dados_man["capa_url"]
-                        st.success("✅ Conteúdo processado com sucesso! Revise os campos acima.")
 
 
 
