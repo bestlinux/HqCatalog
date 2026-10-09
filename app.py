@@ -586,33 +586,53 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                                     if html_gq and len(html_gq) > 500:
                                         texto_extraido = html_gq
                                     else:
-                                        st.warning("Não foi possível carregar o conteúdo da página automaticamente. Copie o texto ou HTML da página diretamente no seu navegador e cole nesta caixa.")
-                                        return
+                                        # Em servidores na nuvem (Streamlit Cloud), requisições HTTP diretas ao GQ são bloqueadas por Cloudflare
+                                        # Não aborta: permite que a IA Gemini processe a URL diretamente via catálogo e busca
+                                        html_gq = ""
                                 else:
                                     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
                                     r = requests.get(texto_extraido, headers=headers, timeout=10)
-                                    texto_extraido = r.text
+                                    if r.status_code == 200:
+                                        texto_extraido = r.text
                             except Exception as e:
-                                st.error(f"Erro ao acessar link: {e}")
-                                return
+                                print(f"[Aviso ao acessar link: {e}]")
                         
                         dados_man = {}
                         # 1. Tenta extração determinística 100% fiel de HTML/Texto do Guia dos Quadrinhos (<div class="historia">)
-                        if "<div" in texto_extraido or "class=" in texto_extraido or "historia" in texto_extraido.lower() or "personagens:" in texto_extraido.lower() or "roteiro:" in texto_extraido.lower():
+                        if ("<div" in texto_extraido or "class=" in texto_extraido or "historia" in texto_extraido.lower() or "personagens:" in texto_extraido.lower() or "roteiro:" in texto_extraido.lower()) and not texto_extraido.startswith("http"):
                             dados_man = gemini_service.extrair_dados_texto_ou_html_gq(texto_extraido, url_orig=url_manual_gq)
                         
-                        # 2. Se não extraiu completamente ou precisa de IA, complementa com Gemini
+                        # 2. Se não extraiu completamente ou o conteúdo recebido é apenas a URL (ex: bloqueio no Streamlit Cloud), complementa com Gemini
                         if not dados_man or not dados_man.get("resumo"):
-                            prompt_man = f"""Você é um extrator de dados estrito da enciclopédia Guia dos Quadrinhos (guiadosquadrinhos.com).
-Analise com precisão o HTML/Texto copiado da página para: "{titulo}".
-Texto/HTML:
+                            texto_auxiliar = texto_extraido
+                            if texto_extraido.startswith("http") and not ("<div" in texto_extraido or "historia" in texto_extraido.lower()):
+                                try:
+                                    m_slug = re.search(r'/edicao/([^/]+)/', url_manual_gq)
+                                    slug_pesq = m_slug.group(1).replace("-n-", " ").replace("-", " ") if m_slug else titulo
+                                    res_gq = gemini_service.pesquisar_reserp_google(f"site:guiadosquadrinhos.com \"{slug_pesq}\"")
+                                    if not res_gq:
+                                        res_gq = gemini_service.pesquisar_reserp_google(f"site:guiadosquadrinhos.com {slug_pesq}")
+                                    if res_gq:
+                                        texto_auxiliar = "\n\n".join([f"{item.get('title', '')}\n{item.get('snippet', '')}\n{item.get('text', '')}" for item in res_gq[:4]])
+                                except Exception:
+                                    pass
+
+                            prompt_man = f"""Você é o especialista mestre na enciclopédia Guia dos Quadrinhos (guiadosquadrinhos.com) e nos quadrinhos publicados no Brasil.
+O usuário forneceu um link ou conteúdo para catalogar esta edição:
+{f'URL Oficial da Edição: {url_manual_gq}' if url_manual_gq else ''}
+Título de referência: "{titulo}"
+Edição de referência: "{edicao}"
+Editora de referência: "{editora}"
+
+Conteúdo/Resultados:
 ---
-{texto_extraido[:14000]}
+{texto_auxiliar[:14000]}
 ---
-REGRAS:
-- Extraia cada história individual (iniciando em <div class="historia">Título</div> até a próxima história).
-- Monte o resumo completo com todas as histórias (Título, Publicação Original, Roteiro, Arte, Personagens e Sinopse).
-- Extraia roteiro, ilustrador, valor (float), resumo, capa, link_edicao em formato JSON estrito."""
+REGRAS DE EXTRAÇÃO:
+- Identifique a edição correspondente e extraia cada história individual com detalhes.
+- Monte o resumo completo com todas as histórias contidas nesta edição (Título, Publicação Original, Roteiro, Arte, Personagens e Sinopse).
+- Extraia roteiro (nomes de todos os roteiristas separados por vírgula), ilustrador (todos os desenhistas/arte separados por vírgula), valor (preço de capa em reais, número float), resumo e link_edicao ({url_manual_gq or 'URL oficial'}).
+Retorne ESTRITAMENTE um JSON com as chaves: "roteiro", "ilustrador", "valor", "resumo", "link_edicao"."""
                             cliente = gemini_service.get_gemini_client()
                             resp_man = None
                             mod_man_usado = None
@@ -654,7 +674,10 @@ REGRAS:
                                         b64_capa = gemini_service.baixar_imagem_url_base64(str(capa_man).strip(), fallback_url=url_manual_gq)
                                         if b64_capa and b64_capa.startswith("data:image"):
                                             capa_man = b64_capa
-                                st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_man).strip()
+                                        else:
+                                            capa_man = ""
+                                if capa_man:
+                                    st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_man).strip()
                             
                             # Busca capas online se ainda não houver
                             if not st.session_state.get(f"fonte_capas_encontradas_{val_id}"):
@@ -675,6 +698,8 @@ REGRAS:
                                             "thumbnail": capa_man
                                         })
                                 st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
+                                if not st.session_state.get(f"fonte_input_capa_{val_id}") and capas_encontradas:
+                                    st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
 
                             st.success("✅ Conteúdo manual processado com sucesso! Revise os campos abaixo.")
 
