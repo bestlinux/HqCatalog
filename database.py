@@ -8,7 +8,7 @@ Suporta de forma híbrida e transparente:
 import os
 import sqlite3
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 try:
     import pandas as pd

@@ -369,9 +369,34 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
         
         session_extraidos_key = f"dados_extraidos_fonte_{val_id}"
 
-        if st.button("🚀 Extrair Dados com IA (Gemini)", key=f"btn_extrair_reserp_{val_id}", type="primary", use_container_width=True):
-            with st.spinner("🤖 Interpretando dados das fontes com a IA Gemini..."):
-                prompt_llm = f"""Você é o especialista mestre na enciclopédia GUIA DOS QUADRINHOS e nos quadrinhos publicados no Brasil.
+        if st.button("🚀 Extrair Dados (Python Direto / IA Gemini)", key=f"btn_extrair_reserp_{val_id}", type="primary", use_container_width=True):
+            dados = {}
+            modelo_usado = None
+            origem_extracao = ""
+            
+            # 1. TENTATIVA DIRETA DE BAIXAR O HTML COM PYTHON PURO (SEM IA - 100% FIEL E DETERMINÍSTICO)
+            url_gq_tentativa = link_gq_encontrado
+            if not url_gq_tentativa and fontes_lista:
+                for f in fontes_lista:
+                    u_cand = f.get("url") or ""
+                    if "guiadosquadrinhos.com/edicao/" in u_cand:
+                        url_gq_tentativa = u_cand
+                        break
+            
+            if url_gq_tentativa and "/edicao/" in url_gq_tentativa:
+                with st.spinner("⚡ Tentando extração direta 100% fiel do HTML oficial (Python BeautifulSoup)..."):
+                    html_baixado = gemini_service.buscar_html_edicao_guia_dos_quadrinhos(url_gq_tentativa)
+                    if html_baixado and ("historia" in html_baixado.lower() or "ampliar_capa" in html_baixado):
+                        dados_diretos = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_baixado, url_gq_tentativa)
+                        if dados_diretos and (dados_diretos.get("roteiro") or dados_diretos.get("desenho") or dados_diretos.get("resumo")):
+                            dados = dados_diretos
+                            modelo_usado = "Python Extractor (Ficha Oficial Guia dos Quadrinhos - Sem IA)"
+                            origem_extracao = "html_puro"
+
+            # 2. FALLBACK INTELIGENTE PARA IA GEMINI SE HOUVER BLOQUEIO POR CLOUDFLARE OU HTML VAZIO
+            if not dados or not (dados.get("roteiro") or dados.get("desenho") or dados.get("resumo")):
+                with st.spinner("🤖 Consultando dados via IA Gemini (Fallback Inteligente)..."):
+                    prompt_llm = f"""Você é o especialista mestre na enciclopédia GUIA DOS QUADRINHOS e nos quadrinhos publicados no Brasil.
 Seu objetivo é extrair e estruturar com máxima precisão a ficha técnica completa para a EDIÇÃO BRASILEIRA:
 Título: "{titulo}"
 Edição/Volume: "{edicao}"
@@ -401,97 +426,101 @@ Retorne ESTRITAMENTE um JSON com as chaves:
   "link_edicao": "..."
 }}
 """
-                cliente = gemini_service.get_gemini_client()
-                modelos = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite']
-                resposta = None
-                modelo_usado = None
-                ultimo_erro = None
-                config_gen = None
-                if gemini_service.types is not None and hasattr(gemini_service.types, "GenerateContentConfig"):
-                    try:
-                        config_gen = gemini_service.types.GenerateContentConfig(
-                            temperature=0.1,
-                            response_mime_type="application/json"
-                        )
-                    except Exception:
-                        config_gen = None
-
-                for mod in modelos:
-                    try:
-                        if config_gen is not None:
-                            resposta = cliente.models.generate_content(
-                                model=mod,
-                                contents=prompt_llm,
-                                config=config_gen
-                            )
-                        else:
-                            resposta = cliente.models.generate_content(
-                                model=mod,
-                                contents=prompt_llm
-                            )
-                        if resposta and resposta.text:
-                            modelo_usado = mod
-                            break
-                    except Exception as ai_err:
-                        ultimo_erro = ai_err
-                        continue
-
-                if not resposta or not resposta.text:
-                    st.error(f"Erro ao processar com a IA: {ultimo_erro}")
-                else:
-                    dados = gemini_service.limpar_e_parsear_json_dict(resposta.text)
-                    if dados:
-                        if modelo_usado:
-                            dados["_modelo_usado"] = modelo_usado
-                            st.session_state[f"fonte_modelo_usado_{val_id}"] = modelo_usado
-                        st.session_state[session_extraidos_key] = dados
-                        # Popula campos editáveis
-                        st.session_state[f"fonte_input_roteiro_{val_id}"] = dados.get("roteiro") or ""
-                        st.session_state[f"fonte_input_ilustrador_{val_id}"] = dados.get("ilustrador") or ""
+                    cliente = gemini_service.get_gemini_client()
+                    modelos = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite']
+                    resposta = None
+                    ultimo_erro = None
+                    config_gen = None
+                    if gemini_service.types is not None and hasattr(gemini_service.types, "GenerateContentConfig"):
                         try:
-                            st.session_state[f"fonte_input_valor_{val_id}"] = float(dados.get("valor") or 0.0)
+                            config_gen = gemini_service.types.GenerateContentConfig(
+                                temperature=0.1,
+                                response_mime_type="application/json"
+                            )
                         except Exception:
-                            st.session_state[f"fonte_input_valor_{val_id}"] = 0.0
-                        st.session_state[f"fonte_input_resumo_{val_id}"] = dados.get("resumo") or ""
-                        
-                        link_final_ed = dados.get("link_edicao") or link_gq_encontrado or ""
-                        st.session_state[f"fonte_input_link_{val_id}"] = link_final_ed
-                        
-                        # Resolução de Capa (id="ampliar_capa" / <meta property="og:image"> / ShowImage.aspx)
-                        capa_extraida = dados.get("capa") or ""
-                        if link_final_ed and "/edicao/" in link_final_ed:
-                            fn_der_capa = getattr(gemini_service, "derivar_url_capa_guia_dos_quadrinhos", None)
-                            if fn_der_capa:
-                                url_der = fn_der_capa(link_final_ed, editora=editora, edicao=edicao)
-                                if url_der and (not capa_extraida or "ShowImage.aspx" not in capa_extraida or not capa_extraida.startswith("http")):
-                                    capa_extraida = url_der
-                        
-                        # Executa a mesma Busca de Capas online para obter as opções em alta definição
-                        termo_capa_busca = f"{titulo} {edicao} {editora}".strip()
-                        capas_encontradas = gemini_service.buscar_capas_online(
-                            titulo=termo_capa_busca,
-                            edicao=edicao,
-                            editora=editora,
-                            escritor=dados.get("roteiro") or "",
-                            limite=12
-                        )
-                        
-                        if capa_extraida and str(capa_extraida).startswith("http"):
-                            if not any(c.get("url") == capa_extraida for c in capas_encontradas):
-                                capas_encontradas.insert(0, {
-                                    "url": capa_extraida,
-                                    "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos Oficial)",
-                                    "fonte": "Guia dos Quadrinhos",
-                                    "thumbnail": capa_extraida
-                                    })
-                        
-                        st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
-                        if capas_encontradas:
-                            st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
-                        elif capa_extraida and str(capa_extraida).startswith("http"):
-                            st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_extraida).strip()
-                            
-                        st.success(f"✅ Dados e opções de capas extraídos com sucesso via **{modelo_usado or 'Gemini'}**! Revise os campos abaixo.")
+                            config_gen = None
+
+                    for mod in modelos:
+                        try:
+                            if config_gen is not None:
+                                resposta = cliente.models.generate_content(
+                                    model=mod,
+                                    contents=prompt_llm,
+                                    config=config_gen
+                                )
+                            else:
+                                resposta = cliente.models.generate_content(
+                                    model=mod,
+                                    contents=prompt_llm
+                                )
+                            if resposta and resposta.text:
+                                modelo_usado = mod
+                                origem_extracao = "ia_gemini"
+                                break
+                        except Exception as ai_err:
+                            ultimo_erro = ai_err
+                            continue
+
+                    if not resposta or not resposta.text:
+                        st.error(f"Erro ao processar com a IA: {ultimo_erro}")
+                    else:
+                        dados = gemini_service.limpar_e_parsear_json_dict(resposta.text)
+
+            if dados:
+                if modelo_usado:
+                    dados["_modelo_usado"] = modelo_usado
+                    st.session_state[f"fonte_modelo_usado_{val_id}"] = modelo_usado
+                st.session_state[session_extraidos_key] = dados
+                # Popula campos editáveis
+                st.session_state[f"fonte_input_roteiro_{val_id}"] = dados.get("roteiro") or ""
+                st.session_state[f"fonte_input_ilustrador_{val_id}"] = dados.get("ilustrador") or dados.get("desenho") or ""
+                try:
+                    st.session_state[f"fonte_input_valor_{val_id}"] = float(dados.get("valor") or dados.get("preco_capa") or 0.0)
+                except Exception:
+                    st.session_state[f"fonte_input_valor_{val_id}"] = 0.0
+                st.session_state[f"fonte_input_resumo_{val_id}"] = dados.get("resumo") or ""
+                
+                link_final_ed = dados.get("link_edicao") or dados.get("url_edicao") or link_gq_encontrado or ""
+                st.session_state[f"fonte_input_link_{val_id}"] = link_final_ed
+                
+                # Resolução de Capa (id="ampliar_capa" / <meta property="og:image"> / ShowImage.aspx)
+                capa_extraida = dados.get("capa") or dados.get("capa_url") or ""
+                if link_final_ed and "/edicao/" in link_final_ed:
+                    fn_der_capa = getattr(gemini_service, "derivar_url_capa_guia_dos_quadrinhos", None)
+                    if fn_der_capa:
+                        url_der = fn_der_capa(link_final_ed, editora=editora, edicao=edicao)
+                        if url_der and (not capa_extraida or "ShowImage.aspx" not in capa_extraida or not capa_extraida.startswith("http")):
+                            capa_extraida = url_der
+                
+                # Executa a mesma Busca de Capas online para obter as opções em alta definição
+                termo_capa_busca = f"{titulo} {edicao} {editora}".strip()
+                capas_encontradas = gemini_service.buscar_capas_online(
+                    titulo=termo_capa_busca,
+                    edicao=edicao,
+                    editora=editora,
+                    escritor=dados.get("roteiro") or "",
+                    limite=12
+                )
+                
+                if capa_extraida and str(capa_extraida).startswith("http"):
+                    if not any(c.get("url") == capa_extraida for c in capas_encontradas):
+                        capas_encontradas.insert(0, {
+                            "url": capa_extraida,
+                            "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos Oficial)",
+                            "fonte": "Guia dos Quadrinhos",
+                            "thumbnail": capa_extraida
+                            })
+                
+                st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
+                if capas_encontradas:
+                    st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
+                elif capa_extraida and str(capa_extraida).startswith("http"):
+                    st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_extraida).strip()
+                    
+                if origem_extracao == "html_puro":
+                    st.success("✅ Dados extraídos com **100% de fidelidade diretamente do HTML oficial** (Python BeautifulSoup - Sem alucinações)! Revise os campos abaixo.")
+                else:
+                    st.success(f"✅ Dados e opções de capas extraídos com sucesso via **{modelo_usado or 'Gemini'}**! Revise os campos abaixo.")
 
         # Opção manual de colar link ou texto da página (posicionada antes dos widgets para permitir extração direta)
         with st.expander("📋 Opção Manual: Colar Link ou Texto da Página", expanded=False):

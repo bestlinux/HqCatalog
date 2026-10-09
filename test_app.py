@@ -824,6 +824,40 @@ class TestHqCatalog(unittest.TestCase):
         self.assertIn("Superboy decidiu ficar com Tana", res["resumo"])
         self.assertIn("22 Páginas", res["resumo"])
 
+    def test_extrair_dados_html_guia_dos_quadrinhos(self):
+        html_exemplo = """
+        <html>
+        <head><title>Superman - Lendas do Homem de Aço - José Luis García-López n° 1</title></head>
+        <body>
+            <a id="ampliar_capa" href="/edicao/ShowImage.aspx?id=123410&path=panini/s/su01112501.jpg"><img src="/edicao/ShowImage.aspx?id=123410&path=panini/s/su01112501.jpg"/></a>
+            <div>Preço de capa: R$ 44,90</div>
+            <div>Publicado em: julho de 2017</div>
+            <div>Editora: Panini</div>
+            <div>Número de páginas: 164</div>
+            <div>Formato: Americano (17 x 26 cm)</div>
+            
+            <div class="historia">O Segredo do Superman</div>
+            <strong>Personagens:</strong> <a href="#">Superman</a>, <a href="#">Lois Lane</a><br/>
+            <strong>Roteiro:</strong> <a href="#">Gerry Conway</a><br/>
+            <strong>Arte:</strong> <a href="#">José Luis García-López</a><br/>
+            Publicada pela primeira vez em Superman (1939) n° 301/1976 - DC Comics<br/>
+            Um mistério envolve a identidade secreta do Homem de Aço.
+        </body>
+        </html>
+        """
+        res = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_exemplo, "https://guiadosquadrinhos.com/edicao/superman-lendas-do-homem-de-aco-jose-luis-garcia-lopez-n-1/su011125/123410")
+        self.assertEqual(res["roteiro"], "Gerry Conway")
+        self.assertEqual(res["desenho"], "José Luis García-López")
+        self.assertEqual(res["ilustrador"], "José Luis García-López")
+        self.assertEqual(res["preco_capa"], 44.90)
+        self.assertEqual(res["valor"], 44.90)
+        self.assertIn("ShowImage.aspx?id=123410", res["capa_url"])
+        self.assertEqual(res["capa"], res["capa_url"])
+        self.assertIn("O Segredo do Superman", res["resumo"])
+        self.assertIn("Gerry Conway", res["resumo"])
+        self.assertIn("José Luis García-López", res["resumo"])
+        self.assertIn("Superman (1939) n° 301/1976", res["resumo"])
+
     def test_status_lendo_e_secao_em_leitura(self):
         # 1. Cadastrar HQs de teste
         database.salvar_hqs([

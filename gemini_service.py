@@ -3635,6 +3635,10 @@ def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dic
         res["roteiro"] = ", ".join(roteiristas_set)
 
     res["desenho"] = ", ".join(desenhistas_set) if desenhistas_set else ", ".join(artistas_gerais_set)
+    res["ilustrador"] = res["desenho"]
+    res["valor"] = res["preco_capa"]
+    res["capa"] = res["capa_url"]
+    res["link_edicao"] = res["url_edicao"]
     res["historias"] = historias_lista
 
     # Resumo consolidado de todas as histórias (div.historia) com detalhes completos
