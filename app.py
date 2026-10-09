@@ -9,6 +9,7 @@ import time
 import urllib.parse
 from datetime import datetime
 from typing import Optional, Any
+import requests
 import streamlit as st
 import pandas as pd
 from PIL import Image
@@ -533,12 +534,21 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                         texto_extraido = url_ou_texto.strip()
                         if texto_extraido.startswith("http"):
                             try:
-                                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-                                r = requests.get(texto_extraido, headers=headers, timeout=10)
-                                if "Just a moment" in r.text or "Cloudflare" in r.text:
-                                    st.warning("O site bloqueou o acesso direto (Cloudflare). Copie o texto da página diretamente no seu navegador e cole aqui.")
-                                    return
-                                texto_extraido = r.text
+                                if "guiadosquadrinhos.com" in texto_extraido:
+                                    html_gq = gemini_service.buscar_html_edicao_guia_dos_quadrinhos(texto_extraido)
+                                    if html_gq and len(html_gq) > 500:
+                                        texto_extraido = html_gq
+                                    else:
+                                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
+                                        r = requests.get(texto_extraido, headers=headers, timeout=10)
+                                        if "Just a moment" in r.text or "Cloudflare" in r.text:
+                                            st.warning("O site bloqueou o acesso direto (Cloudflare). Copie o texto ou HTML da página diretamente no seu navegador e cole nesta caixa.")
+                                            return
+                                        texto_extraido = r.text
+                                else:
+                                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
+                                    r = requests.get(texto_extraido, headers=headers, timeout=10)
+                                    texto_extraido = r.text
                             except Exception as e:
                                 st.error(f"Erro ao acessar link: {e}")
                                 return
