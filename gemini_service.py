@@ -1165,6 +1165,9 @@ def buscar_capas_online(
         url_test = item.get("url", "")
         if not url_test:
             return None
+        # Imagens do Guia dos Quadrinhos nunca são descartadas por 403 do Cloudflare
+        if "guiadosquadrinhos.com" in url_test or "ShowImage.aspx" in url_test:
+            return item
         h_check = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         try:
             # 1. Testa HEAD rápido com 1.2s timeout
@@ -1628,13 +1631,68 @@ Se não encontrar anúncios reais com preços confirmados, retorne []."""
     return ofertas[:limite]
 
 
+_CACHE_CAPAS_GQ: Dict[str, str] = {}
+
+
+def _guardar_capa_gq_cache(url_edicao: str, url_img: str, b64_str: str) -> None:
+    """Armazena a string Base64 da capa no cache em memória indexado por várias chaves para consulta instantânea."""
+    global _CACHE_CAPAS_GQ
+    if not b64_str or not b64_str.startswith("data:image"):
+        return
+    if url_edicao:
+        _CACHE_CAPAS_GQ[url_edicao] = b64_str
+        m_id_ed = re.search(r"/(\d+)$", url_edicao)
+        if m_id_ed:
+            _CACHE_CAPAS_GQ[f"id_{m_id_ed.group(1)}"] = b64_str
+    if url_img:
+        _CACHE_CAPAS_GQ[url_img] = b64_str
+        clean_img = re.sub(r"&[wh]=\d+", "", url_img)
+        _CACHE_CAPAS_GQ[clean_img] = b64_str
+        m_id_img = re.search(r"id=(\d+)", url_img)
+        if m_id_img:
+            _CACHE_CAPAS_GQ[f"id_{m_id_img.group(1)}"] = b64_str
+
+
+def obter_capa_gq_cache(url_img: Optional[str] = None, url_edicao: Optional[str] = None) -> Optional[str]:
+    """Retorna a string base64 da capa se ela estiver no cache em memória vinculada estritamente à edição ou URL."""
+    global _CACHE_CAPAS_GQ
+    if not _CACHE_CAPAS_GQ:
+        return None
+    for cand in [url_img, url_edicao]:
+        if not cand:
+            continue
+        if cand in _CACHE_CAPAS_GQ:
+            return _CACHE_CAPAS_GQ[cand]
+        clean_cand = re.sub(r"&[wh]=\d+", "", cand)
+        if clean_cand in _CACHE_CAPAS_GQ:
+            return _CACHE_CAPAS_GQ[clean_cand]
+        m_id = re.search(r"id=(\d+)|/(\d+)$", cand)
+        if m_id:
+            key_id = f"id_{m_id.group(1) or m_id.group(2)}"
+            if key_id in _CACHE_CAPAS_GQ:
+                return _CACHE_CAPAS_GQ[key_id]
+    return None
+
+
 def baixar_imagem_url_base64(url: str, max_dim: int = 1000, quality: int = 90, timeout: int = 4, fallback_url: Optional[str] = None) -> str:
     """
     Baixa uma imagem a partir de uma URL e converte em string base64 JPEG compacta em alta definição.
     Se não for possível baixar ou processar, tenta a fallback_url ou retorna a própria URL original.
     """
-    if not url or not (url.startswith("http://") or url.startswith("https://")):
+    if not url:
+        return ""
+
+    if url.startswith("data:image"):
         return url
+
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return url
+
+    # 1. Consulta expressa no cache de capas do Guia dos Quadrinhos
+    if "guiadosquadrinhos.com" in url or "ShowImage.aspx" in url:
+        b64_em_cache = obter_capa_gq_cache(url, fallback_url)
+        if b64_em_cache:
+            return b64_em_cache
 
     if requests is None or Image is None:
         return url
@@ -1662,7 +1720,55 @@ def baixar_imagem_url_base64(url: str, max_dim: int = 1000, quality: int = 90, t
         except Exception as ex:
             print(f"[Aviso ao baixar imagem {u}: {ex}]")
 
+    # Fallback especial para imagens do Guia dos Quadrinhos protegidas por Cloudflare
+    for u in urls_para_tentar:
+        if "guiadosquadrinhos.com" in u or "ShowImage.aspx" in u:
+            # Re-verifica cache
+            b64_c = obter_capa_gq_cache(u, fallback_url)
+            if b64_c:
+                return b64_c
+
+            def _fetch_img_cf(img_target: str, ref_page: Optional[str] = None) -> Optional[bytes]:
+                try:
+                    from camoufox.sync_api import Camoufox
+                    with Camoufox(headless=True, humanize=True) as browser:
+                        page = browser.new_page()
+                        target_nav = ref_page if (ref_page and "guiadosquadrinhos.com/edicao/" in ref_page) else "https://www.guiadosquadrinhos.com/"
+                        page.goto(target_nav, timeout=30000)
+                        try:
+                            page.wait_for_selector(".historia, #ampliar_capa, body", timeout=12000)
+                        except Exception:
+                            pass
+                        clean_u = re.sub(r"&[wh]=\d+", "", img_target)
+                        resp = page.request.get(clean_u, headers={"Referer": page.url})
+                        if resp and resp.status == 200:
+                            b = resp.body()
+                            if len(b) > 1000 and b"Just a moment" not in b:
+                                return b
+                except Exception:
+                    pass
+                return None
+
+            try:
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    raw_cf = pool.submit(_fetch_img_cf, u, fallback_url).result(timeout=40)
+                    if raw_cf:
+                        img = Image.open(io.BytesIO(raw_cf))
+                        img = img.convert("RGB")
+                        if max(img.size) > max_dim:
+                            img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+                        buffer = io.BytesIO()
+                        img.save(buffer, format="JPEG", quality=quality, optimize=True)
+                        b64_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                        res_b64 = f"data:image/jpeg;base64,{b64_str}"
+                        _guardar_capa_gq_cache(fallback_url or "", u, res_b64)
+                        return res_b64
+            except Exception as ex_cf:
+                print(f"[Aviso ao baixar imagem com Camoufox {u}: {ex_cf}]")
+
     return url
+
 
 
 # -------------------------------------------------------------
@@ -3382,19 +3488,52 @@ def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
     if not url or not url.startswith("http") or "guiadosquadrinhos.com" not in url:
         return ""
 
-    # 1. Tentativa Principal via Camoufox (Invisível, resolve Cloudflare Turnstile com 100% de sucesso)
+    # 1. Tentativa Principal via Camoufox (Invisível, resolve Cloudflare Turnstile)
+    # Executado em ThreadPoolExecutor isolado para compatibilidade total com o asyncio do Streamlit
+    def _fetch_camoufox(target_url: str) -> str:
+        try:
+            from camoufox.sync_api import Camoufox
+            with Camoufox(headless=True, humanize=True) as browser:
+                page = browser.new_page()
+                page.goto(target_url, timeout=35000)
+                try:
+                    page.wait_for_selector('.historia, #ampliar_capa, [id*="ampliar"]', timeout=15000)
+                except Exception:
+                    pass
+
+                # Pré-carrega e converte a capa em Base64 durante a navegação autenticada
+                try:
+                    amp_el = page.query_selector('#ampliar_capa img') or page.query_selector('#ampliar_capa')
+                    if amp_el:
+                        src_c = amp_el.get_attribute('src') or amp_el.get_attribute('href')
+                        if src_c:
+                            f_url = src_c if src_c.startswith('http') else 'https://www.guiadosquadrinhos.com/' + src_c.lstrip('/')
+                            clean_img = re.sub(r'&[wh]=\d+', '', f_url)
+                            resp_img = page.request.get(clean_img, headers={'Referer': page.url})
+                            if resp_img and resp_img.status == 200 and len(resp_img.body()) > 1000:
+                                im = Image.open(io.BytesIO(resp_img.body())).convert('RGB')
+                                if max(im.size) > 1000:
+                                    im.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
+                                buf = io.BytesIO()
+                                im.save(buf, format='JPEG', quality=90, optimize=True)
+                                b64_str = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
+                                _guardar_capa_gq_cache(target_url, clean_img, b64_str)
+                except Exception as ex_capa:
+                    print(f"[Aviso ao extrair capa Camoufox: {ex_capa}]")
+
+                html_cf = page.content()
+                if html_cf and ("historia" in html_cf.lower() or "ampliar_capa" in html_cf or "preco de capa" in html_cf.lower()):
+                    return html_cf
+        except Exception:
+            pass
+        return ""
+
     try:
-        from camoufox.sync_api import Camoufox
-        with Camoufox(headless=True, humanize=True) as browser:
-            page = browser.new_page()
-            page.goto(url, timeout=35000)
-            try:
-                page.wait_for_selector('.historia, #ampliar_capa, [id*="ampliar"]', timeout=15000)
-            except Exception:
-                pass
-            html_cf = page.content()
-            if html_cf and ("historia" in html_cf.lower() or "ampliar_capa" in html_cf or "preco de capa" in html_cf.lower()):
-                return html_cf
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            html_isolado = pool.submit(_fetch_camoufox, url).result(timeout=45)
+            if html_isolado:
+                return html_isolado
     except Exception:
         pass
 
@@ -3658,6 +3797,14 @@ def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dic
     res["link_edicao"] = res["url_edicao"]
     res["historias"] = historias_lista
 
+    # Se houver capa em Base64 no cache, associa diretamente para blindar contra bloqueio de hotlink do Cloudflare
+    b64_c = obter_capa_gq_cache(res.get("capa_url"), url_orig)
+    if b64_c:
+        res["capa_b64"] = b64_c
+        res["capa_url_original"] = res.get("capa_url") or ""
+        res["capa_url"] = b64_c
+        res["capa"] = b64_c
+
     # Resumo consolidado de todas as histórias (div.historia) com detalhes completos
     if historias_lista:
         linhas_resumo = []
@@ -3866,6 +4013,14 @@ def extrair_dados_texto_ou_html_gq(conteudo: str, url_orig: str = "") -> Dict[st
         linhas_uteis = [l for l in linhas if not any(l.lower().startswith(k) for k in cabecalho_keys) and not l.lower().startswith("histórias") and not l.lower().startswith("ficha técnica") and not l.lower().startswith("http")]
         if linhas_uteis:
             res["resumo"] = "\n".join(linhas_uteis)
+
+    if not res.get("capa_b64"):
+        b64_txt = obter_capa_gq_cache(res.get("capa_url"), url_orig)
+        if b64_txt:
+            res["capa_b64"] = b64_txt
+            res["capa_url_original"] = res.get("capa_url") or ""
+            res["capa_url"] = b64_txt
+            res["capa"] = b64_txt
 
     return res
 

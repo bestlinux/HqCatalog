@@ -317,14 +317,28 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
     session_reserp_key = f"reserp_fontes_data_{val_id}"
     termo_cache_key = f"termo_reserp_cache_{val_id}"
     input_key = f"input_reserp_query_{val_id}"
+    session_extraidos_key = f"dados_extraidos_fonte_{val_id}"
 
     if btn_limpar:
         st.session_state.pop(session_reserp_key, None)
         st.session_state.pop(termo_cache_key, None)
         st.session_state.pop(input_key, None)
+        st.session_state.pop(session_extraidos_key, None)
+        st.session_state.pop(f"fonte_input_capa_{val_id}", None)
+        st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
+        st.session_state.pop(f"fonte_input_roteiro_{val_id}", None)
+        st.session_state.pop(f"fonte_input_ilustrador_{val_id}", None)
+        st.session_state.pop(f"fonte_input_valor_{val_id}", None)
+        st.session_state.pop(f"fonte_input_link_{val_id}", None)
+        st.session_state.pop(f"fonte_input_resumo_{val_id}", None)
         st.rerun()
 
     termo_mudou = st.session_state.get(termo_cache_key) != termo_busca.strip()
+    if termo_mudou:
+        st.session_state.pop(session_extraidos_key, None)
+        st.session_state.pop(f"fonte_input_capa_{val_id}", None)
+        st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
+
     sem_fontes = not bool(st.session_state.get(session_reserp_key, {}).get("fontes"))
 
     if btn_pesquisar or termo_mudou or (session_reserp_key not in st.session_state) or sem_fontes:
@@ -367,10 +381,12 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
 
         st.markdown("---")
         st.markdown("#### 🤖 Extração Inteligente com IA")
-        
-        session_extraidos_key = f"dados_extraidos_fonte_{val_id}"
 
         if st.button("🚀 Extrair Dados (Python Direto / IA Gemini)", key=f"btn_extrair_reserp_{val_id}", type="primary", use_container_width=True):
+            # Limpa explicitamente dados e capas de execuções anteriores para esta busca
+            st.session_state.pop(session_extraidos_key, None)
+            st.session_state.pop(f"fonte_input_capa_{val_id}", None)
+            st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
             dados = {}
             modelo_usado = None
             origem_extracao = ""
@@ -485,14 +501,19 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                 st.session_state[f"fonte_input_link_{val_id}"] = link_final_ed
                 
                 # Resolução de Capa (id="ampliar_capa" / <meta property="og:image"> / ShowImage.aspx)
-                capa_extraida = dados.get("capa") or dados.get("capa_url") or ""
+                capa_extraida = dados.get("capa_b64") or dados.get("capa") or dados.get("capa_url") or ""
                 if link_final_ed and "/edicao/" in link_final_ed:
                     fn_der_capa = getattr(gemini_service, "derivar_url_capa_guia_dos_quadrinhos", None)
                     if fn_der_capa:
                         url_der = fn_der_capa(link_final_ed, editora=editora, edicao=edicao)
-                        if url_der and (not capa_extraida or "ShowImage.aspx" not in capa_extraida or not capa_extraida.startswith("http")):
+                        if url_der and (not capa_extraida or "ShowImage.aspx" not in capa_extraida or not (capa_extraida.startswith("http") or capa_extraida.startswith("data:image"))):
                             capa_extraida = url_der
                 
+                if capa_extraida and str(capa_extraida).startswith("http") and ("guiadosquadrinhos.com" in capa_extraida or "ShowImage.aspx" in capa_extraida):
+                    b64_capa = gemini_service.baixar_imagem_url_base64(str(capa_extraida).strip(), fallback_url=link_final_ed)
+                    if b64_capa and b64_capa.startswith("data:image"):
+                        capa_extraida = b64_capa
+
                 # Executa a mesma Busca de Capas online para obter as opções em alta definição
                 termo_capa_busca = f"{titulo} {edicao} {editora}".strip()
                 capas_encontradas = gemini_service.buscar_capas_online(
@@ -503,19 +524,19 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     limite=12
                 )
                 
-                if capa_extraida and str(capa_extraida).startswith("http"):
+                if capa_extraida:
                     if not any(c.get("url") == capa_extraida for c in capas_encontradas):
                         capas_encontradas.insert(0, {
                             "url": capa_extraida,
                             "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos Oficial)",
                             "fonte": "Guia dos Quadrinhos",
                             "thumbnail": capa_extraida
-                            })
+                        })
                 
                 st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
                 if capas_encontradas:
                     st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
-                elif capa_extraida and str(capa_extraida).startswith("http"):
+                elif capa_extraida:
                     st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_extraida).strip()
                     
                 if origem_extracao == "html_puro":
@@ -530,21 +551,23 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                 if not url_ou_texto.strip():
                     st.warning("Cole o link ou texto primeiro!")
                 else:
+                    # Limpa explicitamente dados e capas de execuções anteriores
+                    st.session_state.pop(session_extraidos_key, None)
+                    st.session_state.pop(f"fonte_input_capa_{val_id}", None)
+                    st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
                     with st.spinner("🌐 Acessando página com navegador invisível e extraindo ficha técnica..."):
                         texto_extraido = url_ou_texto.strip()
+                        url_manual_gq = ""
                         if texto_extraido.startswith("http"):
                             try:
                                 if "guiadosquadrinhos.com" in texto_extraido:
+                                    url_manual_gq = texto_extraido
                                     html_gq = gemini_service.buscar_html_edicao_guia_dos_quadrinhos(texto_extraido)
                                     if html_gq and len(html_gq) > 500:
                                         texto_extraido = html_gq
                                     else:
-                                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
-                                        r = requests.get(texto_extraido, headers=headers, timeout=10)
-                                        if "Just a moment" in r.text or "Cloudflare" in r.text:
-                                            st.warning("O site bloqueou o acesso direto (Cloudflare). Copie o texto ou HTML da página diretamente no seu navegador e cole nesta caixa.")
-                                            return
-                                        texto_extraido = r.text
+                                        st.warning("Não foi possível carregar o conteúdo da página automaticamente. Copie o texto ou HTML da página diretamente no seu navegador e cole nesta caixa.")
+                                        return
                                 else:
                                     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
                                     r = requests.get(texto_extraido, headers=headers, timeout=10)
@@ -556,7 +579,7 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                         dados_man = {}
                         # 1. Tenta extração determinística 100% fiel de HTML/Texto do Guia dos Quadrinhos (<div class="historia">)
                         if "<div" in texto_extraido or "class=" in texto_extraido or "historia" in texto_extraido.lower() or "personagens:" in texto_extraido.lower() or "roteiro:" in texto_extraido.lower():
-                            dados_man = gemini_service.extrair_dados_texto_ou_html_gq(texto_extraido)
+                            dados_man = gemini_service.extrair_dados_texto_ou_html_gq(texto_extraido, url_orig=url_manual_gq)
                         
                         # 2. Se não extraiu completamente ou precisa de IA, complementa com Gemini
                         if not dados_man or not dados_man.get("resumo"):
@@ -602,10 +625,15 @@ REGRAS:
                             except Exception:
                                 st.session_state[f"fonte_input_valor_{val_id}"] = 0.0
                             st.session_state[f"fonte_input_resumo_{val_id}"] = dados_man.get("resumo") or ""
-                            st.session_state[f"fonte_input_link_{val_id}"] = dados_man.get("link_edicao") or dados_man.get("url_edicao") or ""
+                            st.session_state[f"fonte_input_link_{val_id}"] = dados_man.get("link_edicao") or dados_man.get("url_edicao") or url_manual_gq or ""
                             
-                            capa_man = dados_man.get("capa_url") or dados_man.get("capa") or ""
-                            if capa_man and str(capa_man).startswith("http"):
+                            capa_man = dados_man.get("capa_b64") or dados_man.get("capa_url") or dados_man.get("capa") or ""
+                            if capa_man:
+                                if str(capa_man).startswith("http") and ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man):
+                                    with st.spinner("🖼️ Baixando capa em alta resolução (resolvendo bloqueio Cloudflare)..."):
+                                        b64_capa = gemini_service.baixar_imagem_url_base64(str(capa_man).strip(), fallback_url=url_manual_gq)
+                                        if b64_capa and b64_capa.startswith("data:image"):
+                                            capa_man = b64_capa
                                 st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_man).strip()
                             
                             # Busca capas online se ainda não houver
@@ -618,11 +646,11 @@ REGRAS:
                                     escritor=dados_man.get("roteiro") or "",
                                     limite=12
                                 )
-                                if capa_man and str(capa_man).startswith("http"):
+                                if capa_man:
                                     if not any(c.get("url") == capa_man for c in capas_encontradas):
                                         capas_encontradas.insert(0, {
                                             "url": capa_man,
-                                            "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos)",
+                                            "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos Oficial)",
                                             "fonte": "Guia dos Quadrinhos",
                                             "thumbnail": capa_man
                                         })
