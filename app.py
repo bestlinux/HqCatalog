@@ -533,7 +533,8 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     edicao=edicao,
                     editora=editora,
                     escritor=dados.get("roteiro") or "",
-                    limite=12
+                    limite=12,
+                    url_edicao=link_final_ed
                 )
                 
                 if capa_extraida and (capa_extraida.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_extraida or "ShowImage.aspx" in capa_extraida)):
@@ -550,6 +551,8 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
                 elif capa_extraida and (capa_extraida.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_extraida or "ShowImage.aspx" in capa_extraida)):
                     st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_extraida).strip()
+                elif hq_alvo.get("capa"):
+                    st.session_state[f"fonte_input_capa_{val_id}"] = hq_alvo.get("capa")
                     
                 if origem_extracao == "html_puro":
                     st.success("✅ Dados extraídos com **100% de fidelidade diretamente do HTML oficial** (Python BeautifulSoup - Sem alucinações)! Revise os campos abaixo.")
@@ -679,27 +682,31 @@ Retorne ESTRITAMENTE um JSON com as chaves: "roteiro", "ilustrador", "valor", "r
                                 if capa_man:
                                     st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_man).strip()
                             
-                            # Busca capas online se ainda não houver
-                            if not st.session_state.get(f"fonte_capas_encontradas_{val_id}"):
-                                termo_capa_busca = f"{titulo} {edicao} {editora}".strip()
-                                capas_encontradas = gemini_service.buscar_capas_online(
-                                    titulo=termo_capa_busca,
-                                    edicao=edicao,
-                                    editora=editora,
-                                    escritor=dados_man.get("roteiro") or "",
-                                    limite=12
-                                )
-                                if capa_man and (capa_man.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man)):
-                                    if not any(c.get("url") == capa_man for c in capas_encontradas):
-                                        capas_encontradas.insert(0, {
-                                            "url": capa_man,
-                                            "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos Oficial)",
-                                            "fonte": "Guia dos Quadrinhos",
-                                            "thumbnail": capa_man
-                                        })
-                                st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
-                                if not st.session_state.get(f"fonte_input_capa_{val_id}") and capas_encontradas:
-                                    st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
+                            # Busca capas online para obter as opções em alta definição
+                            termo_capa_busca = f"{titulo} {edicao} {editora}".strip()
+                            capas_encontradas = gemini_service.buscar_capas_online(
+                                titulo=termo_capa_busca,
+                                edicao=edicao,
+                                editora=editora,
+                                escritor=dados_man.get("roteiro") or "",
+                                limite=12,
+                                url_edicao=url_manual_gq
+                            )
+                            if capa_man and (capa_man.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man)):
+                                if not any(c.get("url") == capa_man for c in capas_encontradas):
+                                    capas_encontradas.insert(0, {
+                                        "url": capa_man,
+                                        "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos Oficial)",
+                                        "fonte": "Guia dos Quadrinhos",
+                                        "thumbnail": capa_man
+                                    })
+                            st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
+                            if capa_man:
+                                st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_man).strip()
+                            elif capas_encontradas:
+                                st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
+                            elif hq_alvo.get("capa"):
+                                st.session_state[f"fonte_input_capa_{val_id}"] = hq_alvo.get("capa")
 
                             st.success("✅ Conteúdo manual processado com sucesso! Revise os campos abaixo.")
 

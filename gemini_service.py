@@ -972,7 +972,8 @@ def buscar_capas_online(
     edicao: str = "",
     editora: str = "",
     escritor: str = "",
-    limite: int = 15
+    limite: int = 15,
+    url_edicao: str = ""
 ) -> List[Dict[str, str]]:
     """
     Busca capas reais e em alta definição de quadrinhos, mangás e graphic novels online:
@@ -1096,6 +1097,10 @@ def buscar_capas_online(
                 f"{titulo_limpo} {edicao} {editora} capa gibi".strip(),
                 f"{titulo_sem_pont} {num_num} {editora} capa".strip() if num_num else f"{titulo_sem_pont} {editora} capa".strip()
             ]
+            m_cod_gq = re.search(r"([a-zA-Z]{2}\d{4,8})", f"{titulo} {edicao} {url_edicao}")
+            if m_cod_gq:
+                queries_bing.append(f"guiadosquadrinhos {m_cod_gq.group(1)}")
+            queries_bing.append(f"gibi {titulo_limpo} {edicao} capa mercado livre")
             for q_b in queries_bing:
                 url_b = f"https://www.bing.com/images/search?q={urllib.parse.quote(q_b)}&FORM=HDRSC2"
                 r_b = requests.get(url_b, headers=headers_web, timeout=3.5)
@@ -1642,6 +1647,18 @@ Se não encontrar anúncios reais com preços confirmados, retorne []."""
     return ofertas[:limite]
 
 
+def assegurar_camoufox_instalado() -> bool:
+    """Verifica e assegura que os binários do Camoufox estão instalados no ambiente (incluindo Streamlit Cloud)."""
+    try:
+        from camoufox import pkgman
+        if not pkgman.installed_verstr():
+            pkgman.CamoufoxFetcher().install()
+        return True
+    except Exception as ex:
+        print(f"[Aviso ao verificar Camoufox: {ex}]")
+        return False
+
+
 _CACHE_CAPAS_GQ: Dict[str, str] = {}
 
 
@@ -1741,6 +1758,7 @@ def baixar_imagem_url_base64(url: str, max_dim: int = 1000, quality: int = 90, t
 
             def _fetch_img_cf(img_target: str, ref_page: Optional[str] = None) -> Optional[bytes]:
                 try:
+                    assegurar_camoufox_instalado()
                     from camoufox.sync_api import Camoufox
                     with Camoufox(headless=True, humanize=True) as browser:
                         page = browser.new_page()
@@ -3536,6 +3554,7 @@ def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
     # Executado em ThreadPoolExecutor isolado para compatibilidade total com o asyncio do Streamlit
     def _fetch_camoufox(target_url: str) -> str:
         try:
+            assegurar_camoufox_instalado()
             from camoufox.sync_api import Camoufox
             with Camoufox(headless=True, humanize=True) as browser:
                 page = browser.new_page()
