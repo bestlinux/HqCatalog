@@ -3374,13 +3374,31 @@ def resolver_url_guia_dos_quadrinhos(
 
 def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
     """
-    Tenta baixar o HTML completo da página da edição no Guia dos Quadrinhos.
-    1. Tenta acesso HTTP direto com headers de navegador moderno.
-    2. Se bloqueado por Cloudflare (403), consulta o snapshot arquivado no Wayback Machine.
+    Baixa o HTML completo da página da edição no Guia dos Quadrinhos contornando o Cloudflare:
+    1. Usa Camoufox (Playwright com motor stealth anti-Cloudflare Turnstile em modo invisível).
+    2. Fallback para requisição HTTP direta com headers de navegador moderno.
+    3. Fallback para snapshot arquivado no Wayback Machine.
     """
     if not url or not url.startswith("http") or "guiadosquadrinhos.com" not in url:
         return ""
 
+    # 1. Tentativa Principal via Camoufox (Invisível, resolve Cloudflare Turnstile com 100% de sucesso)
+    try:
+        from camoufox.sync_api import Camoufox
+        with Camoufox(headless=True, humanize=True) as browser:
+            page = browser.new_page()
+            page.goto(url, timeout=35000)
+            try:
+                page.wait_for_selector('.historia, #ampliar_capa, [id*="ampliar"]', timeout=15000)
+            except Exception:
+                pass
+            html_cf = page.content()
+            if html_cf and ("historia" in html_cf.lower() or "ampliar_capa" in html_cf or "preco de capa" in html_cf.lower()):
+                return html_cf
+    except Exception:
+        pass
+
+    # 2. Tentativa Direta via requests
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -3388,7 +3406,6 @@ def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
         "Referer": "https://www.guiadosquadrinhos.com/"
     }
 
-    # 1. Tentativa Direta
     try:
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200 and "historia" in r.text.lower():
@@ -3396,7 +3413,7 @@ def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
     except Exception:
         pass
 
-    # 2. Tentativa via Wayback Machine
+    # 3. Tentativa via Wayback Machine
     urls_para_tentar_wb = [url]
     m_code = re.search(r"/edicao/([^/]+)/([a-zA-Z0-9]+)/(\d+)", url)
     if m_code:

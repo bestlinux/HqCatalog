@@ -530,7 +530,7 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                 if not url_ou_texto.strip():
                     st.warning("Cole o link ou texto primeiro!")
                 else:
-                    with st.spinner("Processando conteúdo..."):
+                    with st.spinner("🌐 Acessando página com navegador invisível e extraindo ficha técnica..."):
                         texto_extraido = url_ou_texto.strip()
                         if texto_extraido.startswith("http"):
                             try:
