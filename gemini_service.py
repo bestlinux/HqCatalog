@@ -1165,9 +1165,20 @@ def buscar_capas_online(
         url_test = item.get("url", "")
         if not url_test:
             return None
-        # Imagens do Guia dos Quadrinhos nunca são descartadas por 403 do Cloudflare
+        # Imagens do Guia dos Quadrinhos protegidas por anti-hotlink do Cloudflare:
+        # Só devem ser exibidas se já estiverem em Base64 ou puderem ser recuperadas do cache
         if "guiadosquadrinhos.com" in url_test or "ShowImage.aspx" in url_test:
-            return item
+            if url_test.startswith("data:image"):
+                return item
+            b64_c = obter_capa_gq_cache(url_test)
+            if b64_c:
+                item_copia = dict(item)
+                item_copia["url"] = b64_c
+                item_copia["thumbnail"] = b64_c
+                return item_copia
+            # Se não estiver em Base64, a imagem quebrará no navegador por 403 do Cloudflare,
+            # então descarta para exibir somente imagens funcionais (Bing, Google, Panini, etc.)
+            return None
         h_check = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         try:
             # 1. Testa HEAD rápido com 1.2s timeout
@@ -1733,26 +1744,48 @@ def baixar_imagem_url_base64(url: str, max_dim: int = 1000, quality: int = 90, t
                     from camoufox.sync_api import Camoufox
                     with Camoufox(headless=True, humanize=True) as browser:
                         page = browser.new_page()
-                        target_nav = ref_page if (ref_page and "guiadosquadrinhos.com/edicao/" in ref_page) else "https://www.guiadosquadrinhos.com/"
-                        page.goto(target_nav, timeout=30000)
-                        try:
-                            page.wait_for_selector(".historia, #ampliar_capa, body", timeout=12000)
-                        except Exception:
-                            pass
                         clean_u = re.sub(r"&[wh]=\d+", "", img_target)
-                        resp = page.request.get(clean_u, headers={"Referer": page.url})
-                        if resp and resp.status == 200:
-                            b = resp.body()
-                            if len(b) > 1000 and b"Just a moment" not in b:
+                        target_nav = clean_u
+                        if ref_page and "guiadosquadrinhos.com/edicao/" in ref_page:
+                            target_nav = ref_page
+                        page.goto(target_nav, timeout=35000)
+                        
+                        # Aguarda ativamente a resolução e estabilização do Cloudflare Turnstile
+                        for _ in range(15):
+                            try:
+                                cnt = page.content()
+                                if "just a moment" not in cnt.lower() and "challenge" not in cnt.lower():
+                                    break
+                            except Exception:
+                                pass
+                            time.sleep(1.0)
+                        
+                        # 1. Se estiver na página da edição, captura o elemento da capa oficial
+                        el_capa = page.query_selector("#ampliar_capa img") or page.query_selector("#ampliar_capa")
+                        if el_capa:
+                            b = el_capa.screenshot()
+                            if b and len(b) > 1000:
                                 return b
-                except Exception:
-                    pass
+                                
+                        # 2. Se navegou direto para ShowImage.aspx, captura o elemento <img> renderizado
+                        el_img = page.query_selector("img")
+                        if el_img:
+                            b = el_img.screenshot()
+                            if b and len(b) > 1000:
+                                return b
+                                
+                        # 3. Fallback: screenshot da página completa
+                        b_page = page.screenshot()
+                        if b_page and len(b_page) > 1000:
+                            return b_page
+                except Exception as ex_f:
+                    print(f"[Aviso Camoufox fetch_img: {ex_f}]")
                 return None
 
             try:
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    raw_cf = pool.submit(_fetch_img_cf, u, fallback_url).result(timeout=40)
+                    raw_cf = pool.submit(_fetch_img_cf, u, fallback_url).result(timeout=45)
                     if raw_cf:
                         img = Image.open(io.BytesIO(raw_cf))
                         img = img.convert("RGB")
@@ -1766,6 +1799,10 @@ def baixar_imagem_url_base64(url: str, max_dim: int = 1000, quality: int = 90, t
                         return res_b64
             except Exception as ex_cf:
                 print(f"[Aviso ao baixar imagem com Camoufox {u}: {ex_cf}]")
+
+    # Nunca retorna ShowImage.aspx cru caso não tenha conseguido converter para Base64 (evita 403 no cliente)
+    if "guiadosquadrinhos.com" in url or "ShowImage.aspx" in url:
+        return ""
 
     return url
 
@@ -3488,6 +3525,13 @@ def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
     if not url or not url.startswith("http") or "guiadosquadrinhos.com" not in url:
         return ""
 
+    # Normaliza URL para evitar redirecionamentos adicionais
+    norm_url = url.strip()
+    if norm_url.startswith("http://"):
+        norm_url = norm_url.replace("http://", "https://")
+    if "guiadosquadrinhos.com" in norm_url and "www.guiadosquadrinhos.com" not in norm_url:
+        norm_url = norm_url.replace("guiadosquadrinhos.com", "www.guiadosquadrinhos.com")
+
     # 1. Tentativa Principal via Camoufox (Invisível, resolve Cloudflare Turnstile)
     # Executado em ThreadPoolExecutor isolado para compatibilidade total com o asyncio do Streamlit
     def _fetch_camoufox(target_url: str) -> str:
@@ -3495,43 +3539,64 @@ def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
             from camoufox.sync_api import Camoufox
             with Camoufox(headless=True, humanize=True) as browser:
                 page = browser.new_page()
-                page.goto(target_url, timeout=35000)
+                page.goto(target_url, timeout=40000)
                 try:
-                    page.wait_for_selector('.historia, #ampliar_capa, [id*="ampliar"]', timeout=15000)
+                    page.wait_for_selector('.historia, #ampliar_capa, [id*="ampliar"]', timeout=20000)
                 except Exception:
                     pass
 
-                # Pré-carrega e converte a capa em Base64 durante a navegação autenticada
+                # Aguarda ativamente caso o Cloudflare Turnstile ainda esteja negociando o token ou recarregando
+                html_cf = ""
+                for _ in range(16):
+                    try:
+                        cf_preview = page.content()
+                        if "historia" in cf_preview.lower() or "ampliar_capa" in cf_preview or "preco de capa" in cf_preview.lower():
+                            html_cf = cf_preview
+                            break
+                        if "just a moment" in cf_preview.lower() or "challenge" in cf_preview.lower():
+                            time.sleep(1.0)
+                        else:
+                            html_cf = cf_preview
+                            break
+                    except Exception:
+                        # Página ainda navegando ou contexto recarregando pelo Turnstile
+                        time.sleep(1.0)
+
+                # Pré-carrega e converte a capa em Base64 durante a navegação autenticada (via screenshot do elemento)
                 try:
                     amp_el = page.query_selector('#ampliar_capa img') or page.query_selector('#ampliar_capa')
                     if amp_el:
-                        src_c = amp_el.get_attribute('src') or amp_el.get_attribute('href')
-                        if src_c:
-                            f_url = src_c if src_c.startswith('http') else 'https://www.guiadosquadrinhos.com/' + src_c.lstrip('/')
-                            clean_img = re.sub(r'&[wh]=\d+', '', f_url)
-                            resp_img = page.request.get(clean_img, headers={'Referer': page.url})
-                            if resp_img and resp_img.status == 200 and len(resp_img.body()) > 1000:
-                                im = Image.open(io.BytesIO(resp_img.body())).convert('RGB')
-                                if max(im.size) > 1000:
-                                    im.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
-                                buf = io.BytesIO()
-                                im.save(buf, format='JPEG', quality=90, optimize=True)
-                                b64_str = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
-                                _guardar_capa_gq_cache(target_url, clean_img, b64_str)
+                        src_c = amp_el.get_attribute('src') or amp_el.get_attribute('href') or ""
+                        f_url = src_c if src_c.startswith('http') else ('https://www.guiadosquadrinhos.com/' + src_c.lstrip('/') if src_c else target_url)
+                        clean_img = re.sub(r'&[wh]=\d+', '', f_url)
+                        bytes_capa = amp_el.screenshot()
+                        if bytes_capa and len(bytes_capa) > 1000:
+                            im = Image.open(io.BytesIO(bytes_capa)).convert('RGB')
+                            if max(im.size) > 1000:
+                                im.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
+                            buf = io.BytesIO()
+                            im.save(buf, format='JPEG', quality=90, optimize=True)
+                            b64_str = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
+                            _guardar_capa_gq_cache(target_url, clean_img, b64_str)
                 except Exception as ex_capa:
                     print(f"[Aviso ao extrair capa Camoufox: {ex_capa}]")
 
-                html_cf = page.content()
                 if html_cf and ("historia" in html_cf.lower() or "ampliar_capa" in html_cf or "preco de capa" in html_cf.lower()):
                     return html_cf
-        except Exception:
-            pass
+                try:
+                    final_c = page.content()
+                    if final_c and ("historia" in final_c.lower() or "ampliar_capa" in final_c):
+                        return final_c
+                except Exception:
+                    pass
+        except Exception as ex_cf_main:
+            print(f"[Aviso Camoufox: {ex_cf_main}]")
         return ""
 
     try:
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            html_isolado = pool.submit(_fetch_camoufox, url).result(timeout=45)
+            html_isolado = pool.submit(_fetch_camoufox, norm_url).result(timeout=60)
             if html_isolado:
                 return html_isolado
     except Exception:
@@ -4296,9 +4361,11 @@ def buscar_dados_guia_dos_quadrinhos(
                                 break
             except Exception:
                 pass
-        # Fallback para URL caso não haja conversão base64
+        # Fallback para URL caso não haja conversão base64 (nunca repassa ShowImage.aspx cru)
         if not ficha_canonica.get("capa_b64"):
-            ficha_canonica["capa_b64"] = ficha_canonica.get("capa_url") or (ficha_canonica["capas_alternativas"][0]["url"] if ficha_canonica.get("capas_alternativas") else "")
+            cand_c = ficha_canonica.get("capa_url") or (ficha_canonica["capas_alternativas"][0]["url"] if ficha_canonica.get("capas_alternativas") else "")
+            if cand_c and not ("guiadosquadrinhos.com" in cand_c or "ShowImage.aspx" in cand_c):
+                ficha_canonica["capa_b64"] = cand_c
         return ficha_canonica
 
     # -----------------------------------------------------------------
@@ -4625,9 +4692,11 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     resultado["capa_b64"] = b64_alt
                     break
 
-    # Se ainda não converteu para base64, usa o link direto da capa como fallback
+    # Se ainda não converteu para base64, usa o link direto da capa como fallback (apenas se não for GQ/ShowImage.aspx)
     if not resultado.get("capa_b64"):
-        resultado["capa_b64"] = resultado.get("capa_url") or (resultado["capas_alternativas"][0]["url"] if resultado.get("capas_alternativas") else "")
+        cand_capa = resultado.get("capa_url") or (resultado["capas_alternativas"][0]["url"] if resultado.get("capas_alternativas") else "")
+        if cand_capa and not ("guiadosquadrinhos.com" in cand_capa or "ShowImage.aspx" in cand_capa):
+            resultado["capa_b64"] = cand_capa
 
     # Garante que a URL final nunca seja 'busca-avancada-resultado.aspx'
     resultado["url_edicao"] = resolver_url_guia_dos_quadrinhos(

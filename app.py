@@ -38,6 +38,18 @@ def obter_imagem_capa(capa_val: Optional[str]) -> Any:
     """Retorna a URL, base64 ou imagem PIL da capa, com fallback para No_Image_Available.jpg."""
     capa_str = (capa_val or "").strip()
     if capa_str:
+        if capa_str.startswith("http") and ("guiadosquadrinhos.com" in capa_str or "ShowImage.aspx" in capa_str):
+            # Imagens do Guia dos Quadrinhos são bloqueadas por anti-hotlink do Cloudflare
+            # Nunca envie ShowImage.aspx cru diretamente para a tag <img> do navegador
+            b64_c = gemini_service.obter_capa_gq_cache(capa_str)
+            if b64_c and b64_c.startswith("data:image"):
+                return b64_c
+            b64_dl = gemini_service.baixar_imagem_url_base64(capa_str)
+            if b64_dl and b64_dl.startswith("data:image"):
+                return b64_dl
+            # Fallback seguro: se não conseguiu carregar via headless, usa No_Image_Available para não quebrar a tela
+            if os.path.exists(DEFAULT_NO_COVER_PATH):
+                return DEFAULT_NO_COVER_PATH
         return capa_str
     
     if os.path.exists(DEFAULT_NO_COVER_PATH):
@@ -142,7 +154,7 @@ def dialog_editar_hq(id_padrao: Optional[int] = None):
     if hq_atual:
         st.caption(f"Editando registro **#{hq_atual['id']}** cadastrado em `{hq_atual['criado_em']}`")
         if hq_atual.get("capa"):
-            st.image(hq_atual["capa"], width=130, caption="Capa Atual")
+            st.image(obter_imagem_capa(hq_atual["capa"]), width=130, caption="Capa Atual")
         with st.form("form_edicao_dlg"):
             novo_titulo = st.text_input("Título:", value=hq_atual["titulo"])
             nova_edicao = st.text_input("Edição / Volume:", value=hq_atual["edicao"] or "")
@@ -239,7 +251,7 @@ def dialog_cadastrar_capa(id_padrao: Optional[int] = None):
     if hq_capa:
         st.write(f"HQ: **{hq_capa['titulo']}** ({hq_capa.get('edicao') or 'Sem Edição'})")
         if hq_capa.get("capa"):
-            st.image(hq_capa["capa"], width=140, caption="Capa Atual Cadastrada")
+            st.image(obter_imagem_capa(hq_capa["capa"]), width=140, caption="Capa Atual Cadastrada")
             if st.button("🗑️ Remover Capa Atual", key="dlg_btn_remove_capa", type="secondary"):
                 database.remover_capa_hq(int(id_para_capa)); st.success("Capa removida!"); st.rerun()
         st.markdown("---")
@@ -252,7 +264,7 @@ def dialog_cadastrar_capa(id_padrao: Optional[int] = None):
             cam_arq = st.camera_input("Fotografar capa:", key="dlg_camera_capa")
             if cam_arq: foto_capa_selecionada = Image.open(cam_arq)
         if foto_capa_selecionada is not None:
-            st.image(foto_capa_selecionada, width=160, caption="Pré-visualização")
+            st.image(obter_imagem_capa(foto_capa_selecionada), width=160, caption="Pré-visualização")
             col_sc1, col_sc2 = st.columns(2)
             with col_sc1:
                 if st.button("💾 Salvar Foto da Capa", type="primary", use_container_width=True, key="dlg_btn_salvar_capa"):
@@ -524,7 +536,7 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     limite=12
                 )
                 
-                if capa_extraida:
+                if capa_extraida and (capa_extraida.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_extraida or "ShowImage.aspx" in capa_extraida)):
                     if not any(c.get("url") == capa_extraida for c in capas_encontradas):
                         capas_encontradas.insert(0, {
                             "url": capa_extraida,
@@ -536,7 +548,7 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                 st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
                 if capas_encontradas:
                     st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
-                elif capa_extraida:
+                elif capa_extraida and (capa_extraida.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_extraida or "ShowImage.aspx" in capa_extraida)):
                     st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_extraida).strip()
                     
                 if origem_extracao == "html_puro":
@@ -547,7 +559,7 @@ Retorne ESTRITAMENTE um JSON com as chaves:
         # Opção manual de colar link ou texto da página (posicionada antes dos widgets para permitir extração direta)
         with st.expander("📋 Opção Manual: Colar Link ou Texto da Página", expanded=False):
             url_ou_texto = st.text_area("Link direto ou Texto copiado da página:", placeholder="https://www.guiadosquadrinhos.com/edicao/...", key=f"txt_url_manual_fonte_{val_id}")
-            if st.button("🚀 Processar Texto / Link Manual", key=f"btn_manual_busca_fonte_{val_id}", use_container_width=True):
+            if st.button("🚀 Processar Texto / Link Manual", key=f"btn_manual_busca_fonte_{val_id}", width="stretch"):
                 if not url_ou_texto.strip():
                     st.warning("Cole o link ou texto primeiro!")
                 else:
@@ -558,6 +570,14 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     with st.spinner("🌐 Acessando página com navegador invisível e extraindo ficha técnica..."):
                         texto_extraido = url_ou_texto.strip()
                         url_manual_gq = ""
+                        
+                        # Normaliza links do Guia dos Quadrinhos colados sem protocolo ou com www faltando
+                        if "guiadosquadrinhos.com" in texto_extraido:
+                            if not texto_extraido.startswith("http"):
+                                texto_extraido = "https://" + texto_extraido.lstrip("/")
+                            if "www.guiadosquadrinhos.com" not in texto_extraido:
+                                texto_extraido = texto_extraido.replace("guiadosquadrinhos.com", "www.guiadosquadrinhos.com")
+
                         if texto_extraido.startswith("http"):
                             try:
                                 if "guiadosquadrinhos.com" in texto_extraido:
@@ -646,7 +666,7 @@ REGRAS:
                                     escritor=dados_man.get("roteiro") or "",
                                     limite=12
                                 )
-                                if capa_man:
+                                if capa_man and (capa_man.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man)):
                                     if not any(c.get("url") == capa_man for c in capas_encontradas):
                                         capas_encontradas.insert(0, {
                                             "url": capa_man,
@@ -700,7 +720,7 @@ REGRAS:
                 if capa_selecionada:
                     col_prev1, col_prev2 = st.columns([1.2, 3])
                     with col_prev1:
-                        st.image(capa_selecionada, width=160, caption="Capa Selecionada")
+                        st.image(obter_imagem_capa(capa_selecionada), width=160, caption="Capa Selecionada")
                     with col_prev2:
                         st.success("✅ **Capa ativa selecionada para este quadrinho.**")
                         st.caption(f"🔗 `{capa_selecionada[:80]}...`" if len(capa_selecionada) > 80 else f"🔗 `{capa_selecionada}`")
@@ -722,12 +742,12 @@ REGRAS:
                                 is_sel = (capa_selecionada == u_c)
                                 with cols_c[j]:
                                     with st.container(border=True):
-                                        st.image(u_c, use_container_width=True)
+                                        st.image(obter_imagem_capa(u_c), width="stretch")
                                         st.caption(f"**{t_c[:50]}**\n\n*{f_c}*")
                                         if is_sel:
-                                            st.button("✅ Selecionada", key=f"btn_capa_sel_{val_id}_{idx_c}", disabled=True, use_container_width=True)
+                                            st.button("✅ Selecionada", key=f"btn_capa_sel_{val_id}_{idx_c}", disabled=True, width="stretch")
                                         else:
-                                            if st.button("👉 Selecionar", key=f"btn_capa_sel_{val_id}_{idx_c}", use_container_width=True, type="secondary"):
+                                            if st.button("👉 Selecionar", key=f"btn_capa_sel_{val_id}_{idx_c}", width="stretch", type="secondary"):
                                                 st.session_state[f"fonte_input_capa_{val_id}"] = u_c
 
                 with st.expander("🔗 Informar URL manual da capa (opcional)", expanded=False):
@@ -1009,10 +1029,10 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
         )
         placeholder_capa = st.empty()
         if capa_atual_sess:
-            placeholder_capa.image(capa_atual_sess, caption="Capa Selecionada", use_container_width=True)
+            placeholder_capa.image(obter_imagem_capa(capa_atual_sess), caption="Capa Selecionada", width="stretch")
         else:
             img_padrao = obter_imagem_capa(hq_alvo.get("capa"))
-            placeholder_capa.image(img_padrao, caption="Sem capa encontrada", use_container_width=True)
+            placeholder_capa.image(img_padrao, caption="Sem capa encontrada", width="stretch")
 
         capas_alt = dados.get("capas_alternativas", [])
         if len(capas_alt) >= 1:
@@ -1027,16 +1047,16 @@ def dialog_buscar_dados(id_padrao: Optional[int] = None):
                             if u_img:
                                 with cols_alt[j_alt]:
                                     with st.container(border=True):
-                                        st.image(u_img, use_container_width=True)
+                                        st.image(obter_imagem_capa(u_img), width="stretch")
                                         tit_c = alt.get("titulo") or f"Opção #{idx_c+1}"
                                         fonte_c = alt.get("fonte") or "Web"
                                         st.caption(f"**{tit_c}**\n\n*{fonte_c}*")
-                                        if st.button(f"✅ Usar Capa #{idx_c+1}", key=f"btn_alt_capa_{hq_alvo['id']}_{idx_c}", use_container_width=True, type="primary" if idx_c == 0 else "secondary"):
+                                        if st.button(f"✅ Usar Capa #{idx_c+1}", key=f"btn_alt_capa_{hq_alvo['id']}_{idx_c}", width="stretch", type="primary" if idx_c == 0 else "secondary"):
                                             with st.spinner(f"Carregando capa #{idx_c+1}..."):
                                                 b64_alt = gemini_service.baixar_imagem_url_base64(u_img)
                                                 capa_escolhida = b64_alt if (b64_alt and b64_alt.startswith("data:image")) else u_img
                                                 st.session_state[f"capa_gq_selecionada_{hq_alvo['id']}"] = capa_escolhida
-                                                placeholder_capa.image(capa_escolhida, caption=f"Capa #{idx_c+1} Selecionada", use_container_width=True)
+                                                placeholder_capa.image(obter_imagem_capa(capa_escolhida), caption=f"Capa #{idx_c+1} Selecionada", width="stretch")
                                                 st.success(f"✅ Capa #{idx_c+1} selecionada! Clique em 'Armazenar tudo' abaixo para salvar.")
                                                 try:
                                                     st.rerun(scope="fragment")
@@ -1269,9 +1289,9 @@ def dialog_buscar_capa(id_padrao: Optional[int] = None):
                     item = capas[idx]
                     with cols[j]:
                         with st.container(border=True):
-                            st.image(item["url"], use_container_width=True)
+                            st.image(obter_imagem_capa(item["url"]), width="stretch")
                             st.caption(f"**{item.get('titulo', hq_alvo['titulo'])}**\n\n*Fonte: {item.get('fonte', 'Web')}*")
-                            if st.button("✅ Cadastrar esta Capa", key=f"btn_salvar_capa_item_{hq_alvo['id']}_{idx}", use_container_width=True, type="primary"):
+                            if st.button("✅ Cadastrar esta Capa", key=f"btn_salvar_capa_item_{hq_alvo['id']}_{idx}", width="stretch", type="primary"):
                                 with st.spinner("💾 Otimizando e salvando foto da capa..."):
                                     capa_b64 = gemini_service.baixar_imagem_url_base64(item["url"])
                                     if database.definir_capa(int(hq_alvo["id"]), capa_b64):
@@ -1288,7 +1308,7 @@ def dialog_buscar_capa(id_padrao: Optional[int] = None):
     with st.expander("🔗 Cadastrar manualmente por link (URL direta de imagem)"):
         url_direta = st.text_input("URL da imagem (jpg, png, webp):", key=f"dlg_input_url_direta_{hq_alvo['id']}")
         if url_direta:
-            st.image(url_direta, width=160, caption="Pré-visualização da URL")
+            st.image(obter_imagem_capa(url_direta), width=160, caption="Pré-visualização da URL")
             if st.button("💾 Salvar Capa por URL", key=f"btn_salvar_url_direta_{hq_alvo['id']}", type="primary"):
                 with st.spinner("Salvando capa..."):
                     capa_b64 = gemini_service.baixar_imagem_url_base64(url_direta)
@@ -3034,7 +3054,7 @@ def renderizar_pagina_importacao_lote():
                         c_card_capa, c_card_info = st.columns([1, 4])
                         with c_card_capa:
                             if it_c.get("capa"):
-                                st.image(it_c["capa"], use_container_width=True)
+                                st.image(obter_imagem_capa(it_c["capa"]), width="stretch")
                             else:
                                 st.caption("🖼️ Sem capa online")
                         with c_card_info:
@@ -4793,7 +4813,7 @@ with st.expander("🛒 Radar de Preços em Lojas & Lista de Desejos", expanded=F
                             with c_img:
                                 thumb_url = item.get("thumbnail") or item.get("serpapi_thumbnail")
                                 if thumb_url:
-                                    st.image(thumb_url, use_container_width=True)
+                                    st.image(obter_imagem_capa(thumb_url), width="stretch")
                                 else:
                                     st.caption("🖼️ Sem miniatura")
 
