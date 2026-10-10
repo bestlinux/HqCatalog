@@ -25,8 +25,15 @@ import jev_engine
 
 DEFAULT_NO_COVER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "No_Image_Available.jpg")
 
-def processar_imagem_capa(imagem: Image.Image, max_dim: int = 700, quality: int = 85) -> str:
-    """Redimensiona e converte uma foto PIL em uma string base64 compacta (JPEG)."""
+def processar_imagem_capa(imagem: Any, max_dim: int = 700, quality: int = 85) -> str:
+    """Redimensiona e converte uma foto (PIL, UploadedFile ou bytes) em uma string base64 compacta (JPEG)."""
+    if imagem is None:
+        return ""
+    if not isinstance(imagem, Image.Image):
+        try:
+            imagem = Image.open(imagem)
+        except Exception:
+            return ""
     img = imagem.convert("RGB")
     img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
     buffer = io.BytesIO()
@@ -34,9 +41,25 @@ def processar_imagem_capa(imagem: Image.Image, max_dim: int = 700, quality: int 
     b64_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
     return f"data:image/jpeg;base64,{b64_str}"
 
-def obter_imagem_capa(capa_val: Optional[str]) -> Any:
+def obter_imagem_capa(capa_val: Any) -> Any:
     """Retorna a URL, base64 ou imagem PIL da capa, com fallback para No_Image_Available.jpg."""
-    capa_str = (capa_val or "").strip()
+    if capa_val is None:
+        if os.path.exists(DEFAULT_NO_COVER_PATH):
+            return DEFAULT_NO_COVER_PATH
+        return None
+
+    # Se já for objeto de imagem carregado (PIL, BytesIO, UploadedFile, bytes), retorna diretamente
+    if isinstance(capa_val, (Image.Image, io.BytesIO, bytes)) or hasattr(capa_val, "read"):
+        return capa_val
+
+    # Se não for string, tenta converter com segurança
+    if not isinstance(capa_val, str):
+        try:
+            capa_val = str(capa_val)
+        except Exception:
+            return capa_val
+
+    capa_str = capa_val.strip()
     if capa_str:
         if capa_str.startswith("http") and ("guiadosquadrinhos.com" in capa_str or "ShowImage.aspx" in capa_str):
             # Imagens do Guia dos Quadrinhos são bloqueadas por anti-hotlink do Cloudflare
@@ -64,8 +87,7 @@ def obter_imagem_capa(capa_val: Optional[str]) -> Any:
             return Image.open(caminho_rel)
         except Exception:
             return caminho_rel
-            
-    return DEFAULT_NO_COVER_PATH
+    return None
 
 # Configuração da página do Streamlit
 st.set_page_config(

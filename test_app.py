@@ -1459,6 +1459,40 @@ class TestHqCatalog(unittest.TestCase):
             self.assertEqual(res_udc8.get("resumo"), "Histórias dos Novos 52")
             self.assertEqual(res_udc8.get("url_edicao"), "https://www.guiadosquadrinhos.com/edicao/universo-dc-3-serie-n-8/un011300/101984")
 
+    def test_obter_e_processar_imagem_capa_tipos(self):
+        from PIL import Image
+        import io
+        from app import obter_imagem_capa, processar_imagem_capa
+
+        # 1. PIL Image (foto de upload ou câmera)
+        img_pil = Image.new("RGB", (100, 100), color="blue")
+        res_pil = obter_imagem_capa(img_pil)
+        self.assertIs(res_pil, img_pil)
+
+        b64_pil = processar_imagem_capa(img_pil)
+        self.assertTrue(b64_pil.startswith("data:image/jpeg;base64,"))
+
+        # 2. BytesIO
+        buf = io.BytesIO()
+        img_pil.save(buf, format="JPEG")
+        buf.seek(0)
+        res_buf = obter_imagem_capa(buf)
+        self.assertIs(res_buf, buf)
+
+        buf.seek(0)
+        b64_buf = processar_imagem_capa(buf)
+        self.assertTrue(b64_buf.startswith("data:image/jpeg;base64,"))
+
+        # 3. None e string vazia
+        res_none = obter_imagem_capa(None)
+        self.assertIsNotNone(res_none)
+        res_empty = obter_imagem_capa("")
+        self.assertIsNotNone(res_empty)
+
+        # 4. String URL normal e Base64
+        self.assertEqual(obter_imagem_capa("https://exemplo.com/capa.jpg"), "https://exemplo.com/capa.jpg")
+        self.assertEqual(obter_imagem_capa("data:image/jpeg;base64,123"), "data:image/jpeg;base64,123")
+
 
 if __name__ == "__main__":
     unittest.main()
