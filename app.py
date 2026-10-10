@@ -393,7 +393,7 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
             st.session_state[termo_cache_key] = termo_busca.strip()
 
     res_busca = st.session_state.get(session_reserp_key, {})
-    fontes_lista = res_busca.get("fontes", [])[:2]
+    fontes_lista = res_busca.get("fontes", [])[:10]
     link_gq_encontrado = res_busca.get("link_guia_dos_quadrinhos", "")
     texto_reserp = res_busca.get("texto_consolidado", "")
 
