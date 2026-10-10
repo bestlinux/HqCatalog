@@ -1097,6 +1097,12 @@ def buscar_capas_online(
         "almofada", "sofa", "sofá", "tapete", "cortina", "colchao", "colchão"
     ]
 
+    IMAGENS_ESTATICAS_LIXO = [
+        "developers-site-cms-admin", "mla84676404272", "ui-navigation",
+        "frontend-assets", "placeholder", "blank", "pixel.gif", "icon",
+        "logo", "banner"
+    ]
+
     def add_candidata(url: str, tit: str, fonte: str, thumb: Optional[str] = None):
         if not url or url in urls_vistas:
             return
@@ -1108,7 +1114,9 @@ def buscar_capas_online(
             return
         if any(tl in t_low or tl in u_low for tl in TERMOS_LIXO):
             return
-        if "capasthumbs/antigas" in u_low or ("logo" in u_low and "capa" not in u_low):
+        if any(est in u_low for est in IMAGENS_ESTATICAS_LIXO):
+            return
+        if "capasthumbs/antigas" in u_low:
             return
         urls_vistas.add(url)
         capas_candidatas.append({
@@ -1160,22 +1168,15 @@ def buscar_capas_online(
     # 0.2 Se não tem URL do Guia dos Quadrinhos direta, busca a página canônica da edição
     if not url_gq_alvo:
         try:
-            queries_gq = [
-                f'"{titulo_base}" {num_num} site:guiadosquadrinhos.com/edicao/'.strip() if num_num else f'"{titulo_base}" site:guiadosquadrinhos.com/edicao/',
-                f'{titulo_base} {num_num} site:guiadosquadrinhos.com/edicao/'.strip() if num_num else f'{titulo_base} site:guiadosquadrinhos.com/edicao/',
-                f'{titulo_limpo} site:guiadosquadrinhos.com/edicao/'
-            ]
-            for q_gq_busca in queries_gq:
-                res_gq_pesq = pesquisar_reserp_google(q_gq_busca, timeout=12)
-                for r_g in res_gq_pesq:
-                    u_cand = r_g.get("url") or ""
-                    if "guiadosquadrinhos.com/edicao/" in u_cand:
-                        url_gq_alvo = u_cand
-                        th_g = r_g.get("thumbnail") or r_g.get("thumbnail_url") or r_g.get("image")
-                        if th_g and isinstance(th_g, str) and th_g.startswith("http"):
-                            add_candidata(th_g, f"{titulo_base} nº {edicao or num_num or '1'} (Guia dos Quadrinhos)", "Guia dos Quadrinhos", th_g)
-                        break
-                if url_gq_alvo:
+            q_gq_busca = f'{titulo_base} {num_num} site:guiadosquadrinhos.com/edicao/'.strip() if num_num else f'{titulo_base} site:guiadosquadrinhos.com/edicao/'
+            res_gq_pesq = pesquisar_reserp_google(q_gq_busca, timeout=5)
+            for r_g in res_gq_pesq:
+                u_cand = r_g.get("url") or ""
+                if "guiadosquadrinhos.com/edicao/" in u_cand:
+                    url_gq_alvo = u_cand
+                    th_g = r_g.get("thumbnail") or r_g.get("thumbnail_url") or r_g.get("image")
+                    if th_g and isinstance(th_g, str) and th_g.startswith("http"):
+                        add_candidata(th_g, f"{titulo_base} nº {edicao or num_num or '1'} (Guia dos Quadrinhos)", "Guia dos Quadrinhos", th_g)
                     break
         except Exception:
             pass
@@ -1225,72 +1226,90 @@ def buscar_capas_online(
         pass
 
     # =========================================================================
-    # 1. BUSCA FOCADA NOS SITES: Rika, Mercado Livre, Comix, Sebo RS (Google Reserp)
+    # 1. BUSCA DIRETA E PARALELA NAS LOJAS ESPECIALIZADAS (Rika, Comix, Sebo RS)
     # =========================================================================
-    try:
-        lojas_operadores = "site:guiadosquadrinhos.com OR site:rika.com.br OR site:mercadolivre.com.br OR site:comix.com.br OR site:seborsraridades.com.br"
-        termos_lojas = [
-            f'"{titulo_base}" {num_num} ({lojas_operadores})'.strip() if num_num else f'"{titulo_base}" ({lojas_operadores})'.strip(),
-            f'{titulo_base} {num_num} {editora} ({lojas_operadores})'.strip(),
-            f'{titulo_limpo} ({lojas_operadores})'.strip()
-        ]
-        
-        paginas_para_inspecao = []
-        for q_l in termos_lojas:
-            res_lojas = pesquisar_reserp_google(q_l, timeout=12)
+    termo_busca_lojas = f"{titulo_base} {num_num}".strip() if num_num else titulo_base
+    headers_lojas = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "pt-BR,pt;q=0.9"
+    }
+
+    def _buscar_loja_rika():
+        try:
+            u_r = f"https://www.rika.com.br/api/catalog_system/pub/products/search?ft={urllib.parse.quote(termo_busca_lojas)}"
+            r_r = requests.get(u_r, headers=headers_lojas, timeout=4)
+            if r_r.status_code in (200, 206):
+                for p in r_r.json()[:6]:
+                    n_p = p.get("productName", "")
+                    items_p = p.get("items", [])
+                    if items_p and items_p[0].get("images"):
+                        u_img = items_p[0]["images"][0].get("imageUrl", "")
+                        if u_img:
+                            u_hd = re.sub(r"-\d+-auto", "-800-auto", u_img)
+                            add_candidata(u_hd, n_p, "Rika Comic Shop", u_hd)
+        except Exception:
+            pass
+
+    def _buscar_loja_comix():
+        try:
+            u_c = f"https://www.comix.com.br/catalogsearch/result/?q={urllib.parse.quote(termo_busca_lojas)}"
+            r_c = requests.get(u_c, headers=headers_lojas, timeout=4)
+            if r_c.status_code == 200:
+                soup_c = BeautifulSoup(r_c.text, "html.parser")
+                for it_c in soup_c.select(".product-item-info")[:6]:
+                    link_c = it_c.select_one(".product-item-link")
+                    nome_c = link_c.get_text(strip=True) if link_c else ""
+                    img_c = it_c.select_one(".product-image-photo")
+                    img_u = img_c.get("src") if img_c else ""
+                    if img_u and "/media/catalog/product/" in img_u:
+                        add_candidata(img_u, nome_c, "Comix Book Shop", img_u)
+        except Exception:
+            pass
+
+    def _buscar_loja_sebo():
+        try:
+            u_s = f"https://seborsraridades.com.br/wp-json/wc/store/v1/products?search={urllib.parse.quote(termo_busca_lojas)}"
+            r_s = requests.get(u_s, headers=headers_lojas, timeout=4)
+            if r_s.status_code == 200:
+                for p_s in r_s.json()[:6]:
+                    nome_s = p_s.get("name", "")
+                    imgs_s = p_s.get("images", [])
+                    if imgs_s and imgs_s[0].get("src"):
+                        add_candidata(imgs_s[0]["src"], nome_s, "Sebo RS Raridades", imgs_s[0]["src"])
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=3) as ex_lojas_direto:
+        f_r = ex_lojas_direto.submit(_buscar_loja_rika)
+        f_c = ex_lojas_direto.submit(_buscar_loja_comix)
+        f_s = ex_lojas_direto.submit(_buscar_loja_sebo)
+        for f in [f_r, f_c, f_s]:
+            try:
+                f.result()
+            except Exception:
+                pass
+
+    # =========================================================================
+    # 2. GOOGLE RESERP (MERCADO LIVRE E LOJAS ADICIONAIS)
+    # =========================================================================
+    if len(capas_candidatas) < limite:
+        try:
+            lojas_operadores = "site:mercadolivre.com.br/MLB OR site:guiadosquadrinhos.com/edicao/ OR site:rika.com.br OR site:comix.com.br"
+            q_l = f'{titulo_base} {num_num} ({lojas_operadores})'.strip() if num_num else f'{titulo_base} ({lojas_operadores})'.strip()
+            res_lojas = pesquisar_reserp_google(q_l, timeout=5)
             for r_item in res_lojas:
                 r_url = r_item.get("url") or ""
-                # Filtra estritamente para os 5 sites foco
-                if not any(d in r_url for d in ["guiadosquadrinhos.com", "rika.com.br", "mercadolivre.com", "comix.com.br", "seborsraridades.com.br"]):
+                if not any(d in r_url for d in ["mercadolivre.com", "guiadosquadrinhos.com", "rika.com.br", "comix.com.br"]):
                     continue
-                
-                # Identifica a fonte
-                if "guiadosquadrinhos.com" in r_url:
-                    nome_fonte = "Guia dos Quadrinhos"
-                elif "rika.com.br" in r_url:
-                    nome_fonte = "Rika Comic Shop"
-                elif "mercadolivre.com" in r_url:
-                    nome_fonte = "Mercado Livre"
-                elif "comix.com.br" in r_url:
-                    nome_fonte = "Comix Book Shop"
-                elif "seborsraridades.com.br" in r_url:
-                    nome_fonte = "Sebo RS Raridades"
-                else:
-                    nome_fonte = "Loja de Quadrinhos"
-
-                r_tit = r_item.get("title") or titulo_base
                 thumb_reserp = r_item.get("thumbnail") or r_item.get("thumbnail_url") or r_item.get("image")
                 if thumb_reserp and isinstance(thumb_reserp, str) and thumb_reserp.startswith("http"):
-                    add_candidata(thumb_reserp, r_tit, nome_fonte, thumb_reserp)
-
-                paginas_para_inspecao.append((r_url, r_tit, nome_fonte))
-
-            if len(capas_candidatas) >= limite:
-                break
-
-        # Extração em paralelo de alta definição diretamente das páginas de produto das lojas
-        if paginas_para_inspecao:
-            vistas_p = set()
-            pags_dedup = []
-            for p_u, p_t, p_f in paginas_para_inspecao:
-                if p_u not in vistas_p:
-                    vistas_p.add(p_u)
-                    pags_dedup.append((p_u, p_t, p_f))
-
-            with ThreadPoolExecutor(max_workers=6) as ex_lojas:
-                futures = [ex_lojas.submit(extrair_capa_pagina_especializada, p_u) for p_u, _, _ in pags_dedup[:12]]
-                for (p_u, p_t, p_f), fut in zip(pags_dedup[:12], futures):
-                    try:
-                        img_extraida = fut.result()
-                        if img_extraida:
-                            add_candidata(img_extraida, p_t, p_f, img_extraida)
-                    except Exception:
-                        pass
-    except Exception as ex_lojas_err:
-        print(f"[Aviso Busca Lojas Especializadas: {ex_lojas_err}]")
+                    f_name = "Mercado Livre" if "mercadolivre" in r_url else "Loja de Quadrinhos"
+                    add_candidata(thumb_reserp, r_item.get("title") or titulo_base, f_name, thumb_reserp)
+        except Exception as ex_lojas_err:
+            print(f"[Aviso Busca Google Lojas: {ex_lojas_err}]")
 
     # =========================================================================
-    # 2. BING IMAGES RESTRITO EXCLUSIVAMENTE AOS SITES E QUADRINHOS REAIS
+    # 3. BING IMAGES RESTRITO (COMPLEMENTAR CASO PRECISE DE MAIS OPÇÕES)
     # =========================================================================
     if requests is not None and len(capas_candidatas) < limite:
         try:
@@ -1299,87 +1318,42 @@ def buscar_capas_online(
                 "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
             }
             queries_bing = [
-                f'"{titulo_base}" {num_num} mercadolivre gibi'.strip() if num_num else f'"{titulo_base}" mercadolivre gibi',
-                f'"{titulo_base}" {num_num} rika gibi'.strip() if num_num else f'"{titulo_base}" rika gibi',
-                f'"{titulo_base}" {num_num} comix gibi'.strip() if num_num else f'"{titulo_base}" comix gibi',
-                f'"{titulo_base}" {num_num} guiadosquadrinhos gibi'.strip() if num_num else f'"{titulo_base}" guiadosquadrinhos gibi',
+                f"{titulo_base} {num_num} capa gibi".strip(),
+                f"{titulo_base} {num_num} quadrinhos capa".strip()
             ]
             for q_b in queries_bing:
                 url_b = f"https://www.bing.com/images/search?q={urllib.parse.quote(q_b)}&FORM=HDRSC2"
-                r_b = requests.get(url_b, headers=headers_web, timeout=3.5)
+                r_b = requests.get(url_b, headers=headers_web, timeout=3.0)
                 if r_b.status_code == 200:
-                    m_urls = re.findall(r'murl&quot;:&quot;(http[^&]+)&quot;.*?t1&quot;:&quot;([^&]+)&quot;', r_b.text)
-                    for m_u, m_t in m_urls:
-                        u_low = m_u.lower()
-                        t_low = html.unescape(m_t).lower()
-                        if any(tl in t_low or tl in u_low for tl in TERMOS_LIXO):
-                            continue
+                    raw_items = re.findall(r'm="({.*?})"', r_b.text)
+                    for raw in raw_items:
+                        try:
+                            d_b = json.loads(html.unescape(raw))
+                            u_b = d_b.get("murl")
+                            t_b = d_b.get("t") or d_b.get("desc") or titulo_base
+                            th_b = d_b.get("turl") or u_b
+                            if u_b:
+                                u_low = u_b.lower()
+                                t_low = (t_b or "").lower()
+                                if any(tl in t_low or tl in u_low for tl in TERMOS_LIXO):
+                                    continue
+                                if any(est in u_low for est in IMAGENS_ESTATICAS_LIXO):
+                                    continue
 
-                        # Validação estrita: precisa conter palavras do título da HQ
-                        if palavras_titulo:
-                            match_count = sum(1 for p in palavras_titulo if p in t_low or p in u_low)
-                            min_matches = 2 if len(palavras_titulo) >= 2 else 1
-                            if match_count < min_matches:
-                                continue
-
-                        if "mlstatic.com" in u_low or "mercadolivre" in u_low:
-                            f_b = "Mercado Livre"
-                        elif "rika" in u_low or "vtexassets" in u_low:
-                            f_b = "Rika Comic Shop"
-                        elif "comix.com.br" in u_low:
-                            f_b = "Comix Book Shop"
-                        elif "seborsraridades" in u_low:
-                            f_b = "Sebo RS Raridades"
-                        elif "guiadosquadrinhos" in u_low:
-                            f_b = "Guia dos Quadrinhos"
-                        else:
-                            # Imagens genéricas da Web só são aceitas se tiverem termos explícitos de HQ
-                            is_comic = any(k in t_low or k in u_low for k in ["gibi", "hq", "quadrinho", "comic", "panini", "manga", "capa"])
-                            if not is_comic:
-                                continue
-                            f_b = "Web HD"
-                        add_candidata(m_u, html.unescape(m_t), f_b, m_u)
-
-                    if not m_urls:
-                        raw_items = re.findall(r'm="({.*?})"', r_b.text)
-                        for raw in raw_items:
-                            try:
-                                import json as _json
-                                d_b = _json.loads(html.unescape(raw))
-                                u_b = d_b.get("murl")
-                                t_b = d_b.get("t") or d_b.get("desc") or titulo_base
-                                th_b = d_b.get("turl") or u_b
-                                if u_b:
-                                    u_low = u_b.lower()
-                                    t_low = (t_b or "").lower()
-                                    if any(tl in t_low or tl in u_low for tl in TERMOS_LIXO):
+                                # Validação estrita: precisa conter palavras do título da HQ
+                                if palavras_titulo:
+                                    match_count = sum(1 for p in palavras_titulo if p in t_low or p in u_low)
+                                    min_matches = 2 if len(palavras_titulo) >= 2 else 1
+                                    if match_count < min_matches:
                                         continue
 
-                                    # Validação estrita: precisa conter palavras do título da HQ
-                                    if palavras_titulo:
-                                        match_count = sum(1 for p in palavras_titulo if p in t_low or p in u_low)
-                                        min_matches = 2 if len(palavras_titulo) >= 2 else 1
-                                        if match_count < min_matches:
-                                            continue
+                                is_comic = any(k in t_low or k in u_low for k in ["gibi", "hq", "quadrinho", "comic", "panini", "manga", "capa"])
+                                if not is_comic:
+                                    continue
 
-                                    if "mlstatic.com" in u_low:
-                                        f_b = "Mercado Livre"
-                                    elif "vtexassets" in u_low:
-                                        f_b = "Rika Comic Shop"
-                                    elif "comix.com.br" in u_low:
-                                        f_b = "Comix Book Shop"
-                                    elif "seborsraridades" in u_low:
-                                        f_b = "Sebo RS Raridades"
-                                    elif "guiadosquadrinhos" in u_low:
-                                        f_b = "Guia dos Quadrinhos"
-                                    else:
-                                        is_comic = any(k in t_low or k in u_low for k in ["gibi", "hq", "quadrinho", "comic", "panini", "manga", "capa"])
-                                        if not is_comic:
-                                            continue
-                                        f_b = "Web HD"
-                                    add_candidata(u_b, t_b, f_b, th_b)
-                            except Exception:
-                                pass
+                                add_candidata(u_b, t_b, "Web HD", th_b)
+                        except Exception:
+                            pass
                 if len(capas_candidatas) >= limite * 2:
                     break
         except Exception as ex_bing:
