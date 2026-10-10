@@ -792,65 +792,67 @@ Retorne ESTRITAMENTE um JSON com as chaves: "roteiro", "ilustrador", "valor", "r
                                         if not dados_man.get(k) and v:
                                             dados_man[k] = v
 
-                        if dados_man:
-                            st.session_state[session_extraidos_key] = dados_man
-                            st.session_state[f"fonte_input_roteiro_{val_id}"] = dados_man.get("roteiro") or ""
-                            st.session_state[f"fonte_input_ilustrador_{val_id}"] = dados_man.get("ilustrador") or dados_man.get("desenho") or ""
-                            try:
-                                st.session_state[f"fonte_input_valor_{val_id}"] = float(dados_man.get("valor") or dados_man.get("preco_capa") or 0.0)
-                            except Exception:
-                                st.session_state[f"fonte_input_valor_{val_id}"] = 0.0
-                            st.session_state[f"fonte_input_resumo_{val_id}"] = dados_man.get("resumo") or ""
-                            st.session_state[f"fonte_input_link_{val_id}"] = dados_man.get("link_edicao") or dados_man.get("url_edicao") or url_manual_gq or ""
-                            
-                            capa_man = dados_man.get("capa_b64") or dados_man.get("capa_url") or dados_man.get("capa") or ""
-                            if capa_man:
-                                if str(capa_man).startswith("http") and ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man):
-                                    with st.spinner("🖼️ Baixando capa em alta resolução (resolvendo bloqueio Cloudflare)..."):
-                                        b64_capa = gemini_service.baixar_imagem_url_base64(str(capa_man).strip(), fallback_url=url_manual_gq)
-                                        if b64_capa and b64_capa.startswith("data:image"):
-                                            capa_man = b64_capa
-                                        else:
-                                            capa_man = ""
-                                if capa_man:
-                                    st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_man).strip()
-                            
-                            # Busca capas online para obter as opções em alta definição
-                            termo_capa_busca = f"{titulo} {edicao} {editora}".strip()
-                            capas_encontradas = gemini_service.buscar_capas_online(
-                                titulo=termo_capa_busca,
-                                edicao=edicao,
-                                editora=editora,
-                                escritor=dados_man.get("roteiro") or "",
-                                limite=12,
-                                url_edicao=url_manual_gq
-                            )
-                            if capa_man and (capa_man.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man)):
-                                if not any(c.get("url") == capa_man for c in capas_encontradas):
-                                    capas_encontradas.insert(0, {
-                                        "url": capa_man,
-                                        "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos Oficial)",
-                                        "fonte": "Guia dos Quadrinhos",
-                                        "thumbnail": capa_man
-                                    })
-                            st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
+                    if dados_man:
+                        st.session_state[session_extraidos_key] = dados_man
+                        st.session_state[f"fonte_input_roteiro_{val_id}"] = dados_man.get("roteiro") or ""
+                        st.session_state[f"fonte_input_ilustrador_{val_id}"] = dados_man.get("ilustrador") or dados_man.get("desenho") or ""
+                        try:
+                            st.session_state[f"fonte_input_valor_{val_id}"] = float(dados_man.get("valor") or dados_man.get("preco_capa") or 0.0)
+                        except Exception:
+                            st.session_state[f"fonte_input_valor_{val_id}"] = 0.0
+                        st.session_state[f"fonte_input_resumo_{val_id}"] = dados_man.get("resumo") or ""
+                        st.session_state[f"fonte_input_link_{val_id}"] = dados_man.get("link_edicao") or dados_man.get("url_edicao") or url_manual_gq or ""
+                        
+                        capa_man = dados_man.get("capa_b64") or dados_man.get("capa_url") or dados_man.get("capa") or ""
+                        if capa_man:
+                            if str(capa_man).startswith("http") and ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man):
+                                with st.spinner("🖼️ Baixando capa em alta resolução (resolvendo bloqueio Cloudflare)..."):
+                                    b64_capa = gemini_service.baixar_imagem_url_base64(str(capa_man).strip(), fallback_url=url_manual_gq)
+                                    if b64_capa and b64_capa.startswith("data:image"):
+                                        capa_man = b64_capa
+                                    else:
+                                        capa_man = ""
                             if capa_man:
                                 st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_man).strip()
-                            elif capas_encontradas:
-                                st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
-                            elif hq_alvo.get("capa"):
-                                st.session_state[f"fonte_input_capa_{val_id}"] = hq_alvo.get("capa")
+                        
+                        # Busca capas online para obter as opções em alta definição
+                        termo_capa_busca = f"{titulo} {edicao} {editora}".strip()
+                        capas_encontradas = gemini_service.buscar_capas_online(
+                            titulo=termo_capa_busca,
+                            edicao=edicao,
+                            editora=editora,
+                            escritor=dados_man.get("roteiro") or "",
+                            limite=12,
+                            url_edicao=url_manual_gq
+                        )
+                        if capa_man and (capa_man.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man)):
+                            if not any(c.get("url") == capa_man for c in capas_encontradas):
+                                capas_encontradas.insert(0, {
+                                    "url": capa_man,
+                                    "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos Oficial)",
+                                    "fonte": "Guia dos Quadrinhos",
+                                    "thumbnail": capa_man
+                                })
+                        st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
+                        if capa_man:
+                            st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_man).strip()
+                        elif capas_encontradas:
+                            st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
+                        elif hq_alvo.get("capa"):
+                            st.session_state[f"fonte_input_capa_{val_id}"] = hq_alvo.get("capa")
 
-                            if origem_manual == "html_puro":
-                                st.success("✅ Conteúdo extraído com **100% de fidelidade diretamente do HTML/Texto oficial** (Python puro)! Revise os campos abaixo.")
-                            elif origem_manual == "zenrows":
-                                st.success("✅ Conteúdo extraído com sucesso via **ZenRows Scraper** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
-                            elif origem_manual == "scraperapi":
-                                st.success("✅ Conteúdo extraído com sucesso via **ScraperAPI** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
-                            elif origem_manual == "scrapingbee":
-                                st.success("✅ Conteúdo extraído com sucesso via **ScrapingBee** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
-                            else:
-                                st.success(f"✅ Conteúdo processado com sucesso via **{mod_manual_usado or 'Gemini'}**! Revise os campos abaixo.")
+                        if origem_manual == "html_puro":
+                            st.success("✅ Conteúdo extraído com **100% de fidelidade diretamente do HTML/Texto oficial** (Python puro)! Revise os campos abaixo.")
+                        elif origem_manual == "zenrows":
+                            st.success("✅ Conteúdo extraído com sucesso via **ZenRows Scraper** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
+                        elif origem_manual == "scraperapi":
+                            st.success("✅ Conteúdo extraído com sucesso via **ScraperAPI** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
+                        elif origem_manual == "scrapingbee":
+                            st.success("✅ Conteúdo extraído com sucesso via **ScrapingBee** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
+                        else:
+                            st.success(f"✅ Conteúdo processado com sucesso via **{mod_manual_usado or 'Gemini'}**! Revise os campos abaixo.")
+                    else:
+                        st.error("❌ Não foi possível extrair os dados da página ou texto informado através dos scrapers ou IA. Verifique se o link/texto está correto e tente novamente.")
 
         # Se houver dados extraídos (ou dados já existentes), exibe o formulário de validação e edição
         dados_salvar = st.session_state.get(session_extraidos_key)
