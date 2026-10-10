@@ -576,6 +576,7 @@ def transcrever_audio_resenha(
 # PESQUISA DE PREÇOS COM SERPAPI (GOOGLE SHOPPING)
 # -------------------------------------------------------------
 DEFAULT_SERPAPI_KEY = os.getenv("SERPAPI_API_KEY", "")
+DEFAULT_ZENROWS_KEY = os.getenv("ZENROWS_API_KEY", "3ba8103ac0b970c71c6cd5dd37627934c3745faf")
 
 TERMOS_EXCLUSAO_NAO_LIVRO = [
     "boneco", "boneca", "action figure", "action figures", "estátua", "estatua", "figura de ação",
@@ -3670,6 +3671,79 @@ def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
     return ""
 
 
+def get_zenrows_api_key(api_key: Optional[str] = None) -> str:
+    """
+    Retorna a chave da API ZenRows priorizando:
+    1. Parâmetro explícito
+    2. streamlit.secrets
+    3. Variável de ambiente ZENROWS_API_KEY
+    4. Chave padrão configurada
+    """
+    if api_key and str(api_key).strip():
+        return str(api_key).strip()
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and "ZENROWS_API_KEY" in st.secrets:
+            k = str(st.secrets["ZENROWS_API_KEY"]).strip()
+            if k:
+                return k
+    except Exception:
+        pass
+    k_env = os.getenv("ZENROWS_API_KEY", "").strip()
+    if k_env:
+        return k_env
+    return DEFAULT_ZENROWS_KEY
+
+
+def buscar_html_zenrows(url: str, api_key: Optional[str] = None, timeout: int = 35) -> str:
+    """
+    Baixa o HTML de uma página utilizando a API do ZenRows (Web Scraping Anti-Bloqueio / Anti-Cloudflare).
+    1. Utiliza o cliente oficial ZenRowsClient com modo 'auto'
+    2. Fallback direto via requisição HTTP para a API ZenRows (api.zenrows.com)
+    """
+    if not url or not str(url).strip().startswith("http"):
+        return ""
+
+    chave = get_zenrows_api_key(api_key)
+    if not chave:
+        print("[ZenRows] Chave de API não informada.")
+        return ""
+
+    params = {
+        'mode': 'auto',
+    }
+
+    # 1. Tentativa via cliente oficial ZenRowsClient
+    try:
+        from zenrows import ZenRowsClient
+        client = ZenRowsClient(chave)
+        resp = client.get(url, params=params, timeout=timeout)
+        if resp.status_code == 200 and resp.text and len(resp.text.strip()) > 30:
+            return resp.text
+        else:
+            print(f"[ZenRows] ZenRowsClient retornou status {getattr(resp, 'status_code', None)}")
+    except Exception as ex_client:
+        print(f"[ZenRows] Exceção via ZenRowsClient: {ex_client}")
+
+    # 2. Fallback direto via requests para a API ZenRows
+    if requests is not None:
+        try:
+            req_params = {
+                "apikey": chave,
+                "url": url,
+                "mode": "auto"
+            }
+            r = requests.get("https://api.zenrows.com/v1/", params=req_params, timeout=timeout)
+            if r.status_code == 200 and r.text and len(r.text.strip()) > 30:
+                return r.text
+            else:
+                print(f"[ZenRows] Requisição direta retornou status {getattr(r, 'status_code', None)}")
+        except Exception as ex_req:
+            print(f"[ZenRows] Exceção fallback direto: {ex_req}")
+
+    return ""
+
+
 def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dict[str, Any]:
     """
     Extrai todos os dados catalográficos, ficha técnica e a lista completa de histórias
@@ -4433,6 +4507,34 @@ def buscar_dados_guia_dos_quadrinhos(
                 if dados_extraidos.get("publicado_em"):
                     resultado["publicado_em"] = dados_extraidos.get("publicado_em") or ""
                 resultado["metodo"] = "Página Oficial do Guia dos Quadrinhos"
+
+                if dados_extraidos.get("capa_url"):
+                    c_url = dados_extraidos["capa_url"]
+                    resultado["capa_url"] = c_url
+                    resultado["capas_alternativas"].append({
+                        "url": c_url,
+                        "thumbnail": c_url,
+                        "titulo": f"{titulo_limpo} nº {edicao_limpa} (Capa Oficial Guia dos Quadrinhos)",
+                        "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)"
+                    })
+
+    # -----------------------------------------------------------------
+    # ETAPA 2.1: TENTATIVA VIA ZENROWS (SE O PYTHON PURO FALHOU / BLOQUEIO)
+    # -----------------------------------------------------------------
+    if not conseguiu_extrair and url_resolvida and "/edicao/" in url_resolvida:
+        html_zen = buscar_html_zenrows(url_resolvida)
+        if html_zen:
+            dados_extraidos = extrair_dados_html_guia_dos_quadrinhos(html_zen, url_resolvida)
+            if dados_extraidos and (dados_extraidos.get("roteiro") or dados_extraidos.get("desenho") or dados_extraidos.get("resumo")):
+                conseguiu_extrair = True
+                resultado["roteiro"] = dados_extraidos.get("roteiro") or ""
+                resultado["desenho"] = dados_extraidos.get("desenho") or ""
+                resultado["preco_capa"] = float(dados_extraidos.get("preco_capa") or 0.0)
+                resultado["preco_capa_formatado"] = dados_extraidos.get("preco_capa_formatado") or "R$ 0,00"
+                resultado["resumo"] = dados_extraidos.get("resumo") or ""
+                if dados_extraidos.get("publicado_em"):
+                    resultado["publicado_em"] = dados_extraidos.get("publicado_em") or ""
+                resultado["metodo"] = "ZenRows Scraper (Página Oficial Guia dos Quadrinhos)"
 
                 if dados_extraidos.get("capa_url"):
                     c_url = dados_extraidos["capa_url"]

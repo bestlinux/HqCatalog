@@ -1437,6 +1437,7 @@ class TestHqCatalog(unittest.TestCase):
 
         # 6. Universo DC 3ª Série 8 com URL do Guia dos Quadrinhos e Fallback por IA
         with patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
+             patch("gemini_service.buscar_html_zenrows", return_value=""), \
              patch("gemini_service.get_gemini_client") as mock_client:
             mock_chat = MagicMock()
             mock_resp_ai = MagicMock()
@@ -1492,6 +1493,82 @@ class TestHqCatalog(unittest.TestCase):
         # 4. String URL normal e Base64
         self.assertEqual(obter_imagem_capa("https://exemplo.com/capa.jpg"), "https://exemplo.com/capa.jpg")
         self.assertEqual(obter_imagem_capa("data:image/jpeg;base64,123"), "data:image/jpeg;base64,123")
+
+    def test_zenrows_api_key_resolution(self):
+        # 1. Parâmetro explícito
+        self.assertEqual(gemini_service.get_zenrows_api_key("custom_key_123"), "custom_key_123")
+        # 2. Variável de ambiente
+        with patch.dict(os.environ, {"ZENROWS_API_KEY": "env_key_456"}):
+            self.assertEqual(gemini_service.get_zenrows_api_key(), "env_key_456")
+        # 3. Padrão pré-configurado
+        with patch.dict(os.environ, {"ZENROWS_API_KEY": ""}):
+            self.assertTrue(len(gemini_service.get_zenrows_api_key()) > 10)
+
+    def test_buscar_html_zenrows_mock(self):
+        # Teste via ZenRowsClient
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><div class='historia'>Roteiro: Alan Moore</div></body></html>"
+        with patch("zenrows.ZenRowsClient.get", return_value=mock_resp):
+            html = gemini_service.buscar_html_zenrows("https://www.guiadosquadrinhos.com/edicao/teste")
+            self.assertIn("Alan Moore", html)
+
+        # Teste fallback requests direto
+        with patch("zenrows.ZenRowsClient.get", side_effect=Exception("Client indisponível")), \
+             patch("requests.get", return_value=mock_resp):
+            html_req = gemini_service.buscar_html_zenrows("https://www.guiadosquadrinhos.com/edicao/teste")
+            self.assertIn("Alan Moore", html_req)
+
+    def test_fluxo_extracao_tres_niveis_zenrows(self):
+        # 1. Quando o Python puro resolve, o ZenRows NÃO deve ser chamado (economiza cota)
+        html_puro_fake = """
+        <html>
+            <div id="dados_edicao">
+                Preço de capa: R$ 19,90
+            </div>
+            <div class="historia">Origem</div>
+            <div>Roteiro: Neil Gaiman</div>
+            <div>Arte: Dave McKean</div>
+            <div>Sinopse: O despertar de Sonho.</div>
+        </html>
+        """
+        with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
+             patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=html_puro_fake), \
+             patch("gemini_service.buscar_html_zenrows") as mock_zen, \
+             patch("gemini_service.get_gemini_client") as mock_ai:
+            res = gemini_service.buscar_dados_guia_dos_quadrinhos(
+                "Sandman Teste", "1", "Panini",
+                url_edicao="https://www.guiadosquadrinhos.com/edicao/sandman-teste/123/456"
+            )
+            self.assertEqual(res.get("roteiro"), "Neil Gaiman")
+            mock_zen.assert_not_called()
+            mock_ai.assert_not_called()
+
+        # 2. Quando o Python puro falha, o ZenRows é acionado no nível 2 e não chama IA
+        html_zen_fake = """
+        <html>
+            <div id="dados_edicao">
+                Preço de capa: R$ 29,90
+            </div>
+            <div class="historia">Cavaleiro das Trevas</div>
+            <div>Roteiro: Frank Miller</div>
+            <div>Desenho: Klaus Janson</div>
+            <div>Sinopse: O retorno de Batman.</div>
+        </html>
+        """
+        with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
+             patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
+             patch("gemini_service.buscar_html_zenrows", return_value=html_zen_fake) as mock_zen, \
+             patch("gemini_service.get_gemini_client") as mock_ai:
+            res_zen = gemini_service.buscar_dados_guia_dos_quadrinhos(
+                "Batman Teste", "1", "Abril",
+                url_edicao="https://www.guiadosquadrinhos.com/edicao/batman-teste/123/789"
+            )
+            mock_zen.assert_called_once()
+            mock_ai.assert_not_called()
+            self.assertEqual(res_zen.get("roteiro"), "Frank Miller")
+            self.assertEqual(res_zen.get("desenho"), "Klaus Janson")
+            self.assertIn("ZenRows", res_zen.get("metodo", ""))
 
 
 if __name__ == "__main__":
