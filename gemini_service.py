@@ -1089,13 +1089,24 @@ def buscar_capas_online(
         "pinterest", "facebook.com", "instagram.com", "wallpaper", "wallpapers", "hdqwalls", "alphacoders", "deviantart"
     ]
 
+    TERMOS_LIXO = [
+        "tenis", "tênis", "adidas", "nike", "sapato", "calcado", "calçado", "camisa", "vestido",
+        "shampoo", "perfume", "cosmetico", "cosmético", "hidratante", "creme", "sneaker", "shoes",
+        "sandalia", "sandália", "relogio", "relógio", "oculos", "óculos", "beleza na web",
+        "porcelanato", "piso", "revestimento", "concrete", "argamassa", "ceramica", "cerâmica",
+        "almofada", "sofa", "sofá", "tapete", "cortina", "colchao", "colchão"
+    ]
+
     def add_candidata(url: str, tit: str, fonte: str, thumb: Optional[str] = None):
         if not url or url in urls_vistas:
             return
         if not (url.startswith("http://") or url.startswith("https://") or url.startswith("data:image")):
             return
         u_low = url.lower()
+        t_low = (tit or "").lower()
         if any(d in u_low for d in dominios_bloqueados):
+            return
+        if any(tl in t_low or tl in u_low for tl in TERMOS_LIXO):
             return
         if "capasthumbs/antigas" in u_low or ("logo" in u_low and "capa" not in u_low):
             return
@@ -1118,8 +1129,20 @@ def buscar_capas_online(
         if m_num:
             num_num = m_num.group(1)
 
+    # Separa título base limpo sem poluição de número da edição ou editora já embutidos no texto
+    titulo_base = titulo_limpo
+    if num_num:
+        titulo_base = re.sub(rf"\b(?:n[oº°]?|vol(?:ume)?|#)?\s*{re.escape(num_num)}\b", "", titulo_base, flags=re.IGNORECASE).strip()
+    if editora:
+        titulo_base = re.sub(rf"\b{re.escape(str(editora))}\b", "", titulo_base, flags=re.IGNORECASE).strip()
+    for ed_padrao in ["panini", "abril", "mythos", "devir", "conrad", "jbc", "pipoca e nanquim", "veneta", "globo"]:
+        titulo_base = re.sub(rf"\b{re.escape(ed_padrao)}\b", "", titulo_base, flags=re.IGNORECASE).strip()
+    titulo_base = re.sub(r"\s+", " ", titulo_base).strip()
+    if not titulo_base:
+        titulo_base = titulo_limpo
+
     palavras_titulo = [
-        p for p in re.split(r"\W+", normalizar_str_busca(titulo_limpo))
+        p for p in re.split(r"\W+", normalizar_str_busca(titulo_base))
         if len(p) >= 3 and p not in ["panini", "capa", "gibi", "hq", "edicao", "volume", "vol", "editora", "quadrinhos"]
     ]
 
@@ -1132,21 +1155,27 @@ def buscar_capas_online(
     if url_gq_alvo:
         b64_cache = obter_capa_gq_cache(url_gq_alvo)
         if b64_cache:
-            add_candidata(b64_cache, f"{titulo_limpo} nº {edicao or num_num or '1'} (Guia dos Quadrinhos Oficial)", "Guia dos Quadrinhos (Oficial)", b64_cache)
+            add_candidata(b64_cache, f"{titulo_base} nº {edicao or num_num or '1'} (Guia dos Quadrinhos Oficial)", "Guia dos Quadrinhos (Oficial)", b64_cache)
 
     # 0.2 Se não tem URL do Guia dos Quadrinhos direta, busca a página canônica da edição
     if not url_gq_alvo:
         try:
-            q_gq_busca = f'"{titulo_limpo}" "{num_num or edicao}" site:guiadosquadrinhos.com/edicao/' if num_num else f'"{titulo_limpo}" site:guiadosquadrinhos.com/edicao/'
-            res_gq_pesq = pesquisar_reserp_google(q_gq_busca, timeout=6)
-            for r_g in res_gq_pesq:
-                u_cand = r_g.get("url") or ""
-                if "guiadosquadrinhos.com/edicao/" in u_cand:
-                    url_gq_alvo = u_cand
-                    # Se o Google indexou o thumbnail diretamente, aproveita com altíssima prioridade
-                    th_g = r_g.get("thumbnail") or r_g.get("thumbnail_url") or r_g.get("image")
-                    if th_g and isinstance(th_g, str) and th_g.startswith("http"):
-                        add_candidata(th_g, f"{titulo_limpo} nº {edicao or num_num or '1'} (Guia dos Quadrinhos)", "Guia dos Quadrinhos", th_g)
+            queries_gq = [
+                f'"{titulo_base}" {num_num} site:guiadosquadrinhos.com/edicao/'.strip() if num_num else f'"{titulo_base}" site:guiadosquadrinhos.com/edicao/',
+                f'{titulo_base} {num_num} site:guiadosquadrinhos.com/edicao/'.strip() if num_num else f'{titulo_base} site:guiadosquadrinhos.com/edicao/',
+                f'{titulo_limpo} site:guiadosquadrinhos.com/edicao/'
+            ]
+            for q_gq_busca in queries_gq:
+                res_gq_pesq = pesquisar_reserp_google(q_gq_busca, timeout=12)
+                for r_g in res_gq_pesq:
+                    u_cand = r_g.get("url") or ""
+                    if "guiadosquadrinhos.com/edicao/" in u_cand:
+                        url_gq_alvo = u_cand
+                        th_g = r_g.get("thumbnail") or r_g.get("thumbnail_url") or r_g.get("image")
+                        if th_g and isinstance(th_g, str) and th_g.startswith("http"):
+                            add_candidata(th_g, f"{titulo_base} nº {edicao or num_num or '1'} (Guia dos Quadrinhos)", "Guia dos Quadrinhos", th_g)
+                        break
+                if url_gq_alvo:
                     break
         except Exception:
             pass
@@ -1156,7 +1185,7 @@ def buscar_capas_online(
         try:
             b64_c = obter_capa_gq_cache(url_gq_alvo)
             if b64_c:
-                add_candidata(b64_c, f"{titulo_limpo} nº {edicao or num_num or '1'} (Guia dos Quadrinhos Oficial)", "Guia dos Quadrinhos (Oficial)", b64_c)
+                add_candidata(b64_c, f"{titulo_base} nº {edicao or num_num or '1'} (Guia dos Quadrinhos Oficial)", "Guia dos Quadrinhos (Oficial)", b64_c)
             else:
                 html_gq = buscar_html_edicao_guia_dos_quadrinhos(url_gq_alvo)
                 if html_gq:
@@ -1176,22 +1205,22 @@ def buscar_capas_online(
                             capa_gq_url = "https://www.guiadosquadrinhos.com" + capa_gq_url
                         b64_gq = baixar_imagem_url_base64(capa_gq_url, fallback_url=url_gq_alvo)
                         if b64_gq and b64_gq.startswith("data:image"):
-                            add_candidata(b64_gq, f"{titulo_limpo} nº {edicao or num_num or '1'} (Guia dos Quadrinhos Oficial)", "Guia dos Quadrinhos (Oficial)", b64_gq)
+                            add_candidata(b64_gq, f"{titulo_base} nº {edicao or num_num or '1'} (Guia dos Quadrinhos Oficial)", "Guia dos Quadrinhos (Oficial)", b64_gq)
                         else:
-                            add_candidata(capa_gq_url, f"{titulo_limpo} nº {edicao or num_num or '1'} (Guia dos Quadrinhos)", "Guia dos Quadrinhos", capa_gq_url)
+                            add_candidata(capa_gq_url, f"{titulo_base} nº {edicao or num_num or '1'} (Guia dos Quadrinhos)", "Guia dos Quadrinhos", capa_gq_url)
         except Exception as ex_gq:
             print(f"[Aviso busca capa Guia dos Quadrinhos: {ex_gq}]")
 
     # 0.4 Tenta também o catálogo canônico verificado
     try:
-        ficha_can = obter_dados_canonicos_guia_dos_quadrinhos(titulo_limpo, edicao, editora)
+        ficha_can = obter_dados_canonicos_guia_dos_quadrinhos(titulo_base, edicao, editora)
         if ficha_can:
             if ficha_can.get("capa_url"):
-                add_candidata(ficha_can["capa_url"], f"{titulo_limpo} nº {edicao or '1'} (Capa Panini)", "Guia dos Quadrinhos / Oficial")
+                add_candidata(ficha_can["capa_url"], f"{titulo_base} nº {edicao or '1'} (Capa Panini)", "Guia dos Quadrinhos / Oficial")
             for alt_c in ficha_can.get("capas_alternativas", []):
                 u_alt = alt_c.get("url") or alt_c.get("thumbnail")
                 if u_alt:
-                    add_candidata(u_alt, alt_c.get("titulo") or titulo_limpo, alt_c.get("fonte") or "Guia dos Quadrinhos")
+                    add_candidata(u_alt, alt_c.get("titulo") or titulo_base, alt_c.get("fonte") or "Guia dos Quadrinhos")
     except Exception:
         pass
 
@@ -1201,13 +1230,14 @@ def buscar_capas_online(
     try:
         lojas_operadores = "site:guiadosquadrinhos.com OR site:rika.com.br OR site:mercadolivre.com.br OR site:comix.com.br OR site:seborsraridades.com.br"
         termos_lojas = [
-            f'"{titulo_limpo}" "{num_num or edicao}" ({lojas_operadores})'.strip() if (num_num or edicao) else f'"{titulo_limpo}" ({lojas_operadores})'.strip(),
-            f'{titulo_limpo} {edicao} ({lojas_operadores})'.strip()
+            f'"{titulo_base}" {num_num} ({lojas_operadores})'.strip() if num_num else f'"{titulo_base}" ({lojas_operadores})'.strip(),
+            f'{titulo_base} {num_num} {editora} ({lojas_operadores})'.strip(),
+            f'{titulo_limpo} ({lojas_operadores})'.strip()
         ]
         
         paginas_para_inspecao = []
         for q_l in termos_lojas:
-            res_lojas = pesquisar_reserp_google(q_l, timeout=8)
+            res_lojas = pesquisar_reserp_google(q_l, timeout=12)
             for r_item in res_lojas:
                 r_url = r_item.get("url") or ""
                 # Filtra estritamente para os 5 sites foco
@@ -1228,7 +1258,7 @@ def buscar_capas_online(
                 else:
                     nome_fonte = "Loja de Quadrinhos"
 
-                r_tit = r_item.get("title") or titulo_limpo
+                r_tit = r_item.get("title") or titulo_base
                 thumb_reserp = r_item.get("thumbnail") or r_item.get("thumbnail_url") or r_item.get("image")
                 if thumb_reserp and isinstance(thumb_reserp, str) and thumb_reserp.startswith("http"):
                     add_candidata(thumb_reserp, r_tit, nome_fonte, thumb_reserp)
@@ -1269,11 +1299,10 @@ def buscar_capas_online(
                 "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
             }
             queries_bing = [
-                f"{titulo_limpo} {edicao} mercadolivre capa gibi".strip(),
-                f"{titulo_limpo} {edicao} rika gibi".strip(),
-                f"{titulo_limpo} {edicao} comix gibi".strip(),
-                f"{titulo_limpo} {edicao} seborsraridades gibi".strip(),
-                f"{titulo_limpo} {edicao} guiadosquadrinhos capa gibi".strip(),
+                f'"{titulo_base}" {num_num} mercadolivre gibi'.strip() if num_num else f'"{titulo_base}" mercadolivre gibi',
+                f'"{titulo_base}" {num_num} rika gibi'.strip() if num_num else f'"{titulo_base}" rika gibi',
+                f'"{titulo_base}" {num_num} comix gibi'.strip() if num_num else f'"{titulo_base}" comix gibi',
+                f'"{titulo_base}" {num_num} guiadosquadrinhos gibi'.strip() if num_num else f'"{titulo_base}" guiadosquadrinhos gibi',
             ]
             for q_b in queries_bing:
                 url_b = f"https://www.bing.com/images/search?q={urllib.parse.quote(q_b)}&FORM=HDRSC2"
@@ -1282,6 +1311,17 @@ def buscar_capas_online(
                     m_urls = re.findall(r'murl&quot;:&quot;(http[^&]+)&quot;.*?t1&quot;:&quot;([^&]+)&quot;', r_b.text)
                     for m_u, m_t in m_urls:
                         u_low = m_u.lower()
+                        t_low = html.unescape(m_t).lower()
+                        if any(tl in t_low or tl in u_low for tl in TERMOS_LIXO):
+                            continue
+
+                        # Validação estrita: precisa conter palavras do título da HQ
+                        if palavras_titulo:
+                            match_count = sum(1 for p in palavras_titulo if p in t_low or p in u_low)
+                            min_matches = 2 if len(palavras_titulo) >= 2 else 1
+                            if match_count < min_matches:
+                                continue
+
                         if "mlstatic.com" in u_low or "mercadolivre" in u_low:
                             f_b = "Mercado Livre"
                         elif "rika" in u_low or "vtexassets" in u_low:
@@ -1293,6 +1333,10 @@ def buscar_capas_online(
                         elif "guiadosquadrinhos" in u_low:
                             f_b = "Guia dos Quadrinhos"
                         else:
+                            # Imagens genéricas da Web só são aceitas se tiverem termos explícitos de HQ
+                            is_comic = any(k in t_low or k in u_low for k in ["gibi", "hq", "quadrinho", "comic", "panini", "manga", "capa"])
+                            if not is_comic:
+                                continue
                             f_b = "Web HD"
                         add_candidata(m_u, html.unescape(m_t), f_b, m_u)
 
@@ -1303,10 +1347,21 @@ def buscar_capas_online(
                                 import json as _json
                                 d_b = _json.loads(html.unescape(raw))
                                 u_b = d_b.get("murl")
-                                t_b = d_b.get("t") or d_b.get("desc") or titulo_limpo
+                                t_b = d_b.get("t") or d_b.get("desc") or titulo_base
                                 th_b = d_b.get("turl") or u_b
                                 if u_b:
                                     u_low = u_b.lower()
+                                    t_low = (t_b or "").lower()
+                                    if any(tl in t_low or tl in u_low for tl in TERMOS_LIXO):
+                                        continue
+
+                                    # Validação estrita: precisa conter palavras do título da HQ
+                                    if palavras_titulo:
+                                        match_count = sum(1 for p in palavras_titulo if p in t_low or p in u_low)
+                                        min_matches = 2 if len(palavras_titulo) >= 2 else 1
+                                        if match_count < min_matches:
+                                            continue
+
                                     if "mlstatic.com" in u_low:
                                         f_b = "Mercado Livre"
                                     elif "vtexassets" in u_low:
@@ -1318,6 +1373,9 @@ def buscar_capas_online(
                                     elif "guiadosquadrinhos" in u_low:
                                         f_b = "Guia dos Quadrinhos"
                                     else:
+                                        is_comic = any(k in t_low or k in u_low for k in ["gibi", "hq", "quadrinho", "comic", "panini", "manga", "capa"])
+                                        if not is_comic:
+                                            continue
                                         f_b = "Web HD"
                                     add_candidata(u_b, t_b, f_b, th_b)
                             except Exception:
@@ -1326,6 +1384,7 @@ def buscar_capas_online(
                     break
         except Exception as ex_bing:
             print(f"[Aviso Bing Images: {ex_bing}]")
+
 
     # =========================================================================
     # 3. VALIDAÇÃO CONCORRENTE ULTRA-RÁPIDA (Zero imagens quebradas)
