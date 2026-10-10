@@ -1522,6 +1522,14 @@ class TestHqCatalog(unittest.TestCase):
             html_req = gemini_service.buscar_html_zenrows("https://www.guiadosquadrinhos.com/edicao/teste")
             self.assertIn("Alan Moore", html_req)
 
+    def test_buscar_html_edicao_guia_dos_quadrinhos_curl_cffi(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><div class='historia'>Roteiro: Alan Moore</div></body></html>"
+        with patch("curl_cffi.requests.get", return_value=mock_resp):
+            html = gemini_service.buscar_html_edicao_guia_dos_quadrinhos("https://www.guiadosquadrinhos.com/edicao/teste")
+            self.assertIn("Alan Moore", html)
+
     def test_fluxo_extracao_tres_niveis_zenrows(self):
         # 1. Quando o Python puro resolve, o ZenRows NÃO deve ser chamado (economiza cota)
         html_puro_fake = """

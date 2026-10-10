@@ -435,7 +435,7 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
                         break
             
             if url_gq_tentativa and "/edicao/" in url_gq_tentativa:
-                with st.spinner("⚡ 1/5: Tentando extração direta 100% fiel do HTML oficial (Python BeautifulSoup)..."):
+                with st.spinner("⚡ 1/5: Tentando extração direta 100% fiel do HTML oficial (Python curl_cffi / BeautifulSoup)..."):
                     html_baixado = gemini_service.buscar_html_edicao_guia_dos_quadrinhos(url_gq_tentativa)
                     if html_baixado and ("historia" in html_baixado.lower() or "ampliar_capa" in html_baixado):
                         dados_diretos = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_baixado, url_gq_tentativa)
@@ -670,14 +670,18 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                                     origem_manual = "html_puro"
                                     mod_manual_usado = "Python Extractor (Texto Puro da Página)"
                     else:
-                        # Usuário colou uma URL: tenta baixar com Python puro
-                        with st.spinner("⚡ 1/5: Tentando baixar página com Python puro (BeautifulSoup)..."):
+                        # Usuário colou uma URL: tenta baixar com Python puro (curl_cffi / BeautifulSoup)
+                        with st.spinner("⚡ 1/5: Tentando baixar página com Python puro (curl_cffi / BeautifulSoup)..."):
                             try:
                                 if "guiadosquadrinhos.com" in texto_extraido:
                                     html_puro = gemini_service.buscar_html_edicao_guia_dos_quadrinhos(texto_extraido)
                                 else:
-                                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
-                                    r = requests.get(texto_extraido, headers=headers, timeout=10)
+                                    try:
+                                        from curl_cffi import requests as cffi_requests
+                                        r = cffi_requests.get(texto_extraido, impersonate="chrome120", timeout=8)
+                                    except Exception:
+                                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
+                                        r = requests.get(texto_extraido, headers=headers, timeout=10)
                                     html_puro = r.text if r.status_code == 200 else ""
 
                                 if html_puro and len(html_puro) > 500:

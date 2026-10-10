@@ -3553,6 +3553,17 @@ def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
     if "guiadosquadrinhos.com" in norm_url and "www.guiadosquadrinhos.com" not in norm_url:
         norm_url = norm_url.replace("guiadosquadrinhos.com", "www.guiadosquadrinhos.com")
 
+    # 0. Tentativa Rápida e Furtiva com curl_cffi (Emulação cirúrgica de TLS JA3/JA4 do Chrome sem overhead de browser)
+    try:
+        from curl_cffi import requests as cffi_requests
+        for imp in ["chrome124", "chrome120", "safari17_0"]:
+            r_cffi = cffi_requests.get(norm_url, impersonate=imp, timeout=6)
+            if r_cffi is not None and r_cffi.status_code == 200 and r_cffi.text and len(r_cffi.text.strip()) > 30:
+                if eh_html_valido_guia_dos_quadrinhos(r_cffi.text) or "historia" in r_cffi.text.lower():
+                    return r_cffi.text
+    except Exception as ex_cffi:
+        print(f"[curl_cffi] Tentativa rápida: {ex_cffi}")
+
     # 1. Tentativa Principal via Camoufox (Invisível, resolve Cloudflare Turnstile)
     # Executado em ThreadPoolExecutor isolado para compatibilidade total com o asyncio do Streamlit
     def _fetch_camoufox(target_url: str) -> str:
@@ -3624,7 +3635,16 @@ def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
     except Exception:
         pass
 
-    # 2. Tentativa Direta via requests
+    # 2. Tentativa Direta via curl_cffi / requests
+    try:
+        from curl_cffi import requests as cffi_requests
+        r_cffi = cffi_requests.get(norm_url, impersonate="chrome120", timeout=6)
+        if r_cffi is not None and r_cffi.status_code == 200 and r_cffi.text and len(r_cffi.text.strip()) > 30:
+            if eh_html_valido_guia_dos_quadrinhos(r_cffi.text) or "historia" in r_cffi.text.lower():
+                return r_cffi.text
+    except Exception:
+        pass
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
