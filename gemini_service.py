@@ -577,6 +577,7 @@ def transcrever_audio_resenha(
 # -------------------------------------------------------------
 DEFAULT_SERPAPI_KEY = os.getenv("SERPAPI_API_KEY", "")
 DEFAULT_ZENROWS_KEY = os.getenv("ZENROWS_API_KEY", "3ba8103ac0b970c71c6cd5dd37627934c3745faf")
+DEFAULT_SCRAPERAPI_KEY = os.getenv("SCRAPERAPI_API_KEY", "cbd4215c1c6716aeace9bbc367e9f575")
 
 TERMOS_EXCLUSAO_NAO_LIVRO = [
     "boneco", "boneca", "action figure", "action figures", "estátua", "estatua", "figura de ação",
@@ -3777,6 +3778,87 @@ def buscar_html_zenrows(url: str, api_key: Optional[str] = None, timeout: int = 
     return ""
 
 
+def get_scraperapi_key(api_key: Optional[str] = None) -> str:
+    """
+    Retorna a chave da API ScraperAPI priorizando:
+    1. Parâmetro explícito
+    2. streamlit.secrets
+    3. Variável de ambiente SCRAPERAPI_API_KEY
+    4. Chave padrão configurada
+    """
+    if api_key and str(api_key).strip():
+        return str(api_key).strip()
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and "SCRAPERAPI_API_KEY" in st.secrets:
+            k = str(st.secrets["SCRAPERAPI_API_KEY"]).strip()
+            if k:
+                return k
+    except Exception:
+        pass
+    k_env = os.getenv("SCRAPERAPI_API_KEY", "").strip()
+    if k_env:
+        return k_env
+    return DEFAULT_SCRAPERAPI_KEY
+
+
+def buscar_html_scraperapi(url: str, api_key: Optional[str] = None, timeout: int = 40) -> str:
+    """
+    Baixa o HTML de uma página utilizando a API do ScraperAPI (Web Scraping Anti-Bloqueio / Anti-Cloudflare).
+    Atua como camada de failover quando o Python puro e o ZenRows falharem.
+    """
+    if not url or not str(url).strip().startswith("http"):
+        return ""
+
+    norm_url = str(url).strip()
+    if norm_url.startswith("http://"):
+        norm_url = norm_url.replace("http://", "https://")
+    if "guiadosquadrinhos.com" in norm_url and "www.guiadosquadrinhos.com" not in norm_url:
+        norm_url = norm_url.replace("guiadosquadrinhos.com", "www.guiadosquadrinhos.com")
+
+    chave = get_scraperapi_key(api_key)
+    if not chave:
+        print("[ScraperAPI] Chave de API não informada.")
+        return ""
+
+    if requests is None:
+        print("[ScraperAPI] Módulo 'requests' não disponível.")
+        return ""
+
+    try:
+        payload = {
+            'api_key': chave,
+            'url': norm_url,
+            'output_format': 'json',
+            'autoparse': 'true'
+        }
+        r = requests.get('https://api.scraperapi.com/', params=payload, timeout=timeout)
+        if r is not None and r.status_code == 200 and r.text and len(r.text.strip()) > 30:
+            resp_content = r.text
+            # Se a resposta vier encapsulada em JSON (caso retornado com output_format='json')
+            if resp_content.strip().startswith("{") and resp_content.strip().endswith("}"):
+                try:
+                    data_json = json.loads(resp_content)
+                    if isinstance(data_json, dict):
+                        for field in ["body", "html", "content", "response"]:
+                            if field in data_json and isinstance(data_json[field], str) and len(data_json[field]) > 30:
+                                resp_content = data_json[field]
+                                break
+                except Exception:
+                    pass
+
+            if "guiadosquadrinhos.com" not in norm_url or eh_html_valido_guia_dos_quadrinhos(resp_content):
+                return resp_content
+            print("[ScraperAPI] HTML retornado não passou na validação do Guia dos Quadrinhos.")
+        else:
+            status_code = getattr(r, "status_code", None)
+            print(f"[ScraperAPI] Requisição retornou status {status_code}")
+    except Exception as ex_scraper:
+        print(f"[ScraperAPI] Exceção ao buscar página: {ex_scraper}")
+
+    return ""
+
+
 def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dict[str, Any]:
     """
     Extrai todos os dados catalográficos, ficha técnica e a lista completa de histórias
@@ -4568,6 +4650,34 @@ def buscar_dados_guia_dos_quadrinhos(
                 if dados_extraidos.get("publicado_em"):
                     resultado["publicado_em"] = dados_extraidos.get("publicado_em") or ""
                 resultado["metodo"] = "ZenRows Scraper (Página Oficial Guia dos Quadrinhos)"
+
+                if dados_extraidos.get("capa_url"):
+                    c_url = dados_extraidos["capa_url"]
+                    resultado["capa_url"] = c_url
+                    resultado["capas_alternativas"].append({
+                        "url": c_url,
+                        "thumbnail": c_url,
+                        "titulo": f"{titulo_limpo} nº {edicao_limpa} (Capa Oficial Guia dos Quadrinhos)",
+                        "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)"
+                    })
+
+    # -----------------------------------------------------------------
+    # ETAPA 2.2: TENTATIVA VIA SCRAPERAPI (FAILOVER SE O ZENROWS FALHOU)
+    # -----------------------------------------------------------------
+    if not conseguiu_extrair and url_resolvida and "/edicao/" in url_resolvida:
+        html_scraper = buscar_html_scraperapi(url_resolvida)
+        if html_scraper:
+            dados_extraidos = extrair_dados_html_guia_dos_quadrinhos(html_scraper, url_resolvida)
+            if dados_extraidos and (dados_extraidos.get("roteiro") or dados_extraidos.get("desenho") or dados_extraidos.get("resumo")):
+                conseguiu_extrair = True
+                resultado["roteiro"] = dados_extraidos.get("roteiro") or ""
+                resultado["desenho"] = dados_extraidos.get("desenho") or ""
+                resultado["preco_capa"] = float(dados_extraidos.get("preco_capa") or 0.0)
+                resultado["preco_capa_formatado"] = dados_extraidos.get("preco_capa_formatado") or "R$ 0,00"
+                resultado["resumo"] = dados_extraidos.get("resumo") or ""
+                if dados_extraidos.get("publicado_em"):
+                    resultado["publicado_em"] = dados_extraidos.get("publicado_em") or ""
+                resultado["metodo"] = "ScraperAPI Scraper (Página Oficial Guia dos Quadrinhos)"
 
                 if dados_extraidos.get("capa_url"):
                     c_url = dados_extraidos["capa_url"]

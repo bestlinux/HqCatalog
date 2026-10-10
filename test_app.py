@@ -7,7 +7,8 @@ import gemini_service
 class TestHqCatalog(unittest.TestCase):
     def setUp(self):
         self.test_db = "test_inventario_temp.db"
-        database.init_db(self.test_db)
+        with patch("database.get_turso_credentials", return_value=(None, None)):
+            database.init_db(self.test_db)
 
     def tearDown(self):
         if os.path.exists(self.test_db):
@@ -1438,6 +1439,7 @@ class TestHqCatalog(unittest.TestCase):
         # 6. Universo DC 3ª Série 8 com URL do Guia dos Quadrinhos e Fallback por IA
         with patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
              patch("gemini_service.buscar_html_zenrows", return_value=""), \
+             patch("gemini_service.buscar_html_scraperapi", return_value=""), \
              patch("gemini_service.get_gemini_client") as mock_client:
             mock_chat = MagicMock()
             mock_resp_ai = MagicMock()
@@ -1535,6 +1537,7 @@ class TestHqCatalog(unittest.TestCase):
         with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
              patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=html_puro_fake), \
              patch("gemini_service.buscar_html_zenrows") as mock_zen, \
+             patch("gemini_service.buscar_capas_online", return_value=[]), \
              patch("gemini_service.get_gemini_client") as mock_ai:
             res = gemini_service.buscar_dados_guia_dos_quadrinhos(
                 "Sandman Teste", "1", "Panini",
@@ -1559,6 +1562,7 @@ class TestHqCatalog(unittest.TestCase):
         with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
              patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
              patch("gemini_service.buscar_html_zenrows", return_value=html_zen_fake) as mock_zen, \
+             patch("gemini_service.buscar_capas_online", return_value=[]), \
              patch("gemini_service.get_gemini_client") as mock_ai:
             res_zen = gemini_service.buscar_dados_guia_dos_quadrinhos(
                 "Batman Teste", "1", "Abril",
@@ -1569,6 +1573,103 @@ class TestHqCatalog(unittest.TestCase):
             self.assertEqual(res_zen.get("roteiro"), "Frank Miller")
             self.assertEqual(res_zen.get("desenho"), "Klaus Janson")
             self.assertIn("ZenRows", res_zen.get("metodo", ""))
+
+    def test_scraperapi_api_key_resolution(self):
+        # 1. Parâmetro explícito
+        self.assertEqual(gemini_service.get_scraperapi_key("custom_scraper_key_123"), "custom_scraper_key_123")
+        # 2. Variável de ambiente
+        with patch.dict(os.environ, {"SCRAPERAPI_API_KEY": "env_scraper_key_456"}):
+            self.assertEqual(gemini_service.get_scraperapi_key(), "env_scraper_key_456")
+        # 3. Padrão pré-configurado
+        with patch.dict(os.environ, {"SCRAPERAPI_API_KEY": ""}):
+            self.assertTrue(len(gemini_service.get_scraperapi_key()) > 10)
+
+    def test_buscar_html_scraperapi_mock(self):
+        # Teste mock requests.get com HTML direto
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><div class='historia'>Roteiro: Grant Morrison</div></body></html>"
+        with patch("requests.get", return_value=mock_resp):
+            html = gemini_service.buscar_html_scraperapi("https://www.guiadosquadrinhos.com/edicao/teste-scraper")
+            self.assertIn("Grant Morrison", html)
+
+    def test_fluxo_extracao_quatro_niveis_scraperapi(self):
+        # 1. Quando ZenRows resolve no nível 2, ScraperAPI NÃO é chamado
+        html_zen_fake = """
+        <html>
+            <div id="dados_edicao">Preço de capa: R$ 35,00</div>
+            <div class="historia">Monstro do Pântano</div>
+            <div>Roteiro: Alan Moore</div>
+            <div>Desenho: Stephen Bissette</div>
+            <div>Sinopse: Lição de Anatomia.</div>
+        </html>
+        """
+        with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
+             patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
+             patch("gemini_service.buscar_html_zenrows", return_value=html_zen_fake) as mock_zen, \
+             patch("gemini_service.buscar_html_scraperapi") as mock_scraper, \
+             patch("gemini_service.buscar_capas_online", return_value=[]), \
+             patch("gemini_service.get_gemini_client") as mock_ai:
+            res_zen = gemini_service.buscar_dados_guia_dos_quadrinhos(
+                "Monstro do Pântano", "1", "Panini",
+                url_edicao="https://www.guiadosquadrinhos.com/edicao/monstro-pantano/123/456"
+            )
+            mock_zen.assert_called_once()
+            mock_scraper.assert_not_called()
+            mock_ai.assert_not_called()
+            self.assertEqual(res_zen.get("roteiro"), "Alan Moore")
+
+        # 2. Quando Python puro e ZenRows falham, ScraperAPI é acionado e não chama IA
+        html_scraper_fake = """
+        <html>
+            <div id="dados_edicao">Preço de capa: R$ 42,00</div>
+            <div class="historia">X-Men Massacre de Mutantes</div>
+            <div>Roteiro: Chris Claremont</div>
+            <div>Desenho: John Romita Jr.</div>
+            <div>Sinopse: Tragédia nos túneis Morlock.</div>
+        </html>
+        """
+        with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
+             patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
+             patch("gemini_service.buscar_html_zenrows", return_value="") as mock_zen, \
+             patch("gemini_service.buscar_html_scraperapi", return_value=html_scraper_fake) as mock_scraper, \
+             patch("gemini_service.buscar_capas_online", return_value=[]), \
+             patch("gemini_service.get_gemini_client") as mock_ai:
+            res_scraper = gemini_service.buscar_dados_guia_dos_quadrinhos(
+                "X-Men Massacre", "1", "Abril",
+                url_edicao="https://www.guiadosquadrinhos.com/edicao/x-men-massacre/123/999"
+            )
+            mock_zen.assert_called_once()
+            mock_scraper.assert_called_once()
+            mock_ai.assert_not_called()
+            self.assertEqual(res_scraper.get("roteiro"), "Chris Claremont")
+            self.assertEqual(res_scraper.get("desenho"), "John Romita Jr.")
+            self.assertIn("ScraperAPI", res_scraper.get("metodo", ""))
+
+        # 3. Quando Python puro, ZenRows e ScraperAPI falham, IA Gemini é chamada
+        with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
+             patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
+             patch("gemini_service.buscar_html_zenrows", return_value="") as mock_zen, \
+             patch("gemini_service.buscar_html_scraperapi", return_value="") as mock_scraper, \
+             patch("gemini_service.pesquisar_reserp_google", return_value=[]), \
+             patch("gemini_service.buscar_capas_online", return_value=[]), \
+             patch("gemini_service.get_gemini_client") as mock_ai:
+            mock_chat = MagicMock()
+            mock_resp_ai = MagicMock()
+            mock_resp_ai.text = '{"roteiro": "Warren Ellis", "desenho": "Bryan Hitch", "preco_capa": 25.0, "resumo": "The Authority"}'
+            mock_chat.send_message.return_value = mock_resp_ai
+            mock_instance = MagicMock()
+            mock_instance.chats.create.return_value = mock_chat
+            mock_ai.return_value = mock_instance
+
+            res_ai = gemini_service.buscar_dados_guia_dos_quadrinhos(
+                "Authority", "1", "Panini",
+                url_edicao="https://www.guiadosquadrinhos.com/edicao/authority/123/888"
+            )
+            mock_zen.assert_called_once()
+            mock_scraper.assert_called_once()
+            mock_ai.assert_called()
+            self.assertEqual(res_ai.get("roteiro"), "Warren Ellis")
 
 
 if __name__ == "__main__":
