@@ -3732,41 +3732,47 @@ def buscar_html_zenrows(url: str, api_key: Optional[str] = None, timeout: int = 
 
     configs_tentativas = [
         {'mode': 'auto'},
-        {'mode': 'auto', 'js_render': 'true'}
+        {'js_render': 'true'}
     ]
 
     for idx, params in enumerate(configs_tentativas):
+        resp_text = None
+        status_code = None
+
         # 1. Tentativa via cliente oficial ZenRowsClient
         try:
             from zenrows import ZenRowsClient
             client = ZenRowsClient(chave)
             resp = client.get(norm_url, params=params, timeout=timeout)
-            if resp.status_code == 200 and resp.text and len(resp.text.strip()) > 30:
-                if "guiadosquadrinhos.com" not in norm_url or eh_html_valido_guia_dos_quadrinhos(resp.text):
-                    return resp.text
-                elif idx == 0:
-                    print("[ZenRows] Resposta recebida é tela de desafio Cloudflare. Escalando para js_render=true...")
+            status_code = getattr(resp, "status_code", None)
+            if resp is not None and resp.status_code == 200 and resp.text and len(resp.text.strip()) > 30:
+                resp_text = resp.text
             else:
-                print(f"[ZenRows] ZenRowsClient retornou status {getattr(resp, 'status_code', None)}")
+                print(f"[ZenRows] Tentativa {idx+1} ZenRowsClient retornou status {status_code}")
         except Exception as ex_client:
             print(f"[ZenRows] Exceção tentativa {idx+1} ZenRowsClient: {ex_client}")
 
-        # 2. Fallback direto via requests para a API ZenRows
-        if requests is not None:
+        # 2. Fallback direto via requests apenas se o cliente oficial falhou por erro de conexão/importação
+        if resp_text is None and requests is not None:
             try:
                 req_params = dict(params)
                 req_params["apikey"] = chave
                 req_params["url"] = norm_url
                 r = requests.get("https://api.zenrows.com/v1/", params=req_params, timeout=timeout)
-                if r.status_code == 200 and r.text and len(r.text.strip()) > 30:
-                    if "guiadosquadrinhos.com" not in norm_url or eh_html_valido_guia_dos_quadrinhos(r.text):
-                        return r.text
-                    elif idx == 0:
-                        print("[ZenRows] Fallback requests recebeu desafio Cloudflare. Escalando para js_render=true...")
+                status_code = getattr(r, "status_code", None)
+                if r is not None and r.status_code == 200 and r.text and len(r.text.strip()) > 30:
+                    resp_text = r.text
                 else:
-                    print(f"[ZenRows] Requisição direta retornou status {getattr(r, 'status_code', None)}")
+                    print(f"[ZenRows] Tentativa {idx+1} fallback direto retornou status {status_code}")
             except Exception as ex_req:
                 print(f"[ZenRows] Exceção tentativa {idx+1} fallback direto: {ex_req}")
+
+        # Validação do conteúdo retornado
+        if resp_text:
+            if "guiadosquadrinhos.com" not in norm_url or eh_html_valido_guia_dos_quadrinhos(resp_text):
+                return resp_text
+            elif idx == 0:
+                print("[ZenRows] Resposta no modo auto é desafio Cloudflare. Escalando para js_render='true'...")
 
     return ""
 
