@@ -450,7 +450,7 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
                     with st.spinner("🌐 2/3: Tentando extração via ZenRows Scraper API..."):
                         try:
                             html_zen = gemini_service.buscar_html_zenrows(url_gq_tentativa)
-                            if html_zen and ("historia" in html_zen.lower() or "ampliar_capa" in html_zen or "preco de capa" in html_zen.lower()):
+                            if html_zen and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_zen) or "historia" in html_zen.lower()):
                                 dados_zen = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_zen, url_gq_tentativa)
                                 if dados_zen and (dados_zen.get("roteiro") or dados_zen.get("desenho") or dados_zen.get("resumo")):
                                     dados = dados_zen
@@ -660,8 +660,10 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                         with st.spinner("🌐 2/3: Tentando acessar e extrair via ZenRows Scraper API..."):
                             try:
                                 html_zen = gemini_service.buscar_html_zenrows(texto_extraido)
-                                if html_zen and len(html_zen) > 500:
-                                    dados_zen = gemini_service.extrair_dados_texto_ou_html_gq(html_zen, url_orig=url_manual_gq)
+                                if html_zen and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_zen) or len(html_zen) > 500):
+                                    dados_zen = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_zen, url_orig=url_manual_gq)
+                                    if not dados_zen or not (dados_zen.get("roteiro") or dados_zen.get("desenho") or dados_zen.get("resumo")):
+                                        dados_zen = gemini_service.extrair_dados_texto_ou_html_gq(html_zen, url_orig=url_manual_gq)
                                     if dados_zen and (dados_zen.get("roteiro") or dados_zen.get("desenho") or dados_zen.get("resumo")):
                                         dados_man = dados_zen
                                         origem_manual = "zenrows"
