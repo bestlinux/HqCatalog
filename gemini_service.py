@@ -578,6 +578,7 @@ def transcrever_audio_resenha(
 DEFAULT_SERPAPI_KEY = os.getenv("SERPAPI_API_KEY", "")
 DEFAULT_ZENROWS_KEY = os.getenv("ZENROWS_API_KEY", "3ba8103ac0b970c71c6cd5dd37627934c3745faf")
 DEFAULT_SCRAPERAPI_KEY = os.getenv("SCRAPERAPI_API_KEY", "cbd4215c1c6716aeace9bbc367e9f575")
+DEFAULT_SCRAPINGBEE_KEY = os.getenv("SCRAPINGBEE_API_KEY", "0I1S0PQIV4WNTFUGIJA9D6EI6I9ULQBC3WFNO0HFN53ICE84ZFLAGZBYMNQGPSXJGKGAB1PTPZX9IOGD")
 
 TERMOS_EXCLUSAO_NAO_LIVRO = [
     "boneco", "boneca", "action figure", "action figures", "estátua", "estatua", "figura de ação",
@@ -3859,6 +3860,95 @@ def buscar_html_scraperapi(url: str, api_key: Optional[str] = None, timeout: int
     return ""
 
 
+def get_scrapingbee_api_key(api_key: Optional[str] = None) -> str:
+    """
+    Retorna a chave da API ScrapingBee priorizando:
+    1. Parâmetro explícito
+    2. streamlit.secrets
+    3. Variável de ambiente SCRAPINGBEE_API_KEY
+    4. Chave padrão configurada
+    """
+    if api_key and str(api_key).strip():
+        return str(api_key).strip()
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and "SCRAPINGBEE_API_KEY" in st.secrets:
+            k = str(st.secrets["SCRAPINGBEE_API_KEY"]).strip()
+            if k:
+                return k
+    except Exception:
+        pass
+    k_env = os.getenv("SCRAPINGBEE_API_KEY", "").strip()
+    if k_env:
+        return k_env
+    return DEFAULT_SCRAPINGBEE_KEY
+
+
+def buscar_html_scrapingbee(url: str, api_key: Optional[str] = None, timeout: int = 40) -> str:
+    """
+    Baixa o HTML de uma página utilizando a API do ScrapingBee (Web Scraping Anti-Bloqueio / Anti-Cloudflare).
+    Atua como camada de failover quando o Python puro, ZenRows e ScraperAPI falharem.
+    Utiliza stealth_proxy='true' para contornar com sucesso a proteção Cloudflare.
+    """
+    if not url or not str(url).strip().startswith("http"):
+        return ""
+
+    norm_url = str(url).strip()
+    if norm_url.startswith("http://"):
+        norm_url = norm_url.replace("http://", "https://")
+    if "guiadosquadrinhos.com" in norm_url and "www.guiadosquadrinhos.com" not in norm_url:
+        norm_url = norm_url.replace("guiadosquadrinhos.com", "www.guiadosquadrinhos.com")
+
+    chave = get_scrapingbee_api_key(api_key)
+    if not chave:
+        print("[ScrapingBee] Chave de API não informada.")
+        return ""
+
+    resp_text = None
+    params_bee = {'stealth_proxy': 'true'}
+
+    # 1. Tentativa via cliente oficial ScrapingBeeClient
+    try:
+        from scrapingbee import ScrapingBeeClient
+        client = ScrapingBeeClient(api_key=chave)
+        fn_get = getattr(client, "html_api", None) or getattr(client, "get", None)
+        if fn_get:
+            resp = fn_get(norm_url, params=params_bee, timeout=timeout)
+            if resp is not None and getattr(resp, "status_code", None) == 200:
+                txt = getattr(resp, "text", "") or ""
+                if not txt and hasattr(resp, "content"):
+                    try:
+                        txt = resp.content.decode("utf-8", errors="replace")
+                    except Exception:
+                        pass
+                if txt and len(txt.strip()) > 30:
+                    resp_text = txt
+    except Exception as ex_client:
+        print(f"[ScrapingBee] Cliente oficial ScrapingBee falhou: {ex_client}")
+
+    # 2. Fallback direto via requests se o cliente oficial falhar ou não estiver instalado
+    if not resp_text and requests is not None:
+        try:
+            req_params = dict(params_bee)
+            req_params["api_key"] = chave
+            req_params["url"] = norm_url
+            r = requests.get("https://app.scrapingbee.com/api/v1/", params=req_params, timeout=timeout)
+            if r is not None and r.status_code == 200 and r.text and len(r.text.strip()) > 30:
+                resp_text = r.text
+            else:
+                status_code = getattr(r, "status_code", None)
+                print(f"[ScrapingBee] Requisição direta retornou status {status_code}")
+        except Exception as ex_req:
+            print(f"[ScrapingBee] Exceção na requisição direta: {ex_req}")
+
+    if resp_text:
+        if "guiadosquadrinhos.com" not in norm_url or eh_html_valido_guia_dos_quadrinhos(resp_text):
+            return resp_text
+        print("[ScrapingBee] HTML retornado não passou na validação do Guia dos Quadrinhos.")
+
+    return ""
+
+
 def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dict[str, Any]:
     """
     Extrai todos os dados catalográficos, ficha técnica e a lista completa de histórias
@@ -4678,6 +4768,34 @@ def buscar_dados_guia_dos_quadrinhos(
                 if dados_extraidos.get("publicado_em"):
                     resultado["publicado_em"] = dados_extraidos.get("publicado_em") or ""
                 resultado["metodo"] = "ScraperAPI Scraper (Página Oficial Guia dos Quadrinhos)"
+
+                if dados_extraidos.get("capa_url"):
+                    c_url = dados_extraidos["capa_url"]
+                    resultado["capa_url"] = c_url
+                    resultado["capas_alternativas"].append({
+                        "url": c_url,
+                        "thumbnail": c_url,
+                        "titulo": f"{titulo_limpo} nº {edicao_limpa} (Capa Oficial Guia dos Quadrinhos)",
+                        "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)"
+                    })
+
+    # -----------------------------------------------------------------
+    # ETAPA 2.3: TENTATIVA VIA SCRAPINGBEE (FAILOVER SE SCRAPERAPI FALHOU)
+    # -----------------------------------------------------------------
+    if not conseguiu_extrair and url_resolvida and "/edicao/" in url_resolvida:
+        html_sbee = buscar_html_scrapingbee(url_resolvida)
+        if html_sbee:
+            dados_extraidos = extrair_dados_html_guia_dos_quadrinhos(html_sbee, url_resolvida)
+            if dados_extraidos and (dados_extraidos.get("roteiro") or dados_extraidos.get("desenho") or dados_extraidos.get("resumo")):
+                conseguiu_extrair = True
+                resultado["roteiro"] = dados_extraidos.get("roteiro") or ""
+                resultado["desenho"] = dados_extraidos.get("desenho") or ""
+                resultado["preco_capa"] = float(dados_extraidos.get("preco_capa") or 0.0)
+                resultado["preco_capa_formatado"] = dados_extraidos.get("preco_capa_formatado") or "R$ 0,00"
+                resultado["resumo"] = dados_extraidos.get("resumo") or ""
+                if dados_extraidos.get("publicado_em"):
+                    resultado["publicado_em"] = dados_extraidos.get("publicado_em") or ""
+                resultado["metodo"] = "ScrapingBee Scraper (Página Oficial Guia dos Quadrinhos)"
 
                 if dados_extraidos.get("capa_url"):
                     c_url = dados_extraidos["capa_url"]

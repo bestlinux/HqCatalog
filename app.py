@@ -416,7 +416,7 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
         st.markdown("---")
         st.markdown("#### 🤖 Extração Inteligente com IA")
 
-        if st.button("🚀 Extrair Dados (Python Direto / ZenRows / ScraperAPI / IA Gemini)", key=f"btn_extrair_reserp_{val_id}", type="primary", use_container_width=True):
+        if st.button("🚀 Extrair Dados (Python Direto / ZenRows / ScraperAPI / ScrapingBee / IA Gemini)", key=f"btn_extrair_reserp_{val_id}", type="primary", use_container_width=True):
             # Limpa explicitamente dados e capas de execuções anteriores para esta busca
             st.session_state.pop(session_extraidos_key, None)
             st.session_state.pop(f"fonte_input_capa_{val_id}", None)
@@ -435,7 +435,7 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
                         break
             
             if url_gq_tentativa and "/edicao/" in url_gq_tentativa:
-                with st.spinner("⚡ 1/4: Tentando extração direta 100% fiel do HTML oficial (Python BeautifulSoup)..."):
+                with st.spinner("⚡ 1/5: Tentando extração direta 100% fiel do HTML oficial (Python BeautifulSoup)..."):
                     html_baixado = gemini_service.buscar_html_edicao_guia_dos_quadrinhos(url_gq_tentativa)
                     if html_baixado and ("historia" in html_baixado.lower() or "ampliar_capa" in html_baixado):
                         dados_diretos = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_baixado, url_gq_tentativa)
@@ -447,7 +447,7 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
             # 2. TENTATIVA COM ZENROWS SE O PYTHON PURO NÃO CONSEGUIU EXTRAIR OU FOI BLOQUEADO
             if not dados or not (dados.get("roteiro") or dados.get("desenho") or dados.get("resumo")):
                 if url_gq_tentativa and "/edicao/" in url_gq_tentativa:
-                    with st.spinner("🌐 2/4: Tentando extração via ZenRows Scraper API..."):
+                    with st.spinner("🌐 2/5: Tentando extração via ZenRows Scraper API..."):
                         try:
                             html_zen = gemini_service.buscar_html_zenrows(url_gq_tentativa)
                             if html_zen and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_zen) or "historia" in html_zen.lower()):
@@ -462,7 +462,7 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
             # 2.2 TENTATIVA COM SCRAPERAPI SE O ZENROWS NÃO CONSEGUIU EXTRAIR OU FALHOU (FAILOVER)
             if not dados or not (dados.get("roteiro") or dados.get("desenho") or dados.get("resumo")):
                 if url_gq_tentativa and "/edicao/" in url_gq_tentativa:
-                    with st.spinner("🌐 3/4: Tentando extração via ScraperAPI (Failover Anti-Bloqueio)..."):
+                    with st.spinner("🌐 3/5: Tentando extração via ScraperAPI (Failover Anti-Bloqueio)..."):
                         try:
                             html_scraper = gemini_service.buscar_html_scraperapi(url_gq_tentativa)
                             if html_scraper and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_scraper) or "historia" in html_scraper.lower()):
@@ -474,9 +474,24 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
                         except Exception as ex_scraper:
                             print(f"[Aviso ScraperAPI: {ex_scraper}]")
 
+            # 2.3 TENTATIVA COM SCRAPINGBEE SE O SCRAPERAPI NÃO CONSEGUIU EXTRAIR OU FALHOU (FAILOVER)
+            if not dados or not (dados.get("roteiro") or dados.get("desenho") or dados.get("resumo")):
+                if url_gq_tentativa and "/edicao/" in url_gq_tentativa:
+                    with st.spinner("🌐 4/5: Tentando extração via ScrapingBee (Failover Anti-Bloqueio)..."):
+                        try:
+                            html_sbee = gemini_service.buscar_html_scrapingbee(url_gq_tentativa)
+                            if html_sbee and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_sbee) or "historia" in html_sbee.lower()):
+                                dados_sbee = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_sbee, url_gq_tentativa)
+                                if dados_sbee and (dados_sbee.get("roteiro") or dados_sbee.get("desenho") or dados_sbee.get("resumo")):
+                                    dados = dados_sbee
+                                    modelo_usado = "ScrapingBee Scraper (Ficha Oficial Guia dos Quadrinhos)"
+                                    origem_extracao = "scrapingbee"
+                        except Exception as ex_sbee:
+                            print(f"[Aviso ScrapingBee: {ex_sbee}]")
+
             # 3. FALLBACK INTELIGENTE PARA IA GEMINI SE NADA MAIS FUNCIONOU
             if not dados or not (dados.get("roteiro") or dados.get("desenho") or dados.get("resumo")):
-                with st.spinner("🤖 4/4: Consultando dados via IA Gemini (Fallback Inteligente)..."):
+                with st.spinner("🤖 5/5: Consultando dados via IA Gemini (Fallback Inteligente)..."):
                     prompt_llm = f"""Você é o especialista mestre na enciclopédia GUIA DOS QUADRINHOS e nos quadrinhos publicados no Brasil.
 Seu objetivo é extrair e estruturar com máxima precisão a ficha técnica completa para a EDIÇÃO BRASILEIRA:
 Título: "{titulo}"
@@ -612,6 +627,8 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     st.success("✅ Dados extraídos com **100% de fidelidade via ZenRows Scraper** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
                 elif origem_extracao == "scraperapi":
                     st.success("✅ Dados extraídos com **100% de fidelidade via ScraperAPI** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
+                elif origem_extracao == "scrapingbee":
+                    st.success("✅ Dados extraídos com **100% de fidelidade via ScrapingBee** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
                 else:
                     st.success(f"✅ Dados e opções de capas extraídos com sucesso via **{modelo_usado or 'Gemini'}**! Revise os campos abaixo.")
 
@@ -646,7 +663,7 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     # 1. TENTATIVA DIRETA COM PYTHON PURO (SEM IA / SEM ZENROWS)
                     if not texto_extraido.startswith("http"):
                         # Usuário colou texto ou fragmento HTML diretamente
-                        with st.spinner("⚡ 1/4: Extraindo dados do texto colado via Python puro..."):
+                        with st.spinner("⚡ 1/5: Extraindo dados do texto colado via Python puro..."):
                             if "<div" in texto_extraido or "class=" in texto_extraido or "historia" in texto_extraido.lower() or "personagens:" in texto_extraido.lower() or "roteiro:" in texto_extraido.lower():
                                 dados_man = gemini_service.extrair_dados_texto_ou_html_gq(texto_extraido, url_orig=url_manual_gq)
                                 if dados_man and (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo")):
@@ -654,7 +671,7 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                                     mod_manual_usado = "Python Extractor (Texto Puro da Página)"
                     else:
                         # Usuário colou uma URL: tenta baixar com Python puro
-                        with st.spinner("⚡ 1/4: Tentando baixar página com Python puro (BeautifulSoup)..."):
+                        with st.spinner("⚡ 1/5: Tentando baixar página com Python puro (BeautifulSoup)..."):
                             try:
                                 if "guiadosquadrinhos.com" in texto_extraido:
                                     html_puro = gemini_service.buscar_html_edicao_guia_dos_quadrinhos(texto_extraido)
@@ -674,7 +691,7 @@ Retorne ESTRITAMENTE um JSON com as chaves:
 
                     # 2. TENTATIVA VIA ZENROWS (SE O PYTHON PURO FALHOU OU NÃO OBTEVE OS DADOS E É UMA URL)
                     if (not dados_man or not (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo"))) and texto_extraido.startswith("http"):
-                        with st.spinner("🌐 2/4: Tentando acessar e extrair via ZenRows Scraper API..."):
+                        with st.spinner("🌐 2/5: Tentando acessar e extrair via ZenRows Scraper API..."):
                             try:
                                 html_zen = gemini_service.buscar_html_zenrows(texto_extraido)
                                 if html_zen and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_zen) or len(html_zen) > 500):
@@ -690,7 +707,7 @@ Retorne ESTRITAMENTE um JSON com as chaves:
 
                     # 2.2 TENTATIVA VIA SCRAPERAPI (SE O ZENROWS FALHOU OU NÃO OBTEVE OS DADOS E É UMA URL)
                     if (not dados_man or not (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo"))) and texto_extraido.startswith("http"):
-                        with st.spinner("🌐 3/4: Tentando acessar e extrair via ScraperAPI (Failover Anti-Bloqueio)..."):
+                        with st.spinner("🌐 3/5: Tentando acessar e extrair via ScraperAPI (Failover Anti-Bloqueio)..."):
                             try:
                                 html_scraper = gemini_service.buscar_html_scraperapi(texto_extraido)
                                 if html_scraper and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_scraper) or len(html_scraper) > 500):
@@ -704,9 +721,25 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                             except Exception as e_scraper:
                                 print(f"[Aviso ScraperAPI manual: {e_scraper}]")
 
+                    # 2.3 TENTATIVA VIA SCRAPINGBEE (SE O SCRAPERAPI FALHOU OU NÃO OBTEVE OS DADOS E É UMA URL)
+                    if (not dados_man or not (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo"))) and texto_extraido.startswith("http"):
+                        with st.spinner("🌐 4/5: Tentando acessar e extrair via ScrapingBee (Failover Anti-Bloqueio)..."):
+                            try:
+                                html_sbee = gemini_service.buscar_html_scrapingbee(texto_extraido)
+                                if html_sbee and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_sbee) or len(html_sbee) > 500):
+                                    dados_sbee = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_sbee, url_orig=url_manual_gq)
+                                    if not dados_sbee or not (dados_sbee.get("roteiro") or dados_sbee.get("desenho") or dados_sbee.get("resumo")):
+                                        dados_sbee = gemini_service.extrair_dados_texto_ou_html_gq(html_sbee, url_orig=url_manual_gq)
+                                    if dados_sbee and (dados_sbee.get("roteiro") or dados_sbee.get("desenho") or dados_sbee.get("resumo")):
+                                        dados_man = dados_sbee
+                                        origem_manual = "scrapingbee"
+                                        mod_manual_usado = "ScrapingBee Scraper (HTML Oficial Guia dos Quadrinhos)"
+                            except Exception as e_sbee:
+                                print(f"[Aviso ScrapingBee manual: {e_sbee}]")
+
                     # 3. CASO NADA MAIS FUNCIONE, USE A IA PARA EXTRAIR (FALLBACK GEMINI)
                     if not dados_man or not dados_man.get("resumo") or not (dados_man.get("roteiro") or dados_man.get("desenho")):
-                        with st.spinner("🤖 4/4: Extraindo dados com IA Gemini (Fallback Inteligente)..."):
+                        with st.spinner("🤖 5/5: Extraindo dados com IA Gemini (Fallback Inteligente)..."):
                             texto_auxiliar = texto_extraido
                             if texto_extraido.startswith("http") and not ("<div" in texto_extraido or "historia" in texto_extraido.lower()):
                                 try:
@@ -814,6 +847,8 @@ Retorne ESTRITAMENTE um JSON com as chaves: "roteiro", "ilustrador", "valor", "r
                                 st.success("✅ Conteúdo extraído com sucesso via **ZenRows Scraper** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
                             elif origem_manual == "scraperapi":
                                 st.success("✅ Conteúdo extraído com sucesso via **ScraperAPI** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
+                            elif origem_manual == "scrapingbee":
+                                st.success("✅ Conteúdo extraído com sucesso via **ScrapingBee** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
                             else:
                                 st.success(f"✅ Conteúdo processado com sucesso via **{mod_manual_usado or 'Gemini'}**! Revise os campos abaixo.")
 
