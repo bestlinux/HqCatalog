@@ -970,6 +970,92 @@ def extrair_og_image(url: str, headers: Optional[Dict[str, str]] = None, timeout
     return None
 
 
+def extrair_capa_pagina_especializada(url: str, timeout: float = 6.0) -> Optional[str]:
+    """
+    Extrai a imagem da capa em alta resolução a partir de URLs das lojas e fontes especializadas:
+    - Guia dos Quadrinhos (guiadosquadrinhos.com)
+    - Rika Comic Shop (rika.com.br)
+    - Mercado Livre (mercadolivre.com.br)
+    - Comix Book Shop (comix.com.br)
+    - Sebo RS Raridades (seborsraridades.com.br)
+    Utiliza curl_cffi com emulação de handshake TLS Chrome para contornar proteções antibot e Cloudflare.
+    """
+    if not url or not (url.startswith("http://") or url.startswith("https://")):
+        return None
+    try:
+        from curl_cffi import requests as cffi_requests
+        resp = cffi_requests.get(url, impersonate="chrome120", timeout=timeout)
+        if resp is not None and resp.status_code == 200 and resp.text:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            
+            # 1. Mercado Livre
+            if "mercadolivre.com" in url:
+                og = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
+                if og and og.get("content"):
+                    return og["content"].strip()
+                for img in soup.find_all("img"):
+                    src = img.get("src") or img.get("data-zoom") or ""
+                    if "http2.mlstatic.com/D_NQ_NP_" in src and not any(ign in src.lower() for ign in ["logo", "icon"]):
+                        return src
+
+            # 2. Rika Comic Shop (VTEX)
+            if "rika.com.br" in url:
+                for img in soup.find_all("img"):
+                    src = img.get("src") or ""
+                    if "rika.vtexassets.com/arquivos/ids/" in src:
+                        src_hd = re.sub(r"-\d+-auto", "-800-auto", src)
+                        return src_hd
+                og = soup.find("meta", property="og:image")
+                if og and og.get("content"):
+                    return og["content"].strip()
+
+            # 3. Comix Book Shop
+            if "comix.com.br" in url:
+                og = soup.find("meta", property="og:image")
+                if og and og.get("content"):
+                    return og["content"].strip()
+                for img in soup.find_all("img"):
+                    src = img.get("src") or ""
+                    if "/media/catalog/product/" in src and not any(ign in src.lower() for ign in ["logo", "banner"]):
+                        return src
+
+            # 4. Sebo RS Raridades
+            if "seborsraridades.com.br" in url:
+                og = soup.find("meta", property="og:image")
+                if og and og.get("content"):
+                    c = og["content"].strip()
+                    if not any(ign in c.lower() for ign in ["logo", "icon", "banner"]):
+                        return c
+                for img in soup.find_all("img"):
+                    src = img.get("src") or ""
+                    if "/wp-content/uploads/" in src and not any(ign in src.lower() for ign in ["logo", "icon", "banner"]):
+                        return src
+
+            # 5. Guia dos Quadrinhos
+            if "guiadosquadrinhos.com" in url:
+                amp = soup.find(id="ampliar_capa")
+                if amp:
+                    img_amp = amp.find("img")
+                    cand = amp.get("href") or (img_amp.get("src") if img_amp else "")
+                    if cand:
+                        if cand.startswith("/"):
+                            cand = "https://www.guiadosquadrinhos.com" + cand
+                        return cand
+                og = soup.find("meta", property="og:image")
+                if og and og.get("content"):
+                    return og["content"].strip()
+
+            # Padrão OpenGraph geral
+            og = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
+            if og and og.get("content"):
+                c = og["content"].strip()
+                if c.startswith("http") and not any(ign in c.lower() for ign in ["logo", "icon", "banner", ".ico"]):
+                    return c
+    except Exception:
+        pass
+    return extrair_og_image(url, timeout=timeout)
+
+
 def buscar_capas_online(
     titulo: str,
     edicao: str = "",
@@ -979,14 +1065,14 @@ def buscar_capas_online(
     url_edicao: str = ""
 ) -> List[Dict[str, str]]:
     """
-    Busca capas reais e em alta definição de quadrinhos, mangás e graphic novels online:
-    1. Bing Images Scraper (Imagens reais em HD de Panini, Amazon, Guia dos Quadrinhos, MercadoLivre, ComicVine)
-    2. Apple Books / iTunes Search API (Artes oficiais em alta resolução 800x800)
-    3. OpenLibrary Covers API
-    4. Reserp.ai Google Search (Capas e Páginas do Guia dos Quadrinhos)
+    Busca capas reais e em alta definição de quadrinhos, focada estritamente nos sites de referência:
+    1. Guia dos Quadrinhos (guiadosquadrinhos.com) - Prioridade máxima, quebrando Cloudflare
+    2. Rika Comic Shop (rika.com.br)
+    3. Mercado Livre (mercadolivre.com.br)
+    4. Comix Book Shop (comix.com.br)
+    5. Sebo RS Raridades (seborsraridades.com.br)
     
-    Aplica validação concorrente ultra-rápida (HTTP HEAD/GET) para garantir que ZERO imagens venham quebradas
-    e retorna o resultado em menos de 3 segundos.
+    Aplica validação concorrente ultra-rápida e conversão transparente para Base64 quando necessário.
     """
     if not titulo or not titulo.strip():
         return []
@@ -999,13 +1085,14 @@ def buscar_capas_online(
 
     dominios_bloqueados = [
         "shutterstock", "poder360", "veja.abril", "oglobo.globo", "universoalien",
-        "semanticscholar", "cnnbrasil", "g1.globo", "folha.uol", "estadao", "metropoles", "uol.com.br/splash"
+        "semanticscholar", "cnnbrasil", "g1.globo", "folha.uol", "estadao", "metropoles", "uol.com.br/splash",
+        "pinterest", "facebook.com", "instagram.com", "wallpaper", "wallpapers", "hdqwalls", "alphacoders", "deviantart"
     ]
 
     def add_candidata(url: str, tit: str, fonte: str, thumb: Optional[str] = None):
         if not url or url in urls_vistas:
             return
-        if not (url.startswith("http://") or url.startswith("https://")):
+        if not (url.startswith("http://") or url.startswith("https://") or url.startswith("data:image")):
             return
         u_low = url.lower()
         if any(d in u_low for d in dominios_bloqueados):
@@ -1036,21 +1123,71 @@ def buscar_capas_online(
         if len(p) >= 3 and p not in ["panini", "capa", "gibi", "hq", "edicao", "volume", "vol", "editora", "quadrinhos"]
     ]
 
-    palavras_distintas = [p for p in palavras_titulo if not p.isdigit() and len(p) >= 3]
-    if not palavras_distintas and palavras_titulo:
-        palavras_distintas = palavras_titulo
+    # =========================================================================
+    # 0. GUIA DOS QUADRINHOS (PRIORIDADE MÁXIMA - QUEBRANDO CLOUDFLARE)
+    # =========================================================================
+    url_gq_alvo = url_edicao.strip() if url_edicao else ""
+    
+    # 0.1 Se temos a capa oficial no cache permanente do Guia dos Quadrinhos
+    if url_gq_alvo:
+        b64_cache = obter_capa_gq_cache(url_gq_alvo)
+        if b64_cache:
+            add_candidata(b64_cache, f"{titulo_limpo} nº {edicao or num_num or '1'} (Guia dos Quadrinhos Oficial)", "Guia dos Quadrinhos (Oficial)", b64_cache)
 
-    headers_web = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
-    }
+    # 0.2 Se não tem URL do Guia dos Quadrinhos direta, busca a página canônica da edição
+    if not url_gq_alvo:
+        try:
+            q_gq_busca = f'"{titulo_limpo}" "{num_num or edicao}" site:guiadosquadrinhos.com/edicao/' if num_num else f'"{titulo_limpo}" site:guiadosquadrinhos.com/edicao/'
+            res_gq_pesq = pesquisar_reserp_google(q_gq_busca, timeout=6)
+            for r_g in res_gq_pesq:
+                u_cand = r_g.get("url") or ""
+                if "guiadosquadrinhos.com/edicao/" in u_cand:
+                    url_gq_alvo = u_cand
+                    # Se o Google indexou o thumbnail diretamente, aproveita com altíssima prioridade
+                    th_g = r_g.get("thumbnail") or r_g.get("thumbnail_url") or r_g.get("image")
+                    if th_g and isinstance(th_g, str) and th_g.startswith("http"):
+                        add_candidata(th_g, f"{titulo_limpo} nº {edicao or num_num or '1'} (Guia dos Quadrinhos)", "Guia dos Quadrinhos", th_g)
+                    break
+        except Exception:
+            pass
 
-    # 0. PROVEDOR 0: Capa Canônica Oficial Verificada (quando disponível no catálogo)
+    # 0.3 Se encontrou a URL da edição no Guia dos Quadrinhos, quebra o Cloudflare e extrai o HTML
+    if url_gq_alvo and "/edicao/" in url_gq_alvo:
+        try:
+            b64_c = obter_capa_gq_cache(url_gq_alvo)
+            if b64_c:
+                add_candidata(b64_c, f"{titulo_limpo} nº {edicao or num_num or '1'} (Guia dos Quadrinhos Oficial)", "Guia dos Quadrinhos (Oficial)", b64_c)
+            else:
+                html_gq = buscar_html_edicao_guia_dos_quadrinhos(url_gq_alvo)
+                if html_gq:
+                    soup_gq = BeautifulSoup(html_gq, "html.parser")
+                    amp_gq = soup_gq.find(id="ampliar_capa")
+                    capa_gq_url = ""
+                    if amp_gq:
+                        img_amp = amp_gq.find("img")
+                        capa_gq_url = amp_gq.get("href") or (img_amp.get("src") if img_amp else "")
+                    if not capa_gq_url:
+                        og_gq = soup_gq.find("meta", property="og:image")
+                        if og_gq and og_gq.get("content"):
+                            capa_gq_url = og_gq["content"].strip()
+                    
+                    if capa_gq_url:
+                        if capa_gq_url.startswith("/"):
+                            capa_gq_url = "https://www.guiadosquadrinhos.com" + capa_gq_url
+                        b64_gq = baixar_imagem_url_base64(capa_gq_url, fallback_url=url_gq_alvo)
+                        if b64_gq and b64_gq.startswith("data:image"):
+                            add_candidata(b64_gq, f"{titulo_limpo} nº {edicao or num_num or '1'} (Guia dos Quadrinhos Oficial)", "Guia dos Quadrinhos (Oficial)", b64_gq)
+                        else:
+                            add_candidata(capa_gq_url, f"{titulo_limpo} nº {edicao or num_num or '1'} (Guia dos Quadrinhos)", "Guia dos Quadrinhos", capa_gq_url)
+        except Exception as ex_gq:
+            print(f"[Aviso busca capa Guia dos Quadrinhos: {ex_gq}]")
+
+    # 0.4 Tenta também o catálogo canônico verificado
     try:
         ficha_can = obter_dados_canonicos_guia_dos_quadrinhos(titulo_limpo, edicao, editora)
         if ficha_can:
             if ficha_can.get("capa_url"):
-                add_candidata(ficha_can["capa_url"], f"{titulo_limpo} nº {edicao or '1'} (Capa Oficial Panini)", "Guia dos Quadrinhos / Oficial")
+                add_candidata(ficha_can["capa_url"], f"{titulo_limpo} nº {edicao or '1'} (Capa Panini)", "Guia dos Quadrinhos / Oficial")
             for alt_c in ficha_can.get("capas_alternativas", []):
                 u_alt = alt_c.get("url") or alt_c.get("thumbnail")
                 if u_alt:
@@ -1058,59 +1195,107 @@ def buscar_capas_online(
     except Exception:
         pass
 
-    # Geração de termos de busca inteligentes (nacional e internacional)
-    termos_busca = [
-        f"{titulo_sem_pont} {edicao}".strip(),
-        titulo_sem_pont
-    ]
-    # Mapeamentos de sinônimos/títulos em inglês conhecidos
-    mapa_traducoes = {
-        "100 balas": "100 Bullets",
-        "o longo dia das bruxas": "The Long Halloween",
-        "ano um": "Year One",
-        "cavaleiro das trevas": "Dark Knight",
-        "morte do superman": "Death of Superman",
-        "reino do amanha": "Kingdom Come",
-        "monstro do pantano": "Swamp Thing",
-        "demolidor": "Daredevil",
-        "homem aranha": "Spider-Man",
-        "homem de ferro": "Iron Man",
-        "gaviao arqueiro": "Hawkeye",
-        "novos mutantes": "New Mutants",
-        "vingadores": "Avengers",
-        "piada mortal": "The Killing Joke",
-        "guerra secreta": "Secret War",
-        "guerras secretas": "Secret Wars",
-        "crise nas infinitas terras": "Crisis on Infinite Earths",
-        "ponto de ignicao": "Flashpoint",
-        "filho do demonio": "Son of the Demon",
-        "asilo arkham": "Arkham Asylum"
-    }
-    tit_low = normalizar_str_busca(titulo_limpo)
-    for k_pt, v_en in mapa_traducoes.items():
-        if k_pt in tit_low:
-            termos_busca.append(f"{v_en} {edicao}".strip())
-            termos_busca.append(v_en)
-            break
+    # =========================================================================
+    # 1. BUSCA FOCADA NOS SITES: Rika, Mercado Livre, Comix, Sebo RS (Google Reserp)
+    # =========================================================================
+    try:
+        lojas_operadores = "site:guiadosquadrinhos.com OR site:rika.com.br OR site:mercadolivre.com.br OR site:comix.com.br OR site:seborsraridades.com.br"
+        termos_lojas = [
+            f'"{titulo_limpo}" "{num_num or edicao}" ({lojas_operadores})'.strip() if (num_num or edicao) else f'"{titulo_limpo}" ({lojas_operadores})'.strip(),
+            f'{titulo_limpo} {edicao} ({lojas_operadores})'.strip()
+        ]
+        
+        paginas_para_inspecao = []
+        for q_l in termos_lojas:
+            res_lojas = pesquisar_reserp_google(q_l, timeout=8)
+            for r_item in res_lojas:
+                r_url = r_item.get("url") or ""
+                # Filtra estritamente para os 5 sites foco
+                if not any(d in r_url for d in ["guiadosquadrinhos.com", "rika.com.br", "mercadolivre.com", "comix.com.br", "seborsraridades.com.br"]):
+                    continue
+                
+                # Identifica a fonte
+                if "guiadosquadrinhos.com" in r_url:
+                    nome_fonte = "Guia dos Quadrinhos"
+                elif "rika.com.br" in r_url:
+                    nome_fonte = "Rika Comic Shop"
+                elif "mercadolivre.com" in r_url:
+                    nome_fonte = "Mercado Livre"
+                elif "comix.com.br" in r_url:
+                    nome_fonte = "Comix Book Shop"
+                elif "seborsraridades.com.br" in r_url:
+                    nome_fonte = "Sebo RS Raridades"
+                else:
+                    nome_fonte = "Loja de Quadrinhos"
 
-    # 1. PROVEDOR 1: Bing Images Scraper (Imagens reais em HD de Panini, Excelsior, MercadoLivre, We-R-Comics, etc.)
-    if requests is not None:
+                r_tit = r_item.get("title") or titulo_limpo
+                thumb_reserp = r_item.get("thumbnail") or r_item.get("thumbnail_url") or r_item.get("image")
+                if thumb_reserp and isinstance(thumb_reserp, str) and thumb_reserp.startswith("http"):
+                    add_candidata(thumb_reserp, r_tit, nome_fonte, thumb_reserp)
+
+                paginas_para_inspecao.append((r_url, r_tit, nome_fonte))
+
+            if len(capas_candidatas) >= limite:
+                break
+
+        # Extração em paralelo de alta definição diretamente das páginas de produto das lojas
+        if paginas_para_inspecao:
+            vistas_p = set()
+            pags_dedup = []
+            for p_u, p_t, p_f in paginas_para_inspecao:
+                if p_u not in vistas_p:
+                    vistas_p.add(p_u)
+                    pags_dedup.append((p_u, p_t, p_f))
+
+            with ThreadPoolExecutor(max_workers=6) as ex_lojas:
+                futures = [ex_lojas.submit(extrair_capa_pagina_especializada, p_u) for p_u, _, _ in pags_dedup[:12]]
+                for (p_u, p_t, p_f), fut in zip(pags_dedup[:12], futures):
+                    try:
+                        img_extraida = fut.result()
+                        if img_extraida:
+                            add_candidata(img_extraida, p_t, p_f, img_extraida)
+                    except Exception:
+                        pass
+    except Exception as ex_lojas_err:
+        print(f"[Aviso Busca Lojas Especializadas: {ex_lojas_err}]")
+
+    # =========================================================================
+    # 2. BING IMAGES RESTRITO EXCLUSIVAMENTE AOS SITES E QUADRINHOS REAIS
+    # =========================================================================
+    if requests is not None and len(capas_candidatas) < limite:
         try:
+            headers_web = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+            }
             queries_bing = [
-                f"{titulo_limpo} {edicao} {editora} capa gibi".strip(),
-                f"{titulo_sem_pont} {num_num} {editora} capa".strip() if num_num else f"{titulo_sem_pont} {editora} capa".strip()
+                f"{titulo_limpo} {edicao} mercadolivre capa gibi".strip(),
+                f"{titulo_limpo} {edicao} rika gibi".strip(),
+                f"{titulo_limpo} {edicao} comix gibi".strip(),
+                f"{titulo_limpo} {edicao} seborsraridades gibi".strip(),
+                f"{titulo_limpo} {edicao} guiadosquadrinhos capa gibi".strip(),
             ]
-            m_cod_gq = re.search(r"([a-zA-Z]{2}\d{4,8})", f"{titulo} {edicao} {url_edicao}")
-            if m_cod_gq:
-                queries_bing.append(f"guiadosquadrinhos {m_cod_gq.group(1)}")
-            queries_bing.append(f"gibi {titulo_limpo} {edicao} capa mercado livre")
             for q_b in queries_bing:
                 url_b = f"https://www.bing.com/images/search?q={urllib.parse.quote(q_b)}&FORM=HDRSC2"
                 r_b = requests.get(url_b, headers=headers_web, timeout=3.5)
                 if r_b.status_code == 200:
                     m_urls = re.findall(r'murl&quot;:&quot;(http[^&]+)&quot;.*?t1&quot;:&quot;([^&]+)&quot;', r_b.text)
                     for m_u, m_t in m_urls:
-                        add_candidata(m_u, html.unescape(m_t), "Bing Imagens (Web HD)", m_u)
+                        u_low = m_u.lower()
+                        if "mlstatic.com" in u_low or "mercadolivre" in u_low:
+                            f_b = "Mercado Livre"
+                        elif "rika" in u_low or "vtexassets" in u_low:
+                            f_b = "Rika Comic Shop"
+                        elif "comix.com.br" in u_low:
+                            f_b = "Comix Book Shop"
+                        elif "seborsraridades" in u_low:
+                            f_b = "Sebo RS Raridades"
+                        elif "guiadosquadrinhos" in u_low:
+                            f_b = "Guia dos Quadrinhos"
+                        else:
+                            f_b = "Web HD"
+                        add_candidata(m_u, html.unescape(m_t), f_b, m_u)
+
                     if not m_urls:
                         raw_items = re.findall(r'm="({.*?})"', r_b.text)
                         for raw in raw_items:
@@ -1121,72 +1306,64 @@ def buscar_capas_online(
                                 t_b = d_b.get("t") or d_b.get("desc") or titulo_limpo
                                 th_b = d_b.get("turl") or u_b
                                 if u_b:
-                                    add_candidata(u_b, t_b, "Bing Imagens (Web HD)", th_b)
+                                    u_low = u_b.lower()
+                                    if "mlstatic.com" in u_low:
+                                        f_b = "Mercado Livre"
+                                    elif "vtexassets" in u_low:
+                                        f_b = "Rika Comic Shop"
+                                    elif "comix.com.br" in u_low:
+                                        f_b = "Comix Book Shop"
+                                    elif "seborsraridades" in u_low:
+                                        f_b = "Sebo RS Raridades"
+                                    elif "guiadosquadrinhos" in u_low:
+                                        f_b = "Guia dos Quadrinhos"
+                                    else:
+                                        f_b = "Web HD"
+                                    add_candidata(u_b, t_b, f_b, th_b)
                             except Exception:
                                 pass
-                if len(capas_candidatas) >= limite:
+                if len(capas_candidatas) >= limite * 2:
                     break
         except Exception as ex_bing:
-            print(f"[Aviso Bing Images Scraper: {ex_bing}]")
+            print(f"[Aviso Bing Images: {ex_bing}]")
 
-    # 2. PROVEDOR 2: Reserp.ai Google Search & Comic Store HD Covers
-    if requests is not None:
-        try:
-            q_reserp = f"{titulo_limpo} {edicao} {editora} capa gibi".strip()
-            res_reserp = pesquisar_reserp_google(q_reserp, timeout=8)
-            paginas_para_og = []
-            for r_item in res_reserp:
-                r_url = r_item.get("url") or ""
-                r_tit = r_item.get("title") or (r_item.get("text", "").splitlines()[0] if r_item.get("text") else titulo_limpo)
-                
-                # Se o item do Reserp possuir thumbnail direta
-                thumb_reserp = r_item.get("thumbnail") or r_item.get("thumbnail_url") or r_item.get("image") or r_item.get("og_image")
-                if thumb_reserp and isinstance(thumb_reserp, str) and thumb_reserp.startswith("http"):
-                    add_candidata(
-                        url=thumb_reserp,
-                        tit=r_tit or titulo_limpo,
-                        fonte="Google Imagens (Reserp.ai)",
-                        thumb=thumb_reserp
-                    )
-                elif any(loja in r_url for loja in ["excelsiorcomics", "mercadolivre", "shopee", "rika.com.br", "planetagibi", "seborsraridades", "estantevirtual", "loja.corsaria"]):
-                    paginas_para_og.append((r_url, r_tit))
-            
-            if paginas_para_og:
-                with ThreadPoolExecutor(max_workers=5) as ex_og:
-                    futures = [ex_og.submit(extrair_og_image, p_url) for p_url, _ in paginas_para_og]
-                    for (p_url, p_tit), fut in zip(paginas_para_og, futures):
-                        try:
-                            og_img = fut.result()
-                            if og_img:
-                                add_candidata(og_img, p_tit, "Loja de Quadrinhos (Web)", og_img)
-                        except Exception:
-                            pass
-        except Exception as ex_rc:
-            print(f"[Aviso Reserp.ai Busca de Capas: {ex_rc}]")
-
-    # -------------------------------------------------------------
-    # VALIDAÇÃO CONCORRENTE RÁPIDA (Zero imagens quebradas)
-    # -------------------------------------------------------------
+    # =========================================================================
+    # 3. VALIDAÇÃO CONCORRENTE ULTRA-RÁPIDA (Zero imagens quebradas)
+    # =========================================================================
     def _validar_e_ajustar_capa(item: Dict[str, str]) -> Optional[Dict[str, str]]:
         if requests is None:
             return item
         url_test = item.get("url", "")
         if not url_test:
             return None
+        
+        # Se já é base64, é 100% válida e imediata
+        if url_test.startswith("data:image"):
+            return item
+
         # Imagens do Guia dos Quadrinhos protegidas por anti-hotlink do Cloudflare:
-        # Só devem ser exibidas se já estiverem em Base64 ou puderem ser recuperadas do cache
         if "guiadosquadrinhos.com" in url_test or "ShowImage.aspx" in url_test:
-            if url_test.startswith("data:image"):
-                return item
             b64_c = obter_capa_gq_cache(url_test)
-            if b64_c:
+            if b64_c and b64_c.startswith("data:image"):
                 item_copia = dict(item)
                 item_copia["url"] = b64_c
                 item_copia["thumbnail"] = b64_c
                 return item_copia
-            # Se não estiver em Base64, a imagem quebrará no navegador por 403 do Cloudflare,
-            # então descarta para exibir somente imagens funcionais (Bing, Google, Panini, etc.)
+            # Tenta baixar e converter para base64 com curl_cffi / Camoufox
+            b64_dl = baixar_imagem_url_base64(url_test)
+            if b64_dl and b64_dl.startswith("data:image"):
+                item_copia = dict(item)
+                item_copia["url"] = b64_dl
+                item_copia["thumbnail"] = b64_dl
+                return item_copia
+            # Se tem thumbnail público do Google / Bing sem bloqueio, usa o thumbnail
+            th = item.get("thumbnail")
+            if th and th != url_test and not ("guiadosquadrinhos.com" in th or "ShowImage.aspx" in th):
+                item_copia = dict(item)
+                item_copia["url"] = th
+                return item_copia
             return None
+
         h_check = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         try:
             # 1. Testa HEAD rápido com 1.2s timeout
@@ -1226,33 +1403,51 @@ def buscar_capas_online(
     else:
         capas_validadas = list(capas_candidatas)
 
-    # Ranking e pontuação de relevância das capas validadas
+    # =========================================================================
+    # 4. RANKING E PONTUAÇÃO DE RELEVÂNCIA FOCADA NOS 5 SITES
+    # =========================================================================
     def _score_capa(item: Dict[str, str]) -> int:
         tit_c = normalizar_str_busca(item.get("titulo", ""))
         fonte = (item.get("fonte") or "").lower()
         score = 0
+        
+        # Prioridade máxima para os 5 sites solicitados
         if "guia dos quadrinhos" in fonte:
+            score += 500  # Prioridade Máxima
+        elif "rika" in fonte:
+            score += 250
+        elif "mercado livre" in fonte or "mercadolivre" in fonte:
+            score += 220
+        elif "comix" in fonte:
+            score += 200
+        elif "seborsraridades" in fonte or "sebo rs" in fonte:
+            score += 180
+        elif "panini" in fonte or "oficial" in fonte:
             score += 150
         elif "reserp" in fonte or "google" in fonte:
-            score += 50
+            score += 60
+
         if palavras_titulo and all(p in tit_c for p in palavras_titulo):
             score += 60
         for p in palavras_titulo:
             if p in tit_c:
                 score += 15
+
         if num_num:
-            if f"n {num_num}" in tit_c or f"nº {num_num}" in tit_c or f"vol {num_num}" in tit_c or f"volume {num_num}" in tit_c or f" {num_num} " in f" {tit_c} ":
-                score += 50
+            if f"n {num_num}" in tit_c or f"nº {num_num}" in tit_c or f"vol {num_num}" in tit_c or f"volume {num_num}" in tit_c or f" {num_num} " in f" {tit_c} " or f"#{num_num}" in tit_c:
+                score += 70
             else:
                 m_outro = re.findall(r"\b(?:vol(?:ume)?|n[oº°]?|#)\s*(\d+)\b", tit_c)
                 if m_outro and num_num not in m_outro:
-                    score -= 50
+                    score -= 80
+
         if editora and normalizar_str_busca(editora) in tit_c:
             score += 30
         return score
 
     capas_validadas.sort(key=_score_capa, reverse=True)
     return capas_validadas[:limite]
+
 
 
 def normalizar_str_busca(texto: Optional[str]) -> str:
@@ -1733,6 +1928,23 @@ def baixar_imagem_url_base64(url: str, max_dim: int = 1000, quality: int = 90, t
         urls_para_tentar.append(fallback_url)
 
     for u in urls_para_tentar:
+        # Tentativa rápida com curl_cffi (Chrome TLS impersonate)
+        try:
+            from curl_cffi import requests as cffi_requests
+            r_cffi = cffi_requests.get(u, impersonate="chrome120", timeout=timeout, headers={"Referer": fallback_url or "https://www.google.com/"})
+            if r_cffi is not None and r_cffi.status_code == 200 and r_cffi.content:
+                img = Image.open(io.BytesIO(r_cffi.content))
+                img = img.convert("RGB")
+                if max(img.size) > max_dim:
+                    img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+                buffer = io.BytesIO()
+                img.save(buffer, format="JPEG", quality=quality, optimize=True)
+                b64_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                return f"data:image/jpeg;base64,{b64_str}"
+        except Exception:
+            pass
+
+        # Fallback para requests convencional
         try:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",

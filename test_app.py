@@ -781,7 +781,7 @@ class TestHqCatalog(unittest.TestCase):
         if len(res) > 0:
             self.assertIn("url", res[0])
             self.assertIn("fonte", res[0])
-            self.assertTrue(res[0]["url"].startswith("http"))
+            self.assertTrue(res[0]["url"].startswith("http") or res[0]["url"].startswith("data:image"))
 
     def test_buscar_capas_online_termo_vazio(self):
         res = gemini_service.buscar_capas_online(titulo="")
