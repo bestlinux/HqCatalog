@@ -18,7 +18,9 @@ from dotenv import load_dotenv
 # Carrega variáveis de ambiente do .env se existir
 load_dotenv()
 
+import importlib
 import database
+importlib.reload(database)
 import gemini_service
 import auth
 import jev_engine
@@ -632,132 +634,135 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                 else:
                     st.success(f"✅ Dados e opções de capas extraídos com sucesso via **{modelo_usado or 'Gemini'}**! Revise os campos abaixo.")
 
-        # Opção manual de colar link ou texto da página (posicionada antes dos widgets para permitir extração direta)
-        with st.expander("📋 Opção Manual: Colar Link ou Texto da Página", expanded=False):
-            url_ou_texto = st.text_area("Link direto ou Texto copiado da página:", placeholder="https://www.guiadosquadrinhos.com/edicao/...", key=f"txt_url_manual_fonte_{val_id}")
-            if st.button("🚀 Processar Texto / Link Manual", key=f"btn_manual_busca_fonte_{val_id}", width="stretch"):
-                if not url_ou_texto.strip():
-                    st.warning("Cole o link ou texto primeiro!")
-                else:
-                    # Limpa explicitamente dados e capas de execuções anteriores
-                    st.session_state.pop(session_extraidos_key, None)
-                    st.session_state.pop(f"fonte_input_capa_{val_id}", None)
-                    st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
-                    texto_extraido = url_ou_texto.strip()
-                    url_manual_gq = ""
-                    origem_manual = ""
-                    mod_manual_usado = None
-                    
-                    # Normaliza links do Guia dos Quadrinhos colados sem protocolo ou com www faltando
-                    if "guiadosquadrinhos.com" in texto_extraido:
-                        if not texto_extraido.startswith("http"):
-                            texto_extraido = "https://" + texto_extraido.lstrip("/")
-                        if "www.guiadosquadrinhos.com" not in texto_extraido:
-                            texto_extraido = texto_extraido.replace("guiadosquadrinhos.com", "www.guiadosquadrinhos.com")
+    else:
+        st.warning("⚠️ Nenhuma fonte encontrada automaticamente via Reserp.ai. Você pode ajustar o termo de busca acima ou colar o link/conteúdo manualmente abaixo.")
 
-                    if texto_extraido.startswith("http"):
-                        url_manual_gq = texto_extraido
-
-                    dados_man = {}
-
-                    # 1. TENTATIVA DIRETA COM PYTHON PURO (SEM IA / SEM ZENROWS)
+    # Opção manual de colar link ou texto da página (posicionada antes dos widgets para permitir extração direta)
+    with st.expander("📋 Opção Manual: Colar Link do Guia dos Quadrinhos ou Conteúdo (HTML / Texto)", expanded=(not bool(fontes_lista) and not bool(st.session_state.get(session_extraidos_key)))):
+        url_ou_texto = st.text_area("Link direto da edição (URL) ou Conteúdo copiado (HTML / Texto da página):", placeholder="Exemplo de Link: https://www.guiadosquadrinhos.com/edicao/...\nOu cole o código-fonte HTML ou texto copiado da página", key=f"txt_url_manual_fonte_{val_id}", height=120)
+        if st.button("🚀 Processar Link / Conteúdo Manual", key=f"btn_manual_busca_fonte_{val_id}", use_container_width=True, type="primary"):
+            if not url_ou_texto.strip():
+                st.warning("Cole o link ou conteúdo HTML/texto primeiro!")
+            else:
+                # Limpa explicitamente dados e capas de execuções anteriores
+                st.session_state.pop(session_extraidos_key, None)
+                st.session_state.pop(f"fonte_input_capa_{val_id}", None)
+                st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
+                texto_extraido = url_ou_texto.strip()
+                url_manual_gq = ""
+                origem_manual = ""
+                mod_manual_usado = None
+                
+                # Normaliza links do Guia dos Quadrinhos colados sem protocolo ou com www faltando
+                if "guiadosquadrinhos.com" in texto_extraido:
                     if not texto_extraido.startswith("http"):
-                        # Usuário colou texto ou fragmento HTML diretamente
-                        with st.spinner("⚡ 1/5: Extraindo dados do texto colado via Python puro..."):
-                            if "<div" in texto_extraido or "class=" in texto_extraido or "historia" in texto_extraido.lower() or "personagens:" in texto_extraido.lower() or "roteiro:" in texto_extraido.lower():
-                                dados_man = gemini_service.extrair_dados_texto_ou_html_gq(texto_extraido, url_orig=url_manual_gq)
-                                if dados_man and (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo")):
-                                    origem_manual = "html_puro"
-                                    mod_manual_usado = "Python Extractor (Texto Puro da Página)"
-                    else:
-                        # Usuário colou uma URL: tenta baixar com Python puro (curl_cffi / BeautifulSoup)
-                        with st.spinner("⚡ 1/5: Tentando baixar página com Python puro (curl_cffi / BeautifulSoup)..."):
-                            try:
-                                if "guiadosquadrinhos.com" in texto_extraido:
-                                    html_puro = gemini_service.buscar_html_edicao_guia_dos_quadrinhos(texto_extraido)
-                                else:
-                                    try:
-                                        from curl_cffi import requests as cffi_requests
-                                        r = cffi_requests.get(texto_extraido, impersonate="chrome120", timeout=8)
-                                    except Exception:
-                                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
-                                        r = requests.get(texto_extraido, headers=headers, timeout=10)
-                                    html_puro = r.text if r.status_code == 200 else ""
+                        texto_extraido = "https://" + texto_extraido.lstrip("/")
+                    if "www.guiadosquadrinhos.com" not in texto_extraido:
+                        texto_extraido = texto_extraido.replace("guiadosquadrinhos.com", "www.guiadosquadrinhos.com")
 
-                                if html_puro and len(html_puro) > 500:
-                                    dados_puro = gemini_service.extrair_dados_texto_ou_html_gq(html_puro, url_orig=url_manual_gq)
-                                    if dados_puro and (dados_puro.get("roteiro") or dados_puro.get("desenho") or dados_puro.get("resumo")):
-                                        dados_man = dados_puro
-                                        origem_manual = "html_puro"
-                                        mod_manual_usado = "Python Extractor (Página Oficial - Sem IA)"
-                            except Exception as e_puro:
-                                print(f"[Aviso Python puro manual: {e_puro}]")
+                if texto_extraido.startswith("http"):
+                    url_manual_gq = texto_extraido
 
-                    # 2. TENTATIVA VIA ZENROWS (SE O PYTHON PURO FALHOU OU NÃO OBTEVE OS DADOS E É UMA URL)
-                    if (not dados_man or not (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo"))) and texto_extraido.startswith("http"):
-                        with st.spinner("🌐 2/5: Tentando acessar e extrair via ZenRows Scraper API..."):
-                            try:
-                                html_zen = gemini_service.buscar_html_zenrows(texto_extraido)
-                                if html_zen and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_zen) or len(html_zen) > 500):
-                                    dados_zen = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_zen, url_orig=url_manual_gq)
-                                    if not dados_zen or not (dados_zen.get("roteiro") or dados_zen.get("desenho") or dados_zen.get("resumo")):
-                                        dados_zen = gemini_service.extrair_dados_texto_ou_html_gq(html_zen, url_orig=url_manual_gq)
-                                    if dados_zen and (dados_zen.get("roteiro") or dados_zen.get("desenho") or dados_zen.get("resumo")):
-                                        dados_man = dados_zen
-                                        origem_manual = "zenrows"
-                                        mod_manual_usado = "ZenRows Scraper (HTML Oficial Guia dos Quadrinhos)"
-                            except Exception as e_zen:
-                                print(f"[Aviso ZenRows manual: {e_zen}]")
+                dados_man = {}
 
-                    # 2.2 TENTATIVA VIA SCRAPERAPI (SE O ZENROWS FALHOU OU NÃO OBTEVE OS DADOS E É UMA URL)
-                    if (not dados_man or not (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo"))) and texto_extraido.startswith("http"):
-                        with st.spinner("🌐 3/5: Tentando acessar e extrair via ScraperAPI (Failover Anti-Bloqueio)..."):
-                            try:
-                                html_scraper = gemini_service.buscar_html_scraperapi(texto_extraido)
-                                if html_scraper and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_scraper) or len(html_scraper) > 500):
-                                    dados_scraper = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_scraper, url_orig=url_manual_gq)
-                                    if not dados_scraper or not (dados_scraper.get("roteiro") or dados_scraper.get("desenho") or dados_scraper.get("resumo")):
-                                        dados_scraper = gemini_service.extrair_dados_texto_ou_html_gq(html_scraper, url_orig=url_manual_gq)
-                                    if dados_scraper and (dados_scraper.get("roteiro") or dados_scraper.get("desenho") or dados_scraper.get("resumo")):
-                                        dados_man = dados_scraper
-                                        origem_manual = "scraperapi"
-                                        mod_manual_usado = "ScraperAPI Scraper (HTML Oficial Guia dos Quadrinhos)"
-                            except Exception as e_scraper:
-                                print(f"[Aviso ScraperAPI manual: {e_scraper}]")
-
-                    # 2.3 TENTATIVA VIA SCRAPINGBEE (SE O SCRAPERAPI FALHOU OU NÃO OBTEVE OS DADOS E É UMA URL)
-                    if (not dados_man or not (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo"))) and texto_extraido.startswith("http"):
-                        with st.spinner("🌐 4/5: Tentando acessar e extrair via ScrapingBee (Failover Anti-Bloqueio)..."):
-                            try:
-                                html_sbee = gemini_service.buscar_html_scrapingbee(texto_extraido)
-                                if html_sbee and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_sbee) or len(html_sbee) > 500):
-                                    dados_sbee = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_sbee, url_orig=url_manual_gq)
-                                    if not dados_sbee or not (dados_sbee.get("roteiro") or dados_sbee.get("desenho") or dados_sbee.get("resumo")):
-                                        dados_sbee = gemini_service.extrair_dados_texto_ou_html_gq(html_sbee, url_orig=url_manual_gq)
-                                    if dados_sbee and (dados_sbee.get("roteiro") or dados_sbee.get("desenho") or dados_sbee.get("resumo")):
-                                        dados_man = dados_sbee
-                                        origem_manual = "scrapingbee"
-                                        mod_manual_usado = "ScrapingBee Scraper (HTML Oficial Guia dos Quadrinhos)"
-                            except Exception as e_sbee:
-                                print(f"[Aviso ScrapingBee manual: {e_sbee}]")
-
-                    # 3. CASO NADA MAIS FUNCIONE, USE A IA PARA EXTRAIR (FALLBACK GEMINI)
-                    if not dados_man or not dados_man.get("resumo") or not (dados_man.get("roteiro") or dados_man.get("desenho")):
-                        with st.spinner("🤖 5/5: Extraindo dados com IA Gemini (Fallback Inteligente)..."):
-                            texto_auxiliar = texto_extraido
-                            if texto_extraido.startswith("http") and not ("<div" in texto_extraido or "historia" in texto_extraido.lower()):
+                # 1. TENTATIVA DIRETA COM PYTHON PURO (SEM IA / SEM ZENROWS)
+                if not texto_extraido.startswith("http"):
+                    # Usuário colou texto ou fragmento HTML diretamente
+                    with st.spinner("⚡ 1/5: Extraindo dados do texto colado via Python puro..."):
+                        if "<div" in texto_extraido or "class=" in texto_extraido or "historia" in texto_extraido.lower() or "personagens:" in texto_extraido.lower() or "roteiro:" in texto_extraido.lower():
+                            dados_man = gemini_service.extrair_dados_texto_ou_html_gq(texto_extraido, url_orig=url_manual_gq)
+                            if dados_man and (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo")):
+                                origem_manual = "html_puro"
+                                mod_manual_usado = "Python Extractor (Texto Puro da Página)"
+                else:
+                    # Usuário colou uma URL: tenta baixar com Python puro (curl_cffi / BeautifulSoup)
+                    with st.spinner("⚡ 1/5: Tentando baixar página com Python puro (curl_cffi / BeautifulSoup)..."):
+                        try:
+                            if "guiadosquadrinhos.com" in texto_extraido:
+                                html_puro = gemini_service.buscar_html_edicao_guia_dos_quadrinhos(texto_extraido)
+                            else:
                                 try:
-                                    m_slug = re.search(r'/edicao/([^/]+)/', url_manual_gq)
-                                    slug_pesq = m_slug.group(1).replace("-n-", " ").replace("-", " ") if m_slug else titulo
-                                    res_gq = gemini_service.pesquisar_reserp_google(f"site:guiadosquadrinhos.com \"{slug_pesq}\"")
-                                    if not res_gq:
-                                        res_gq = gemini_service.pesquisar_reserp_google(f"site:guiadosquadrinhos.com {slug_pesq}")
-                                    if res_gq:
-                                        texto_auxiliar = "\n\n".join([f"{item.get('title', '')}\n{item.get('snippet', '')}\n{item.get('text', '')}" for item in res_gq[:4]])
+                                    from curl_cffi import requests as cffi_requests
+                                    r = cffi_requests.get(texto_extraido, impersonate="chrome120", timeout=8)
                                 except Exception:
-                                    pass
+                                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
+                                    r = requests.get(texto_extraido, headers=headers, timeout=10)
+                                html_puro = r.text if r.status_code == 200 else ""
 
-                            prompt_man = f"""Você é o especialista mestre na enciclopédia Guia dos Quadrinhos (guiadosquadrinhos.com) e nos quadrinhos publicados no Brasil.
+                            if html_puro and len(html_puro) > 500:
+                                dados_puro = gemini_service.extrair_dados_texto_ou_html_gq(html_puro, url_orig=url_manual_gq)
+                                if dados_puro and (dados_puro.get("roteiro") or dados_puro.get("desenho") or dados_puro.get("resumo")):
+                                    dados_man = dados_puro
+                                    origem_manual = "html_puro"
+                                    mod_manual_usado = "Python Extractor (Página Oficial - Sem IA)"
+                        except Exception as e_puro:
+                            print(f"[Aviso Python puro manual: {e_puro}]")
+
+                # 2. TENTATIVA VIA ZENROWS (SE O PYTHON PURO FALHOU OU NÃO OBTEVE OS DADOS E É UMA URL)
+                if (not dados_man or not (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo"))) and texto_extraido.startswith("http"):
+                    with st.spinner("🌐 2/5: Tentando acessar e extrair via ZenRows Scraper API..."):
+                        try:
+                            html_zen = gemini_service.buscar_html_zenrows(texto_extraido)
+                            if html_zen and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_zen) or len(html_zen) > 500):
+                                dados_zen = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_zen, url_orig=url_manual_gq)
+                                if not dados_zen or not (dados_zen.get("roteiro") or dados_zen.get("desenho") or dados_zen.get("resumo")):
+                                    dados_zen = gemini_service.extrair_dados_texto_ou_html_gq(html_zen, url_orig=url_manual_gq)
+                                if dados_zen and (dados_zen.get("roteiro") or dados_zen.get("desenho") or dados_zen.get("resumo")):
+                                    dados_man = dados_zen
+                                    origem_manual = "zenrows"
+                                    mod_manual_usado = "ZenRows Scraper (HTML Oficial Guia dos Quadrinhos)"
+                        except Exception as e_zen:
+                            print(f"[Aviso ZenRows manual: {e_zen}]")
+
+                # 2.2 TENTATIVA VIA SCRAPERAPI (SE O ZENROWS FALHOU OU NÃO OBTEVE OS DADOS E É UMA URL)
+                if (not dados_man or not (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo"))) and texto_extraido.startswith("http"):
+                    with st.spinner("🌐 3/5: Tentando acessar e extrair via ScraperAPI (Failover Anti-Bloqueio)..."):
+                        try:
+                            html_scraper = gemini_service.buscar_html_scraperapi(texto_extraido)
+                            if html_scraper and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_scraper) or len(html_scraper) > 500):
+                                dados_scraper = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_scraper, url_orig=url_manual_gq)
+                                if not dados_scraper or not (dados_scraper.get("roteiro") or dados_scraper.get("desenho") or dados_scraper.get("resumo")):
+                                    dados_scraper = gemini_service.extrair_dados_texto_ou_html_gq(html_scraper, url_orig=url_manual_gq)
+                                if dados_scraper and (dados_scraper.get("roteiro") or dados_scraper.get("desenho") or dados_scraper.get("resumo")):
+                                    dados_man = dados_scraper
+                                    origem_manual = "scraperapi"
+                                    mod_manual_usado = "ScraperAPI Scraper (HTML Oficial Guia dos Quadrinhos)"
+                        except Exception as e_scraper:
+                            print(f"[Aviso ScraperAPI manual: {e_scraper}]")
+
+                # 2.3 TENTATIVA VIA SCRAPINGBEE (SE O SCRAPERAPI FALHOU OU NÃO OBTEVE OS DADOS E É UMA URL)
+                if (not dados_man or not (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo"))) and texto_extraido.startswith("http"):
+                    with st.spinner("🌐 4/5: Tentando acessar e extrair via ScrapingBee (Failover Anti-Bloqueio)..."):
+                        try:
+                            html_sbee = gemini_service.buscar_html_scrapingbee(texto_extraido)
+                            if html_sbee and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_sbee) or len(html_sbee) > 500):
+                                dados_sbee = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_sbee, url_orig=url_manual_gq)
+                                if not dados_sbee or not (dados_sbee.get("roteiro") or dados_sbee.get("desenho") or dados_sbee.get("resumo")):
+                                    dados_sbee = gemini_service.extrair_dados_texto_ou_html_gq(html_sbee, url_orig=url_manual_gq)
+                                if dados_sbee and (dados_sbee.get("roteiro") or dados_sbee.get("desenho") or dados_sbee.get("resumo")):
+                                    dados_man = dados_sbee
+                                    origem_manual = "scrapingbee"
+                                    mod_manual_usado = "ScrapingBee Scraper (HTML Oficial Guia dos Quadrinhos)"
+                        except Exception as e_sbee:
+                            print(f"[Aviso ScrapingBee manual: {e_sbee}]")
+
+                # 3. CASO NADA MAIS FUNCIONE, USE A IA PARA EXTRAIR (FALLBACK GEMINI)
+                if not dados_man or not dados_man.get("resumo") or not (dados_man.get("roteiro") or dados_man.get("desenho")):
+                    with st.spinner("🤖 5/5: Extraindo dados com IA Gemini (Fallback Inteligente)..."):
+                        texto_auxiliar = texto_extraido
+                        if texto_extraido.startswith("http") and not ("<div" in texto_extraido or "historia" in texto_extraido.lower()):
+                            try:
+                                m_slug = re.search(r'/edicao/([^/]+)/', url_manual_gq)
+                                slug_pesq = m_slug.group(1).replace("-n-", " ").replace("-", " ") if m_slug else titulo
+                                res_gq = gemini_service.pesquisar_reserp_google(f"site:guiadosquadrinhos.com \"{slug_pesq}\"")
+                                if not res_gq:
+                                    res_gq = gemini_service.pesquisar_reserp_google(f"site:guiadosquadrinhos.com {slug_pesq}")
+                                if res_gq:
+                                    texto_auxiliar = "\n\n".join([f"{item.get('title', '')}\n{item.get('snippet', '')}\n{item.get('text', '')}" for item in res_gq[:4]])
+                            except Exception:
+                                pass
+
+                        prompt_man = f"""Você é o especialista mestre na enciclopédia Guia dos Quadrinhos (guiadosquadrinhos.com) e nos quadrinhos publicados no Brasil.
 O usuário forneceu um link ou conteúdo para catalogar esta edição:
 {f'URL Oficial da Edição: {url_manual_gq}' if url_manual_gq else ''}
 Título de referência: "{titulo}"
@@ -773,256 +778,254 @@ REGRAS DE EXTRAÇÃO:
 - Monte o resumo completo com todas as histórias contidas nesta edição (Título, Publicação Original, Roteiro, Arte, Personagens e Sinopse).
 - Extraia roteiro (nomes de todos os roteiristas separados por vírgula), ilustrador (todos os desenhistas/arte separados por vírgula), valor (preço de capa em reais, número float), resumo e link_edicao ({url_manual_gq or 'URL oficial'}).
 Retorne ESTRITAMENTE um JSON com as chaves: "roteiro", "ilustrador", "valor", "resumo", "link_edicao"."""
-                            cliente = gemini_service.get_gemini_client()
-                            resp_man = None
-                            for mod in ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite']:
-                                try:
-                                    resp_man = cliente.models.generate_content(model=mod, contents=prompt_man)
-                                    if resp_man and resp_man.text:
-                                        mod_manual_usado = mod
-                                        origem_manual = "ia_gemini"
-                                        break
-                                except Exception:
-                                    continue
-                            dados_ia = gemini_service.limpar_e_parsear_json_dict(resp_man.text) if resp_man and resp_man.text else {}
-                            if dados_ia:
-                                if mod_manual_usado:
-                                    dados_ia["_modelo_usado"] = mod_manual_usado
-                                    st.session_state[f"fonte_modelo_usado_{val_id}"] = mod_manual_usado
-                                if not dados_man:
-                                    dados_man = dados_ia
-                                else:
-                                    for k, v in dados_ia.items():
-                                        if not dados_man.get(k) and v:
-                                            dados_man[k] = v
+                        cliente = gemini_service.get_gemini_client()
+                        resp_man = None
+                        for mod in ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite']:
+                            try:
+                                resp_man = cliente.models.generate_content(model=mod, contents=prompt_man)
+                                if resp_man and resp_man.text:
+                                    mod_manual_usado = mod
+                                    origem_manual = "ia_gemini"
+                                    break
+                            except Exception:
+                                continue
+                        dados_ia = gemini_service.limpar_e_parsear_json_dict(resp_man.text) if resp_man and resp_man.text else {}
+                        if dados_ia:
+                            if mod_manual_usado:
+                                dados_ia["_modelo_usado"] = mod_manual_usado
+                                st.session_state[f"fonte_modelo_usado_{val_id}"] = mod_manual_usado
+                            if not dados_man:
+                                dados_man = dados_ia
+                            else:
+                                for k, v in dados_ia.items():
+                                    if not dados_man.get(k) and v:
+                                        dados_man[k] = v
 
-                    if dados_man:
-                        st.session_state[session_extraidos_key] = dados_man
-                        st.session_state[f"fonte_input_roteiro_{val_id}"] = dados_man.get("roteiro") or ""
-                        st.session_state[f"fonte_input_ilustrador_{val_id}"] = dados_man.get("ilustrador") or dados_man.get("desenho") or ""
-                        try:
-                            st.session_state[f"fonte_input_valor_{val_id}"] = float(dados_man.get("valor") or dados_man.get("preco_capa") or 0.0)
-                        except Exception:
-                            st.session_state[f"fonte_input_valor_{val_id}"] = 0.0
-                        st.session_state[f"fonte_input_resumo_{val_id}"] = dados_man.get("resumo") or ""
-                        st.session_state[f"fonte_input_link_{val_id}"] = dados_man.get("link_edicao") or dados_man.get("url_edicao") or url_manual_gq or ""
-                        
-                        capa_man = dados_man.get("capa_b64") or dados_man.get("capa_url") or dados_man.get("capa") or ""
-                        if capa_man:
-                            if str(capa_man).startswith("http") and ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man):
-                                with st.spinner("🖼️ Baixando capa em alta resolução (resolvendo bloqueio Cloudflare)..."):
-                                    b64_capa = gemini_service.baixar_imagem_url_base64(str(capa_man).strip(), fallback_url=url_manual_gq)
-                                    if b64_capa and b64_capa.startswith("data:image"):
-                                        capa_man = b64_capa
-                                    else:
-                                        capa_man = ""
-                            if capa_man:
-                                st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_man).strip()
-                        
-                        # Busca capas online para obter as opções em alta definição
-                        termo_capa_busca = f"{titulo} {edicao} {editora}".strip()
-                        capas_encontradas = gemini_service.buscar_capas_online(
-                            titulo=termo_capa_busca,
-                            edicao=edicao,
-                            editora=editora,
-                            escritor=dados_man.get("roteiro") or "",
-                            limite=12,
-                            url_edicao=url_manual_gq
-                        )
-                        if capa_man and (capa_man.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man)):
-                            if not any(c.get("url") == capa_man for c in capas_encontradas):
-                                capas_encontradas.insert(0, {
-                                    "url": capa_man,
-                                    "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos Oficial)",
-                                    "fonte": "Guia dos Quadrinhos",
-                                    "thumbnail": capa_man
-                                })
-                        st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
+                if dados_man:
+                    st.session_state[session_extraidos_key] = dados_man
+                    st.session_state[f"fonte_input_roteiro_{val_id}"] = dados_man.get("roteiro") or ""
+                    st.session_state[f"fonte_input_ilustrador_{val_id}"] = dados_man.get("ilustrador") or dados_man.get("desenho") or ""
+                    try:
+                        st.session_state[f"fonte_input_valor_{val_id}"] = float(dados_man.get("valor") or dados_man.get("preco_capa") or 0.0)
+                    except Exception:
+                        st.session_state[f"fonte_input_valor_{val_id}"] = 0.0
+                    st.session_state[f"fonte_input_resumo_{val_id}"] = dados_man.get("resumo") or ""
+                    st.session_state[f"fonte_input_link_{val_id}"] = dados_man.get("link_edicao") or dados_man.get("url_edicao") or url_manual_gq or ""
+                    
+                    capa_man = dados_man.get("capa_b64") or dados_man.get("capa_url") or dados_man.get("capa") or ""
+                    if capa_man:
+                        if str(capa_man).startswith("http") and ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man):
+                            with st.spinner("🖼️ Baixando capa em alta resolução (resolvendo bloqueio Cloudflare)..."):
+                                b64_capa = gemini_service.baixar_imagem_url_base64(str(capa_man).strip(), fallback_url=url_manual_gq)
+                                if b64_capa and b64_capa.startswith("data:image"):
+                                    capa_man = b64_capa
+                                else:
+                                    capa_man = ""
                         if capa_man:
                             st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_man).strip()
-                        elif capas_encontradas:
-                            st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
-                        elif hq_alvo.get("capa"):
-                            st.session_state[f"fonte_input_capa_{val_id}"] = hq_alvo.get("capa")
+                    
+                    # Busca capas online para obter as opções em alta definição
+                    termo_capa_busca = f"{titulo} {edicao} {editora}".strip()
+                    capas_encontradas = gemini_service.buscar_capas_online(
+                        titulo=termo_capa_busca,
+                        edicao=edicao,
+                        editora=editora,
+                        escritor=dados_man.get("roteiro") or "",
+                        limite=12,
+                        url_edicao=url_manual_gq
+                    )
+                    if capa_man and (capa_man.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man)):
+                        if not any(c.get("url") == capa_man for c in capas_encontradas):
+                            capas_encontradas.insert(0, {
+                                "url": capa_man,
+                                "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos Oficial)",
+                                "fonte": "Guia dos Quadrinhos",
+                                "thumbnail": capa_man
+                            })
+                    st.session_state[f"fonte_capas_encontradas_{val_id}"] = capas_encontradas
+                    if capa_man:
+                        st.session_state[f"fonte_input_capa_{val_id}"] = str(capa_man).strip()
+                    elif capas_encontradas:
+                        st.session_state[f"fonte_input_capa_{val_id}"] = capas_encontradas[0]["url"]
+                    elif hq_alvo.get("capa"):
+                        st.session_state[f"fonte_input_capa_{val_id}"] = hq_alvo.get("capa")
 
-                        if origem_manual == "html_puro":
-                            st.success("✅ Conteúdo extraído com **100% de fidelidade diretamente do HTML/Texto oficial** (Python puro)! Revise os campos abaixo.")
-                        elif origem_manual == "zenrows":
-                            st.success("✅ Conteúdo extraído com sucesso via **ZenRows Scraper** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
-                        elif origem_manual == "scraperapi":
-                            st.success("✅ Conteúdo extraído com sucesso via **ScraperAPI** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
-                        elif origem_manual == "scrapingbee":
-                            st.success("✅ Conteúdo extraído com sucesso via **ScrapingBee** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
-                        else:
-                            st.success(f"✅ Conteúdo processado com sucesso via **{mod_manual_usado or 'Gemini'}**! Revise os campos abaixo.")
+                    if origem_manual == "html_puro":
+                        st.success("✅ Conteúdo extraído com **100% de fidelidade diretamente do HTML/Texto oficial** (Python puro)! Revise os campos abaixo.")
+                    elif origem_manual == "zenrows":
+                        st.success("✅ Conteúdo extraído com sucesso via **ZenRows Scraper** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
+                    elif origem_manual == "scraperapi":
+                        st.success("✅ Conteúdo extraído com sucesso via **ScraperAPI** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
+                    elif origem_manual == "scrapingbee":
+                        st.success("✅ Conteúdo extraído com sucesso via **ScrapingBee** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
                     else:
-                        st.error("❌ Não foi possível extrair os dados da página ou texto informado através dos scrapers ou IA. Verifique se o link/texto está correto e tente novamente.")
-
-        # Se houver dados extraídos (ou dados já existentes), exibe o formulário de validação e edição
-        dados_salvar = st.session_state.get(session_extraidos_key)
-        if dados_salvar:
-            with st.container(border=True):
-                st.markdown("### 📝 Validar e Salvar Dados da Edição")
-                mod_usado = st.session_state.get(f"fonte_modelo_usado_{val_id}") or (dados_salvar.get("_modelo_usado") if isinstance(dados_salvar, dict) else None)
-                if mod_usado:
-                    st.info(f"🤖 **Modelo de IA utilizado na extração:** `{mod_usado}`")
-                st.caption("Revise ou edite as informações abaixo antes de gravar no banco de dados:")
-
-                if f"fonte_input_capa_{val_id}" not in st.session_state:
-                    st.session_state[f"fonte_input_capa_{val_id}"] = hq_alvo.get("capa") or ""
-                if f"fonte_input_roteiro_{val_id}" not in st.session_state:
-                    st.session_state[f"fonte_input_roteiro_{val_id}"] = hq_alvo.get("escritor") if hq_alvo.get("escritor") != "Não informado" else ""
-                if f"fonte_input_ilustrador_{val_id}" not in st.session_state:
-                    st.session_state[f"fonte_input_ilustrador_{val_id}"] = hq_alvo.get("ilustrador") if hq_alvo.get("ilustrador") != "Não informado" else ""
-                if f"fonte_input_valor_{val_id}" not in st.session_state:
-                    st.session_state[f"fonte_input_valor_{val_id}"] = float(hq_alvo.get("valor") or 0.0)
-                if f"fonte_input_link_{val_id}" not in st.session_state:
-                    st.session_state[f"fonte_input_link_{val_id}"] = hq_alvo.get("link_edicao") or ""
-                if f"fonte_input_resumo_{val_id}" not in st.session_state:
-                    st.session_state[f"fonte_input_resumo_{val_id}"] = hq_alvo.get("resumo") or ""
-
-                col_form_c1, col_form_c2 = st.columns([1, 1])
-                with col_form_c1:
-                    st.text_input("✍️ Roteirista(s):", key=f"fonte_input_roteiro_{val_id}")
-                    st.text_input("🎨 Ilustrador(es) / Arte:", key=f"fonte_input_ilustrador_{val_id}")
-                    st.number_input("💰 Preço de Capa (R$):", min_value=0.0, step=0.50, format="%.2f", key=f"fonte_input_valor_{val_id}")
-                with col_form_c2:
-                    st.text_input("🔗 Link Oficial da Edição (Guia dos Quadrinhos):", key=f"fonte_input_link_{val_id}")
-                    st.text_area("📝 Resumo / Sinopse da Edição:", height=108, key=f"fonte_input_resumo_{val_id}")
-
-                st.markdown("---")
-                st.markdown("#### 🖼️ Capa da Edição")
-                
-                capas_disponiveis = st.session_state.get(f"fonte_capas_encontradas_{val_id}", [])
-                capa_selecionada = st.session_state.get(f"fonte_input_capa_{val_id}") or ""
-                
-                # Exibição da capa selecionada
-                if capa_selecionada:
-                    col_prev1, col_prev2 = st.columns([1.2, 3])
-                    with col_prev1:
-                        st.image(obter_imagem_capa(capa_selecionada), width=160, caption="Capa Selecionada")
-                    with col_prev2:
-                        st.success("✅ **Capa ativa selecionada para este quadrinho.**")
-                        st.caption(f"🔗 `{capa_selecionada[:80]}...`" if len(capa_selecionada) > 80 else f"🔗 `{capa_selecionada}`")
+                        st.success(f"✅ Conteúdo processado com sucesso via **{mod_manual_usado or 'Gemini'}**! Revise os campos abaixo.")
                 else:
-                    st.info("🖼️ Nenhuma capa selecionada ainda.")
+                    st.error("❌ Não foi possível extrair os dados da página ou texto informado através dos scrapers ou IA. Verifique se o link/texto está correto e tente novamente.")
 
-                # Galeria de opções de capas encontradas na web
-                if capas_disponiveis:
-                    st.markdown(f"**Opções de capas encontradas ({len(capas_disponiveis)}):** *Escolha a capa desejada e clique em **Selecionar**.*")
-                    for i in range(0, len(capas_disponiveis), 3):
-                        cols_c = st.columns(3, gap="small")
-                        for j in range(3):
-                            idx_c = i + j
-                            if idx_c < len(capas_disponiveis):
-                                item_c = capas_disponiveis[idx_c]
-                                u_c = item_c.get("url") or ""
-                                t_c = item_c.get("titulo") or titulo
-                                f_c = item_c.get("fonte") or "Web"
-                                is_sel = (capa_selecionada == u_c)
-                                with cols_c[j]:
-                                    with st.container(border=True):
-                                        st.image(obter_imagem_capa(u_c), width="stretch")
-                                        st.caption(f"**{t_c[:50]}**\n\n*{f_c}*")
-                                        if is_sel:
-                                            st.button("✅ Selecionada", key=f"btn_capa_sel_{val_id}_{idx_c}", disabled=True, width="stretch")
-                                        else:
-                                            if st.button("👉 Selecionar", key=f"btn_capa_sel_{val_id}_{idx_c}", width="stretch", type="secondary"):
-                                                st.session_state[f"fonte_input_capa_{val_id}"] = u_c
+    # Se houver dados extraídos (ou dados já existentes), exibe o formulário de validação e edição
+    dados_salvar = st.session_state.get(session_extraidos_key)
+    if dados_salvar:
+        with st.container(border=True):
+            st.markdown("### 📝 Validar e Salvar Dados da Edição")
+            mod_usado = st.session_state.get(f"fonte_modelo_usado_{val_id}") or (dados_salvar.get("_modelo_usado") if isinstance(dados_salvar, dict) else None)
+            if mod_usado:
+                st.info(f"🤖 **Modelo de IA utilizado na extração:** `{mod_usado}`")
+            st.caption("Revise ou edite as informações abaixo antes de gravar no banco de dados:")
 
-                with st.expander("🔗 Informar URL manual da capa (opcional)", expanded=False):
-                    url_manual = st.text_input("URL direta da imagem:", key=f"input_manual_capa_url_{val_id}", placeholder="https://.../capa.jpg")
-                    if url_manual:
-                        if st.button("Aplicar URL", key=f"btn_aplicar_manual_capa_{val_id}"):
-                            st.session_state[f"fonte_input_capa_{val_id}"] = url_manual.strip()
+            if f"fonte_input_capa_{val_id}" not in st.session_state:
+                st.session_state[f"fonte_input_capa_{val_id}"] = hq_alvo.get("capa") or ""
+            if f"fonte_input_roteiro_{val_id}" not in st.session_state:
+                st.session_state[f"fonte_input_roteiro_{val_id}"] = hq_alvo.get("escritor") if hq_alvo.get("escritor") != "Não informado" else ""
+            if f"fonte_input_ilustrador_{val_id}" not in st.session_state:
+                st.session_state[f"fonte_input_ilustrador_{val_id}"] = hq_alvo.get("ilustrador") if hq_alvo.get("ilustrador") != "Não informado" else ""
+            if f"fonte_input_valor_{val_id}" not in st.session_state:
+                st.session_state[f"fonte_input_valor_{val_id}"] = float(hq_alvo.get("valor") or 0.0)
+            if f"fonte_input_link_{val_id}" not in st.session_state:
+                st.session_state[f"fonte_input_link_{val_id}"] = hq_alvo.get("link_edicao") or ""
+            if f"fonte_input_resumo_{val_id}" not in st.session_state:
+                st.session_state[f"fonte_input_resumo_{val_id}"] = hq_alvo.get("resumo") or ""
 
-                st.markdown("---")
-                col_sv1, col_sv2 = st.columns([2, 1])
-                with col_sv1:
-                    if st.button("💾 Confirmar e Salvar no Banco de Dados", key=f"btn_confirmar_salvar_fonte_{val_id}", type="primary", use_container_width=True):
-                        # Pega valores atuais dos inputs
-                        rot_final = (st.session_state.get(f"fonte_input_roteiro_{val_id}") or "").strip()
-                        ilu_final = (st.session_state.get(f"fonte_input_ilustrador_{val_id}") or "").strip()
-                        val_final = float(st.session_state.get(f"fonte_input_valor_{val_id}") or 0.0)
-                        link_final = (st.session_state.get(f"fonte_input_link_{val_id}") or "").strip()
-                        res_final = (st.session_state.get(f"fonte_input_resumo_{val_id}") or "").strip()
-                        capa_final = (st.session_state.get(f"fonte_input_capa_{val_id}") or "").strip()
+            col_form_c1, col_form_c2 = st.columns([1, 1])
+            with col_form_c1:
+                st.text_input("✍️ Roteirista(s):", key=f"fonte_input_roteiro_{val_id}")
+                st.text_input("🎨 Ilustrador(es) / Arte:", key=f"fonte_input_ilustrador_{val_id}")
+                st.number_input("💰 Preço de Capa (R$):", min_value=0.0, step=0.50, format="%.2f", key=f"fonte_input_valor_{val_id}")
+            with col_form_c2:
+                st.text_input("🔗 Link Oficial da Edição (Guia dos Quadrinhos):", key=f"fonte_input_link_{val_id}")
+                st.text_area("📝 Resumo / Sinopse da Edição:", height=108, key=f"fonte_input_resumo_{val_id}")
 
-                        campos_update = []
-                        valores_update = []
-                        
-                        if rot_final:
-                            campos_update.append("escritor = ?")
-                            valores_update.append(rot_final)
-                        if ilu_final:
-                            campos_update.append("ilustrador = ?")
-                            valores_update.append(ilu_final)
-                        if res_final:
-                            campos_update.append("resumo = ?")
-                            valores_update.append(res_final)
-                        if val_final > 0:
-                            campos_update.append("valor = ?")
-                            valores_update.append(val_final)
-                        if capa_final and (capa_final.startswith("http") or capa_final.startswith("data:image")):
-                            capa_salvar = capa_final
-                            if capa_final.startswith("http"):
-                                try:
-                                    b64_dl = gemini_service.baixar_imagem_url_base64(capa_final)
-                                    if b64_dl:
-                                        capa_salvar = b64_dl
-                                except Exception:
-                                    pass
-                            campos_update.append("capa = ?")
-                            valores_update.append(capa_salvar)
-                        if link_final and link_final.startswith("http"):
-                            campos_update.append("link_edicao = ?")
-                            valores_update.append(link_final)
+            st.markdown("---")
+            st.markdown("#### 🖼️ Capa da Edição")
+            
+            capas_disponiveis = st.session_state.get(f"fonte_capas_encontradas_{val_id}", [])
+            capa_selecionada = st.session_state.get(f"fonte_input_capa_{val_id}") or ""
+            
+            # Exibição da capa selecionada
+            if capa_selecionada:
+                col_prev1, col_prev2 = st.columns([1.2, 3])
+                with col_prev1:
+                    st.image(obter_imagem_capa(capa_selecionada), width=160, caption="Capa Selecionada")
+                with col_prev2:
+                    st.success("✅ **Capa ativa selecionada para este quadrinho.**")
+                    st.caption(f"🔗 `{capa_selecionada[:80]}...`" if len(capa_selecionada) > 80 else f"🔗 `{capa_selecionada}`")
+            else:
+                st.info("🖼️ Nenhuma capa selecionada ainda.")
 
-                        if campos_update:
-                            valores_update.append(val_id)
-                            sql_update = f"UPDATE hqs SET {', '.join(campos_update)} WHERE id = ?"
+            # Galeria de opções de capas encontradas na web
+            if capas_disponiveis:
+                st.markdown(f"**Opções de capas encontradas ({len(capas_disponiveis)}):** *Escolha a capa desejada e clique em **Selecionar**.*")
+                for i in range(0, len(capas_disponiveis), 3):
+                    cols_c = st.columns(3, gap="small")
+                    for j in range(3):
+                        idx_c = i + j
+                        if idx_c < len(capas_disponiveis):
+                            item_c = capas_disponiveis[idx_c]
+                            u_c = item_c.get("url") or ""
+                            t_c = item_c.get("titulo") or titulo
+                            f_c = item_c.get("fonte") or "Web"
+                            is_sel = (capa_selecionada == u_c)
+                            with cols_c[j]:
+                                with st.container(border=True):
+                                    st.image(obter_imagem_capa(u_c), width="stretch")
+                                    st.caption(f"**{t_c[:50]}**\n\n*{f_c}*")
+                                    if is_sel:
+                                        st.button("✅ Selecionada", key=f"btn_capa_sel_{val_id}_{idx_c}", disabled=True, width="stretch")
+                                    else:
+                                        if st.button("👉 Selecionar", key=f"btn_capa_sel_{val_id}_{idx_c}", width="stretch", type="secondary"):
+                                            st.session_state[f"fonte_input_capa_{val_id}"] = u_c
+
+            with st.expander("🔗 Informar URL manual da capa (opcional)", expanded=False):
+                url_manual = st.text_input("URL direta da imagem:", key=f"input_manual_capa_url_{val_id}", placeholder="https://.../capa.jpg")
+                if url_manual:
+                    if st.button("Aplicar URL", key=f"btn_aplicar_manual_capa_{val_id}"):
+                        st.session_state[f"fonte_input_capa_{val_id}"] = url_manual.strip()
+
+            st.markdown("---")
+            col_sv1, col_sv2 = st.columns([2, 1])
+            with col_sv1:
+                if st.button("💾 Confirmar e Salvar no Banco de Dados", key=f"btn_confirmar_salvar_fonte_{val_id}", type="primary", use_container_width=True):
+                    # Pega valores atuais dos inputs
+                    rot_final = (st.session_state.get(f"fonte_input_roteiro_{val_id}") or "").strip()
+                    ilu_final = (st.session_state.get(f"fonte_input_ilustrador_{val_id}") or "").strip()
+                    val_final = float(st.session_state.get(f"fonte_input_valor_{val_id}") or 0.0)
+                    link_final = (st.session_state.get(f"fonte_input_link_{val_id}") or "").strip()
+                    res_final = (st.session_state.get(f"fonte_input_resumo_{val_id}") or "").strip()
+                    capa_final = (st.session_state.get(f"fonte_input_capa_{val_id}") or "").strip()
+
+                    campos_update = []
+                    valores_update = []
+                    
+                    if rot_final:
+                        campos_update.append("escritor = ?")
+                        valores_update.append(rot_final)
+                    if ilu_final:
+                        campos_update.append("ilustrador = ?")
+                        valores_update.append(ilu_final)
+                    if res_final:
+                        campos_update.append("resumo = ?")
+                        valores_update.append(res_final)
+                    if val_final > 0:
+                        campos_update.append("valor = ?")
+                        valores_update.append(val_final)
+                    if capa_final and (capa_final.startswith("http") or capa_final.startswith("data:image")):
+                        capa_salvar = capa_final
+                        if capa_final.startswith("http"):
                             try:
-                                if database.is_using_turso():
-                                    database.executar_turso_query(sql_update, valores_update)
-                                else:
-                                    conn = database.get_sqlite_connection()
-                                    try:
-                                        c = conn.cursor()
-                                        c.execute(sql_update, tuple(valores_update))
-                                        conn.commit()
-                                    finally:
-                                        conn.close()
+                                b64_dl = gemini_service.baixar_imagem_url_base64(capa_final)
+                                if b64_dl:
+                                    capa_salvar = b64_dl
+                            except Exception:
+                                pass
+                        campos_update.append("capa = ?")
+                        valores_update.append(capa_salvar)
+                    if link_final and link_final.startswith("http"):
+                        campos_update.append("link_edicao = ?")
+                        valores_update.append(link_final)
 
-                                # Limpa estados temporários
-                                st.session_state.pop(session_extraidos_key, None)
-                                st.session_state.pop(session_reserp_key, None)
-                                st.session_state.pop(termo_cache_key, None)
-                                st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
-                                st.session_state.pop(f"fonte_input_capa_{val_id}", None)
-                                st.session_state.pop(f"fonte_input_roteiro_{val_id}", None)
-                                st.session_state.pop(f"fonte_input_ilustrador_{val_id}", None)
-                                st.session_state.pop(f"fonte_input_valor_{val_id}", None)
-                                st.session_state.pop(f"fonte_input_link_{val_id}", None)
-                                st.session_state.pop(f"fonte_input_resumo_{val_id}", None)
-                                st.session_state.pop(f"fonte_modelo_usado_{val_id}", None)
-                                st.success("🎉 Edição atualizada com sucesso no banco de dados!")
-                                time.sleep(1.5)
-                                st.rerun()
-                            except Exception as ex_db:
-                                st.error(f"Erro ao salvar no banco de dados: {ex_db}")
-                        else:
-                            st.warning("Nenhum dado informado para atualizar.")
+                    if campos_update:
+                        valores_update.append(val_id)
+                        sql_update = f"UPDATE hqs SET {', '.join(campos_update)} WHERE id = ?"
+                        try:
+                            if database.is_using_turso():
+                                database.executar_turso_query(sql_update, valores_update)
+                            else:
+                                conn = database.get_sqlite_connection()
+                                try:
+                                    c = conn.cursor()
+                                    c.execute(sql_update, tuple(valores_update))
+                                    conn.commit()
+                                finally:
+                                    conn.close()
 
-                with col_sv2:
-                    if st.button("❌ Cancelar", key=f"btn_canc_form_fonte_{val_id}", use_container_width=True):
-                        st.session_state.pop(session_extraidos_key, None)
-                        st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
-                        st.session_state.pop(f"fonte_input_capa_{val_id}", None)
-                        st.session_state.pop(f"fonte_modelo_usado_{val_id}", None)
-                        st.rerun()
+                            # Limpa estados temporários
+                            st.session_state.pop(session_extraidos_key, None)
+                            st.session_state.pop(session_reserp_key, None)
+                            st.session_state.pop(termo_cache_key, None)
+                            st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
+                            st.session_state.pop(f"fonte_input_capa_{val_id}", None)
+                            st.session_state.pop(f"fonte_input_roteiro_{val_id}", None)
+                            st.session_state.pop(f"fonte_input_ilustrador_{val_id}", None)
+                            st.session_state.pop(f"fonte_input_valor_{val_id}", None)
+                            st.session_state.pop(f"fonte_input_link_{val_id}", None)
+                            st.session_state.pop(f"fonte_input_resumo_{val_id}", None)
+                            st.session_state.pop(f"fonte_modelo_usado_{val_id}", None)
+                            st.success("🎉 Edição atualizada com sucesso no banco de dados!")
+                            time.sleep(1.5)
+                            st.rerun()
+                        except Exception as ex_db:
+                            st.error(f"Erro ao salvar no banco de dados: {ex_db}")
+                    else:
+                        st.warning("Nenhum dado informado para atualizar.")
 
-    else:
-        st.warning("Nenhuma fonte encontrada automaticamente via Reserp.ai. Você pode ajustar o termo de busca acima ou colar o conteúdo manualmente abaixo.")
+            with col_sv2:
+                if st.button("❌ Cancelar", key=f"btn_canc_form_fonte_{val_id}", use_container_width=True):
+                    st.session_state.pop(session_extraidos_key, None)
+                    st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
+                    st.session_state.pop(f"fonte_input_capa_{val_id}", None)
+                    st.session_state.pop(f"fonte_modelo_usado_{val_id}", None)
+                    st.rerun()
+
 
 
 
@@ -2000,10 +2003,56 @@ with st.sidebar:
         return "gemini-3.7-flash"
 
     # Indicador de Banco de Dados
+    tem_cred_turso = bool(database.get_turso_credentials(ignorar_flag_local=True)[0])
     if database.is_using_turso():
         st.success("☁️ **Banco: Turso Cloud (Permanente)**", icon="🗄️")
+        with st.expander("🔄 Sincronização / Backup", expanded=False):
+            st.caption("Gerenciamento entre o banco na nuvem e o SQLite local:")
+            col_sync1, col_sync2 = st.columns(2)
+            with col_sync1:
+                if st.button("📥 Baixar Nuvem", key="btn_sync_turso_local", use_container_width=True, help="Baixa todo o catálogo da nuvem para o SQLite local"):
+                    prog_bar = st.progress(0, text="Iniciando sincronização...")
+                    def _prog_streamlit(atual, total):
+                        pct = int((atual / total) * 100) if total > 0 else 100
+                        prog_bar.progress(pct, text=f"Baixando {atual:,} de {total:,} HQs ({pct}%)...")
+                    try:
+                        with st.spinner("Replicando tabelas da nuvem..."):
+                            res_sync = database.sincronizar_turso_para_local(progresso_callback=_prog_streamlit)
+                        st.success(f"✅ Baixado! {res_sync['hqs']:,} HQs em {res_sync['tempo_segundos']:.1f}s.")
+                        if res_sync.get("backup_path"):
+                            st.caption(f"🛡️ Cópia anterior: `{os.path.basename(res_sync['backup_path'])}`")
+                    except Exception as ex_sync:
+                        st.error(f"Erro ao sincronizar: {ex_sync}")
+            with col_sync2:
+                if st.button("📤 Enviar Local", key="btn_sync_local_turso", use_container_width=True, help="Envia todo o catálogo local para o Turso Cloud"):
+                    prog_bar_up = st.progress(0, text="Iniciando envio...")
+                    def _prog_up_streamlit(atual, total):
+                        pct = int((atual / total) * 100) if total > 0 else 100
+                        prog_bar_up.progress(pct, text=f"Enviando {atual:,} de {total:,} HQs ({pct}%)...")
+                    try:
+                        with st.spinner("Enviando dados locais para o Turso..."):
+                            res_up = database.sincronizar_local_para_turso(progresso_callback=_prog_up_streamlit)
+                        st.success(f"✅ Enviado! {res_up['hqs']:,} HQs em {res_up['tempo_segundos']:.1f}s.")
+                        if res_up.get("backup_turso_path"):
+                            st.caption(f"🛡️ Backup prévio: `{os.path.basename(res_up['backup_turso_path'])}`")
+                    except Exception as ex_up:
+                        st.error(f"Erro ao enviar: {ex_up}")
     else:
         st.info("💾 **Banco: SQLite Local**", icon="📁")
+        if tem_cred_turso:
+            with st.expander("☁️ Conectar / Enviar ao Turso", expanded=False):
+                st.caption("Envie seus dados locais para o Turso Cloud:")
+                if st.button("📤 Subir Catálogo Local para Turso", key="btn_upload_to_turso_from_local", use_container_width=True):
+                    prog_bar_up2 = st.progress(0, text="Iniciando envio...")
+                    def _prog_up_st2(atual, total):
+                        pct = int((atual / total) * 100) if total > 0 else 100
+                        prog_bar_up2.progress(pct, text=f"Enviando {atual:,} de {total:,} HQs ({pct}%)...")
+                    try:
+                        with st.spinner("Enviando dados para a nuvem Turso..."):
+                            res_up2 = database.sincronizar_local_para_turso(progresso_callback=_prog_up_st2)
+                        st.success(f"✅ Enviado! {res_up2['hqs']:,} HQs em {res_up2['tempo_segundos']:.1f}s.")
+                    except Exception as ex_up2:
+                        st.error(f"Erro ao enviar: {ex_up2}")
 
     st.markdown("---")
     
@@ -2209,7 +2258,76 @@ def renderizar_pagina_editar_prateleiras():
 
     st.markdown("---")
 
-    # 3. Tabela Resumo das Prateleiras
+    # 3. Formulário de Excluir Prateleira
+    with st.container(border=True):
+        st.subheader("🗑️ Excluir Prateleira")
+        st.markdown(
+            "Remova uma prateleira cadastrada. Se a prateleira possuir HQs alocadas, "
+            "você pode escolher para qual prateleira deseja transferi-las ou excluí-las junto."
+        )
+
+        col_del1, col_del2 = st.columns(2)
+        with col_del1:
+            prat_excluir_sel = st.selectbox(
+                "📍 Selecione a prateleira para excluir:",
+                options=nomes_prateleiras,
+                key="sel_prat_para_excluir"
+            )
+
+        info_prat_sel = next((p for p in prateleiras_detalhes if p["prateleira"] == prat_excluir_sel), None)
+        qtd_hqs_na_prat = info_prat_sel["total_hqs"] if info_prat_sel else 0
+
+        with col_del2:
+            outras_prats = [p for p in nomes_prateleiras if p != prat_excluir_sel]
+            opcoes_dest = list(outras_prats) if outras_prats else ["Não especificada"]
+            if "Não especificada" not in opcoes_dest:
+                opcoes_dest.append("Não especificada")
+
+            if qtd_hqs_na_prat > 0:
+                st.warning(f"⚠️ Esta prateleira possui **{qtd_hqs_na_prat} HQ(s)** alocada(s).")
+                acao_hqs = st.radio(
+                    "O que fazer com as HQs alocadas?",
+                    options=["Transferir para outra prateleira", "Excluir as HQs junto com a prateleira"],
+                    key="radio_acao_hqs_del_prat"
+                )
+                if acao_hqs == "Transferir para outra prateleira":
+                    prat_dest_transfer = st.selectbox(
+                        "Destino das HQs transferidas:",
+                        options=opcoes_dest,
+                        key="sel_prat_dest_transfer"
+                    )
+                else:
+                    prat_dest_transfer = None
+            else:
+                st.info("ℹ️ Esta prateleira está vazia (0 HQs). Ela será removida diretamente.")
+                acao_hqs = "Transferir para outra prateleira"
+                prat_dest_transfer = "Não especificada"
+
+        col_b_del, _ = st.columns([1.5, 3])
+        with col_b_del:
+            if st.button("🗑️ Confirmar Exclusão da Prateleira", type="primary", use_container_width=True, key="btn_confirmar_excluir_prat"):
+                excluir_junto = (qtd_hqs_na_prat > 0 and acao_hqs == "Excluir as HQs junto com a prateleira")
+                res_del = database.excluir_prateleira(
+                    nome_prateleira=prat_excluir_sel,
+                    destino_hqs=prat_dest_transfer,
+                    excluir_hqs_junto=excluir_junto
+                )
+                if res_del.get("sucesso"):
+                    if st.session_state.get("prateleira_atual") == prat_excluir_sel:
+                        st.session_state["prateleira_atual"] = "Estante 1 - Prateleira 1"
+                    if excluir_junto:
+                        st.success(f"🗑️ Prateleira **'{prat_excluir_sel}'** e suas **{res_del['hqs_afetadas']} HQ(s)** foram excluídas com sucesso!")
+                    elif res_del["hqs_afetadas"] > 0:
+                        st.success(f"🗑️ Prateleira **'{prat_excluir_sel}'** excluída! As **{res_del['hqs_afetadas']} HQ(s)** foram movidas para **'{prat_dest_transfer}'**.")
+                    else:
+                        st.success(f"🗑️ Prateleira **'{prat_excluir_sel}'** excluída com sucesso!")
+                    st.rerun()
+                else:
+                    st.error(f"Erro ao excluir a prateleira '{prat_excluir_sel}'.")
+
+    st.markdown("---")
+
+    # 4. Tabela Resumo das Prateleiras
     st.subheader(f"📊 Prateleiras Cadastradas ({len(prateleiras_detalhes)})")
     df_prat = pd.DataFrame(prateleiras_detalhes)
     st.dataframe(
@@ -4185,21 +4303,43 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
     )
 
     # Linha 1 de Filtros: Busca e Ordenação
-    col_filtro_busca, col_filtro_ordem = st.columns([2.5, 1.2])
+    col_filtro_busca, col_filtro_coluna, col_filtro_direcao = st.columns([2.2, 1.2, 1.0])
     with col_filtro_busca:
         busca_texto = st.text_input("🔍 Buscar por título, autor, editora, gênero ou edição:", placeholder="Digite para filtrar...")
-    with col_filtro_ordem:
-        opcoes_ordem = {
-            "🔤 Título (A-Z)": "titulo_asc",
-            "🔤 Título (Z-A)": "titulo_desc",
-            "🕒 Mais Recentes": "id_desc",
-            "⏳ Mais Antigos": "id_asc",
-            "⭐ Melhor Avaliação": "avaliacao_desc",
-            "🏢 Editora (A-Z)": "editora_asc",
-            "📍 Prateleira (A-Z)": "prateleira_asc"
+    with col_filtro_coluna:
+        colunas_ordem = {
+            "🔤 Título": "titulo",
+            "🔢 Edição / Número": "edicao",
+            "🏢 Editora": "editora",
+            "🏷️ Gênero": "genero",
+            "✍️ Escritor / Roteirista": "escritor",
+            "🎨 Ilustrador / Arte": "ilustrador",
+            "📍 Prateleira": "prateleira",
+            "💰 Preço / Valor (R$)": "valor",
+            "⭐ Avaliação": "avaliacao",
+            "📖 Status de Leitura": "lido",
+            "🛡️ Estado de Conservação": "estado_conservacao",
+            "🕒 Data de Cadastro": "criado_em",
+            "🆔 ID Sequencial": "id"
         }
-        ordem_selecionada = st.selectbox("Ordenar por:", list(opcoes_ordem.keys()))
-        ordem_val = opcoes_ordem[ordem_selecionada]
+        coluna_ordem_sel = st.selectbox("Ordenar pela coluna:", list(colunas_ordem.keys()), index=0)
+        chave_coluna = colunas_ordem[coluna_ordem_sel]
+
+    with col_filtro_direcao:
+        if chave_coluna in ["valor", "avaliacao", "edicao", "id", "criado_em"]:
+            opcoes_direcao = {
+                "⬆️ Crescente (1-9 / Menor)": "asc",
+                "⬇️ Decrescente (9-1 / Maior)": "desc"
+            }
+        else:
+            opcoes_direcao = {
+                "⬆️ A-Z (Alfabética A-Z)": "asc",
+                "⬇️ Z-A (Alfabética Z-A)": "desc"
+            }
+        direcao_ordem_sel = st.selectbox("Ordem:", list(opcoes_direcao.keys()), index=0)
+        sufixo_direcao = opcoes_direcao[direcao_ordem_sel]
+        ordem_val = f"{chave_coluna}_{sufixo_direcao}"
+        ordem_selecionada = f"{coluna_ordem_sel} ({direcao_ordem_sel})"
 
     # Linha 2 de Filtros: Prateleira, Editora, Gênero, Status e Avaliação
     col_filtro_prat, col_filtro_edit, col_filtro_gen, col_filtro_leitura, col_filtro_aval = st.columns([1.8, 1.4, 1.2, 1.1, 1.1])
@@ -4243,64 +4383,76 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
     )
 
     if not df_hqs.empty:
-        col_grid_info, col_grid_select_all = st.columns([3.2, 1.3])
-        with col_grid_info:
-            st.write(f"Exibindo **{len(df_hqs)}** quadrinho(s) cadastrado(s) ordenados por **{ordem_selecionada}**: *(Marque o CheckBox para ações em massa ou dê 2 cliques para editar)*")
-        with col_grid_select_all:
-            def on_toggle_selecionar_todos():
+        col_grid_sel_all, col_grid_unsel, col_grid_info = st.columns([1.5, 1.5, 3.8])
+        with col_grid_sel_all:
+            if st.button("☑️ Selecionar Todos", key="btn_sel_all_grid_top", use_container_width=True, help="Marcar todas as HQs visíveis na grade"):
+                st.session_state["estado_selecionar_todos"] = True
                 if "tabela_inventario_editavel" in st.session_state:
                     del st.session_state["tabela_inventario_editavel"]
+                st.rerun()
+        with col_grid_unsel:
+            if st.button("◻️ Desmarcar Todos", key="btn_unsel_all_grid_top", use_container_width=True, help="Desmarcar todas as HQs da grade"):
+                st.session_state["estado_selecionar_todos"] = False
+                if "tabela_inventario_editavel" in st.session_state:
+                    del st.session_state["tabela_inventario_editavel"]
+                st.rerun()
+        with col_grid_info:
+            st.write(f"Exibindo **{len(df_hqs)}** quadrinho(s) cadastrado(s) ordenados por **{ordem_selecionada}**: *(Dê 2 cliques para editar, ou use o **➕** no final da tabela para incluir novas HQs)*")
 
-            selecionar_todos = st.checkbox(
-                "☑️ Selecionar Todos",
-                key="chk_selecionar_todos_grid",
-                on_change=on_toggle_selecionar_todos,
-                help="Marcar ou desmarcar todas as HQs listadas na grid atual para ações em lote"
-            )
+        estado_selecao_ativo = bool(st.session_state.get("estado_selecionar_todos", False))
 
         # Insere coluna de seleção para ações em massa
         df_hqs_display = df_hqs.copy()
-        df_hqs_display.insert(0, "selecionar", bool(selecionar_todos))
+        df_hqs_display.insert(0, "selecionar", estado_selecao_ativo)
+
+        prat_default_val = (
+            prateleira_selecionada
+            if prateleira_selecionada and prateleira_selecionada != "Todas"
+            else "Estante 1 - Prateleira 1"
+        )
 
         df_editado = st.data_editor(
             df_hqs_display,
             use_container_width=True,
-            num_rows="fixed",
+            num_rows="dynamic",
             disabled=["id", "capa", "criado_em"],
             hide_index=True,
             column_config={
                 "selecionar": st.column_config.CheckboxColumn(
-                    "🔘 Selecionar",
-                    help="Marque as HQs para aplicar ações em lote (Lido/Não Lido ou Excluir)",
-                    default=False
+                    "☑️ Selecionar Todos",
+                    help="Opção Selecionar Todos: use o botão 'Selecionar Todos' logo acima da grade para marcar todas as HQs em 1 clique, ou marque/desmarque individualmente aqui",
+                    default=estado_selecao_ativo
                 ),
                 "id": st.column_config.NumberColumn("ID", disabled=True),
                 "capa": st.column_config.ImageColumn("Capa", help="Foto da capa cadastrada"),
                 "titulo": st.column_config.TextColumn("Título", required=True),
                 "edicao": st.column_config.TextColumn("Edição/Vol."),
                 "editora": st.column_config.TextColumn("Editora"),
-                "genero": st.column_config.TextColumn("Gênero"),
-                "escritor": st.column_config.TextColumn("Roteiro/Escritor"),
-                "ilustrador": st.column_config.TextColumn("Arte/Ilustrador"),
-                "prateleira": st.column_config.TextColumn("Prateleira", required=True),
+                "genero": st.column_config.TextColumn("Gênero", default="Outro"),
+                "escritor": st.column_config.TextColumn("Roteiro/Escritor", default="Não informado"),
+                "ilustrador": st.column_config.TextColumn("Arte/Ilustrador", default="Não informado"),
+                "prateleira": st.column_config.TextColumn("Prateleira", required=True, default=prat_default_val),
                 "valor": st.column_config.NumberColumn(
                     "Valor (R$)",
                     help="Valor da HQ em Reais (R$)",
                     min_value=0.0,
                     step=0.5,
-                    format="R$ %.2f"
+                    format="R$ %.2f",
+                    default=0.0
                 ),
                 "estado_conservacao": st.column_config.SelectboxColumn(
                     "Estado de Conservação",
                     help="Estado de conservação da HQ",
                     options=["Excelente", "Muito Bom", "Bom", "Regular", "Ruim", "Novo / Lacrado"],
-                    required=True
+                    required=True,
+                    default="Excelente"
                 ),
                 "lido": st.column_config.SelectboxColumn(
                     "Status de Leitura",
                     help="Status de leitura da edição",
                     options=["Não Lido", "Lendo", "Lido"],
-                    required=True
+                    required=True,
+                    default="Não Lido"
                 ),
                 "avaliacao": st.column_config.NumberColumn(
                     "Avaliação ⭐",
@@ -4308,7 +4460,8 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                     min_value=0,
                     max_value=5,
                     step=1,
-                    format="%d ⭐"
+                    format="%d ⭐",
+                    default=0
                 ),
                 "resumo": st.column_config.TextColumn(
                     "Resumo da História",
@@ -4337,27 +4490,41 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                 with col_blk_lido:
                     if st.button("📖 Marcar como 'Lido'", type="primary", use_container_width=True, key="btn_bulk_set_lido"):
                         qtd_alt = database.atualizar_status_leitura_em_massa(ids_selecionados, "Lido")
+                        st.session_state["estado_selecionar_todos"] = False
+                        if "tabela_inventario_editavel" in st.session_state:
+                            del st.session_state["tabela_inventario_editavel"]
                         st.success(f"🎉 **{qtd_alt} HQ(s)** marcada(s) como **Lido** com sucesso!")
                         st.rerun()
                 with col_blk_lendo:
                     if st.button("📚 Marcar como 'Lendo'", type="primary", use_container_width=True, key="btn_bulk_set_lendo"):
                         qtd_alt = database.atualizar_status_leitura_em_massa(ids_selecionados, "Lendo")
+                        st.session_state["estado_selecionar_todos"] = False
+                        if "tabela_inventario_editavel" in st.session_state:
+                            del st.session_state["tabela_inventario_editavel"]
                         st.success(f"🎉 **{qtd_alt} HQ(s)** marcada(s) como **Lendo** com sucesso!")
                         st.rerun()
                 with col_blk_nlido:
                     if st.button("📕 Marcar como 'Não Lido'", type="secondary", use_container_width=True, key="btn_bulk_set_nao_lido"):
                         qtd_alt = database.atualizar_status_leitura_em_massa(ids_selecionados, "Não Lido")
+                        st.session_state["estado_selecionar_todos"] = False
+                        if "tabela_inventario_editavel" in st.session_state:
+                            del st.session_state["tabela_inventario_editavel"]
                         st.success(f"🎉 **{qtd_alt} HQ(s)** marcada(s) como **Não Lido** com sucesso!")
                         st.rerun()
                 with col_blk_del:
                     if st.button("🗑️ Excluir Selecionadas", type="secondary", use_container_width=True, key="btn_bulk_ask_del"):
-                        st.session_state["confirmar_exclusao_massa_ids"] = ids_selecionados
+                        qtd_removidas = database.deletar_hqs_em_massa(ids_selecionados)
+                        if "confirmar_exclusao_massa_ids" in st.session_state:
+                            del st.session_state["confirmar_exclusao_massa_ids"]
+                        if "tabela_inventario_editavel" in st.session_state:
+                            del st.session_state["tabela_inventario_editavel"]
+                        st.session_state["estado_selecionar_todos"] = False
+                        st.success(f"🗑️ **{qtd_removidas} HQ(s)** excluída(s) com sucesso!")
                         st.rerun()
                 with col_blk_clear:
                     if st.button("❌ Desmarcar", use_container_width=True, key="btn_bulk_uncheck"):
                         st.session_state["confirmar_exclusao_massa_ids"] = None
-                        if "chk_selecionar_todos_grid" in st.session_state:
-                            st.session_state["chk_selecionar_todos_grid"] = False
+                        st.session_state["estado_selecionar_todos"] = False
                         if "tabela_inventario_editavel" in st.session_state:
                             del st.session_state["tabela_inventario_editavel"]
                         st.rerun()
@@ -4398,22 +4565,10 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                             st.error("Selecione ou digite uma prateleira de destino válida.")
                         else:
                             qtd_movidas = database.atualizar_prateleira_em_massa(ids_selecionados, nova_prat_final)
+                            st.session_state["estado_selecionar_todos"] = False
+                            if "tabela_inventario_editavel" in st.session_state:
+                                del st.session_state["tabela_inventario_editavel"]
                             st.success(f"🎉 **{qtd_movidas} HQ(s)** alterada(s) para a prateleira **'{nova_prat_final}'** com sucesso!")
-                            st.rerun()
-
-                if st.session_state.get("confirmar_exclusao_massa_ids"):
-                    ids_del_list = st.session_state["confirmar_exclusao_massa_ids"]
-                    st.warning(f"⚠️ **Atenção:** Deseja realmente excluir permanentemente as **{len(ids_del_list)} HQ(s)** selecionadas do banco de dados?")
-                    col_cf_y, col_cf_n = st.columns(2)
-                    with col_cf_y:
-                        if st.button("⚠️ Sim, Confirmar Exclusão em Massa", type="primary", use_container_width=True, key="btn_confirm_bulk_del_act"):
-                            qtd_removidas = database.deletar_hqs_em_massa(ids_del_list)
-                            st.session_state["confirmar_exclusao_massa_ids"] = None
-                            st.success(f"🗑️ **{qtd_removidas} HQ(s)** excluída(s) com sucesso!")
-                            st.rerun()
-                    with col_cf_n:
-                        if st.button("Cancelar", use_container_width=True, key="btn_cancel_bulk_del_act"):
-                            st.session_state["confirmar_exclusao_massa_ids"] = None
                             st.rerun()
 
         # Detecção de alterações ou exclusões diretas nas células do grid (ignorando 'selecionar')
@@ -4433,12 +4588,41 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                     if database.deletar_hq(del_id):
                         linhas_excluidas += 1
 
-                # 2. Processa edições de linhas existentes
+                # 2. Processa edições de linhas existentes e inclusão de novas linhas
                 linhas_atualizadas = 0
+                linhas_adicionadas = 0
+                novos_itens_para_adicionar = []
+
                 for _, row_editada in df_editado_sem_sel.iterrows():
-                    if pd.isna(row_editada.get("id")):
+                    raw_id = row_editada.get("id")
+                    # Se não tem ID válido, trata-se de uma nova linha adicionada pelo usuário no grid
+                    if pd.isna(raw_id) or str(raw_id).strip() in ("", "None", "nan", "0"):
+                        tit = str(row_editada.get("titulo") or "").strip()
+                        if tit:  # Só adiciona se o usuário informou ao menos o título
+                            prat_val = str(row_editada.get("prateleira") or "").strip()
+                            if not prat_val or prat_val in ("None", "nan"):
+                                prat_val = prat_default_val
+
+                            novos_itens_para_adicionar.append({
+                                "titulo": tit,
+                                "edicao": str(row_editada.get("edicao") or "").strip() if pd.notna(row_editada.get("edicao")) else "",
+                                "editora": str(row_editada.get("editora") or "Desconhecida").strip() if pd.notna(row_editada.get("editora")) else "Desconhecida",
+                                "genero": str(row_editada.get("genero") or "Outro").strip() if pd.notna(row_editada.get("genero")) else "Outro",
+                                "escritor": str(row_editada.get("escritor") or "Não informado").strip() if pd.notna(row_editada.get("escritor")) else "Não informado",
+                                "ilustrador": str(row_editada.get("ilustrador") or "Não informado").strip() if pd.notna(row_editada.get("ilustrador")) else "Não informado",
+                                "prateleira": prat_val,
+                                "lido": str(row_editada.get("lido") or "Não Lido").strip() if pd.notna(row_editada.get("lido")) else "Não Lido",
+                                "avaliacao": int(row_editada.get("avaliacao") or 0) if pd.notna(row_editada.get("avaliacao")) else 0,
+                                "valor": float(row_editada.get("valor") or 0.0) if pd.notna(row_editada.get("valor")) else 0.0,
+                                "estado_conservacao": str(row_editada.get("estado_conservacao") or "Excelente").strip() if pd.notna(row_editada.get("estado_conservacao")) else "Excelente",
+                                "capa": str(row_editada.get("capa") or "").strip() if pd.notna(row_editada.get("capa")) else "",
+                                "resenha": str(row_editada.get("resenha") or "").strip() if pd.notna(row_editada.get("resenha")) else "",
+                                "resumo": str(row_editada.get("resumo") or "").strip() if pd.notna(row_editada.get("resumo")) else "",
+                            })
                         continue
-                    hq_id_val = int(row_editada["id"])
+
+                    # Linha existente com ID:
+                    hq_id_val = int(raw_id)
                     orig_match = df_hqs[df_hqs["id"] == hq_id_val]
                     if not orig_match.empty:
                         orig = orig_match.iloc[0]
@@ -4463,20 +4647,29 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                             )
                             linhas_atualizadas += 1
 
-                if linhas_atualizadas > 0 or linhas_excluidas > 0:
+                # Salva as novas linhas incluídas pelo grid
+                if novos_itens_para_adicionar:
+                    res_novos = database.salvar_hqs(novos_itens_para_adicionar, ignorar_duplicadas=False)
+                    linhas_adicionadas = res_novos if isinstance(res_novos, int) else len(novos_itens_para_adicionar)
+
+                if linhas_adicionadas > 0 or linhas_atualizadas > 0 or linhas_excluidas > 0:
                     mensagens = []
+                    if linhas_adicionadas > 0:
+                        mensagens.append(f"{linhas_adicionadas} nova(s) HQ(s) incluída(s)")
                     if linhas_atualizadas > 0:
                         mensagens.append(f"{linhas_atualizadas} HQ(s) atualizada(s)")
                     if linhas_excluidas > 0:
                         mensagens.append(f"{linhas_excluidas} HQ(s) excluída(s)")
                     st.success(f"🎉 Gravado com sucesso: {', '.join(mensagens)}!")
+                    if "tabela_inventario_editavel" in st.session_state:
+                        del st.session_state["tabela_inventario_editavel"]
                     st.rerun()
 
         with col_info_grid:
             if houve_alteracao:
-                st.warning("⚠️ Alterações/exclusões pendentes detectadas no Grid! Clique em **\"Salvar Alterações da Tabela\"** para gravar no banco.", icon="✏️")
+                st.warning("⚠️ Inclusões/alterações pendentes detectadas no Grid! Clique em **\"Salvar Alterações da Tabela\"** para gravar no banco.", icon="✏️")
             else:
-                st.caption("💡 **Dicas:** Marque os CheckBoxes para aplicar ações em lote (Lido/Não Lido ou Excluir) ou dê 2 cliques em qualquer célula para editar.")
+                st.caption("💡 **Dicas:** Dê 2 cliques para editar, use os CheckBoxes para ações em lote ou o botão **➕** no rodapé do grid para adicionar novos quadrinhos.")
 
         st.markdown("##### 🛠️ Ações Rápidas no Inventário")
         col_act_edit, col_act_capa, col_act_resenha, col_act_rate, col_act_toggle, col_act_del = st.columns(6)

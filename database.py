@@ -6,6 +6,7 @@ Suporta de forma híbrida e transparente:
 """
 
 import os
+import shutil
 import sqlite3
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
@@ -32,8 +33,11 @@ DB_DEFAULT_PATH = os.getenv("DB_PATH", "hqs_inventario.db")
 DB_FILE = DB_DEFAULT_PATH
 
 
-def get_turso_credentials() -> tuple[Optional[str], Optional[str]]:
+def get_turso_credentials(ignorar_flag_local: bool = False) -> tuple[Optional[str], Optional[str]]:
     """Recupera as credenciais do Turso do ambiente ou dos secrets do Streamlit."""
+    if not ignorar_flag_local and os.getenv("USE_LOCAL_DB", "").lower() in ("true", "1", "yes"):
+        return None, None
+
     url = os.getenv("TURSO_DATABASE_URL") or os.getenv("TURSO_DB_URL")
     token = os.getenv("TURSO_AUTH_TOKEN") or os.getenv("TURSO_TOKEN")
 
@@ -153,12 +157,12 @@ def get_turso_client():
         return libsql_client.create_client_sync(url=clean_url, auth_token=token)
     return None
 
-def executar_turso_query(sql: str, params: Optional[List[Any]] = None, max_retries: int = 3) -> TursoResultSet:
+def executar_turso_query(sql: str, params: Optional[List[Any]] = None, max_retries: int = 3, ignorar_flag_local: bool = False) -> TursoResultSet:
     """
     Executa uma consulta no Turso Cloud via HTTP Pipeline de alta performance,
     com retentativa automática e zero risco de travamento de threads no Windows/Python 3.14.
     """
-    url, token = get_turso_credentials()
+    url, token = get_turso_credentials(ignorar_flag_local=ignorar_flag_local)
     if not url or not token:
         raise ValueError("Credenciais do Turso não configuradas.")
 
@@ -212,11 +216,11 @@ def executar_turso_query(sql: str, params: Optional[List[Any]] = None, max_retri
 
     raise ultimo_erro
 
-def executar_turso_batch(statements: List[Tuple[str, Optional[List[Any]]]], max_retries: int = 3) -> List[TursoResultSet]:
+def executar_turso_batch(statements: List[Tuple[str, Optional[List[Any]]]], max_retries: int = 3, ignorar_flag_local: bool = False) -> List[TursoResultSet]:
     """
     Executa múltiplos comandos SQL no Turso Cloud em um único roundtrip HTTP atômico.
     """
-    url, token = get_turso_credentials()
+    url, token = get_turso_credentials(ignorar_flag_local=ignorar_flag_local)
     if not url or not token:
         raise ValueError("Credenciais do Turso não configuradas.")
 
@@ -1096,11 +1100,30 @@ def listar_todas_hqs(
     mapa_ordenacao = {
         "titulo_asc": " ORDER BY LOWER(TRIM(titulo)) ASC, id ASC",
         "titulo_desc": " ORDER BY LOWER(TRIM(titulo)) DESC, id ASC",
-        "id_desc": " ORDER BY id DESC",
-        "id_asc": " ORDER BY id ASC",
-        "avaliacao_desc": " ORDER BY avaliacao DESC, LOWER(TRIM(titulo)) ASC",
+        "edicao_asc": " ORDER BY CASE WHEN edicao GLOB '[0-9]*' THEN CAST(edicao AS INTEGER) ELSE 999999 END ASC, LOWER(TRIM(edicao)) ASC, id ASC",
+        "edicao_desc": " ORDER BY CASE WHEN edicao GLOB '[0-9]*' THEN CAST(edicao AS INTEGER) ELSE -1 END DESC, LOWER(TRIM(edicao)) DESC, id DESC",
         "editora_asc": " ORDER BY LOWER(TRIM(editora)) ASC, LOWER(TRIM(titulo)) ASC",
-        "prateleira_asc": " ORDER BY LOWER(TRIM(prateleira)) ASC, LOWER(TRIM(titulo)) ASC"
+        "editora_desc": " ORDER BY LOWER(TRIM(editora)) DESC, LOWER(TRIM(titulo)) ASC",
+        "genero_asc": " ORDER BY LOWER(TRIM(genero)) ASC, LOWER(TRIM(titulo)) ASC",
+        "genero_desc": " ORDER BY LOWER(TRIM(genero)) DESC, LOWER(TRIM(titulo)) ASC",
+        "escritor_asc": " ORDER BY LOWER(TRIM(escritor)) ASC, LOWER(TRIM(titulo)) ASC",
+        "escritor_desc": " ORDER BY LOWER(TRIM(escritor)) DESC, LOWER(TRIM(titulo)) ASC",
+        "ilustrador_asc": " ORDER BY LOWER(TRIM(ilustrador)) ASC, LOWER(TRIM(titulo)) ASC",
+        "ilustrador_desc": " ORDER BY LOWER(TRIM(ilustrador)) DESC, LOWER(TRIM(titulo)) ASC",
+        "prateleira_asc": " ORDER BY LOWER(TRIM(prateleira)) ASC, LOWER(TRIM(titulo)) ASC",
+        "prateleira_desc": " ORDER BY LOWER(TRIM(prateleira)) DESC, LOWER(TRIM(titulo)) ASC",
+        "valor_asc": " ORDER BY valor ASC, LOWER(TRIM(titulo)) ASC",
+        "valor_desc": " ORDER BY valor DESC, LOWER(TRIM(titulo)) ASC",
+        "avaliacao_asc": " ORDER BY avaliacao ASC, LOWER(TRIM(titulo)) ASC",
+        "avaliacao_desc": " ORDER BY avaliacao DESC, LOWER(TRIM(titulo)) ASC",
+        "lido_asc": " ORDER BY lido ASC, LOWER(TRIM(titulo)) ASC",
+        "lido_desc": " ORDER BY lido DESC, LOWER(TRIM(titulo)) ASC",
+        "estado_conservacao_asc": " ORDER BY LOWER(TRIM(estado_conservacao)) ASC, LOWER(TRIM(titulo)) ASC",
+        "estado_conservacao_desc": " ORDER BY LOWER(TRIM(estado_conservacao)) DESC, LOWER(TRIM(titulo)) ASC",
+        "criado_em_asc": " ORDER BY criado_em ASC, id ASC",
+        "criado_em_desc": " ORDER BY criado_em DESC, id DESC",
+        "id_asc": " ORDER BY id ASC",
+        "id_desc": " ORDER BY id DESC"
     }
     query += mapa_ordenacao.get(ordem_por, " ORDER BY LOWER(TRIM(titulo)) ASC, id ASC")
 
@@ -1278,6 +1301,77 @@ def renomear_prateleira(nome_antigo: str, nome_novo: str, db_path: str = DB_DEFA
             cursor.execute("UPDATE hqs SET prateleira = ? WHERE TRIM(prateleira) = ? OR prateleira = ?", (novo, antigo, antigo))
             conn.commit()
             return cursor.rowcount
+        finally:
+            conn.close()
+
+
+def excluir_prateleira(
+    nome_prateleira: str,
+    destino_hqs: Optional[str] = "Não especificada",
+    excluir_hqs_junto: bool = False,
+    db_path: str = DB_DEFAULT_PATH
+) -> Dict[str, Any]:
+    """
+    Exclui uma prateleira cadastrada.
+    - Se excluir_hqs_junto=True, exclui permanentemente todas as HQs alocadas nela.
+    - Caso contrário, realoca as HQs associadas para a prateleira indicada em destino_hqs.
+    Retorna {'sucesso': bool, 'hqs_afetadas': int}.
+    """
+    nome_limpo = str(nome_prateleira or "").strip()
+    if not nome_limpo:
+        return {"sucesso": False, "hqs_afetadas": 0}
+
+    dest = (destino_hqs or "Não especificada").strip()
+
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
+        try:
+            hqs_afetadas = 0
+            if excluir_hqs_junto:
+                res_del_hqs = executar_turso_query(
+                    "DELETE FROM hqs WHERE TRIM(prateleira) = ? OR prateleira = ?",
+                    [nome_limpo, nome_limpo]
+                )
+                hqs_afetadas = res_del_hqs.rows_affected if hasattr(res_del_hqs, "rows_affected") else 0
+            else:
+                if dest and dest != "Não especificada":
+                    executar_turso_query("INSERT OR IGNORE INTO prateleiras (nome) VALUES (?)", [dest])
+                res_mov = executar_turso_query(
+                    "UPDATE hqs SET prateleira = ? WHERE TRIM(prateleira) = ? OR prateleira = ?",
+                    [dest, nome_limpo, nome_limpo]
+                )
+                hqs_afetadas = res_mov.rows_affected if hasattr(res_mov, "rows_affected") else 0
+
+            executar_turso_query("DELETE FROM prateleiras WHERE TRIM(nome) = ? OR nome = ?", [nome_limpo, nome_limpo])
+            return {"sucesso": True, "hqs_afetadas": hqs_afetadas}
+        except Exception as ex:
+            print(f"Erro Turso excluir_prateleira: {ex}")
+            return {"sucesso": False, "hqs_afetadas": 0}
+    else:
+        conn = get_sqlite_connection(db_path)
+        try:
+            cursor = conn.cursor()
+            hqs_afetadas = 0
+            if excluir_hqs_junto:
+                cursor.execute(
+                    "DELETE FROM hqs WHERE TRIM(prateleira) = ? OR prateleira = ?",
+                    (nome_limpo, nome_limpo)
+                )
+                hqs_afetadas = cursor.rowcount
+            else:
+                if dest and dest != "Não especificada":
+                    cursor.execute("INSERT OR IGNORE INTO prateleiras (nome) VALUES (?)", (dest,))
+                cursor.execute(
+                    "UPDATE hqs SET prateleira = ? WHERE TRIM(prateleira) = ? OR prateleira = ?",
+                    (dest, nome_limpo, nome_limpo)
+                )
+                hqs_afetadas = cursor.rowcount
+
+            cursor.execute("DELETE FROM prateleiras WHERE TRIM(nome) = ? OR nome = ?", (nome_limpo, nome_limpo))
+            conn.commit()
+            return {"sucesso": True, "hqs_afetadas": hqs_afetadas}
+        except Exception as ex:
+            print(f"Erro SQLite excluir_prateleira: {ex}")
+            return {"sucesso": False, "hqs_afetadas": 0}
         finally:
             conn.close()
 
@@ -2492,6 +2586,287 @@ def identificar_duplicatas_no_acervo(db_path: str = DB_DEFAULT_PATH) -> List[Dic
     resultado = list(grupos_duplicatas.values())
     resultado.sort(key=lambda g: (0 if g["tipo"] == "Exata" else 1, -len(g["hqs"])))
     return resultado
+
+
+def sincronizar_turso_para_local(
+    db_destino_path: str = DB_DEFAULT_PATH,
+    fazer_backup_previo: bool = True,
+    tamanho_lote: int = 500,
+    progresso_callback: Optional[Any] = None
+) -> Dict[str, Any]:
+    """
+    Sincroniza todos os dados do Turso Cloud para o banco de dados SQLite local (hqs_inventario.db).
+    Gera automaticamente uma cópia de segurança antes da sincronização.
+    """
+    if not is_using_turso():
+        raise ValueError("Turso Cloud não está configurado ou ativo no ambiente (.env).")
+
+    inicio_t = time.time()
+    backup_path = None
+
+    # 1. Backup de segurança do banco local pré-existente
+    if fazer_backup_previo and os.path.exists(db_destino_path) and os.path.getsize(db_destino_path) > 0:
+        dir_nome = os.path.dirname(db_destino_path) or "."
+        base_nome = os.path.basename(db_destino_path)
+        nome_puro, ext = os.path.splitext(base_nome)
+        ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(dir_nome, f"{nome_puro}_backup_{ts_str}{ext}")
+        shutil.copy2(db_destino_path, backup_path)
+
+    # 2. Garante que o banco de destino local existe com todas as tabelas e colunas
+    init_db(db_destino_path, force=True)
+
+    conn_local = get_sqlite_connection(db_destino_path)
+    cur_local = conn_local.cursor()
+
+    totais = {
+        "hqs": 0,
+        "prateleiras": 0,
+        "lista_desejos": 0,
+        "historico_destaques": 0,
+        "backup_path": backup_path,
+        "tempo_segundos": 0.0
+    }
+
+    try:
+        cur_local.execute("BEGIN TRANSACTION")
+
+        # A) Prateleiras
+        res_prat = executar_turso_query("SELECT id, nome, criado_em FROM prateleiras")
+        cur_local.execute("DELETE FROM prateleiras")
+        if res_prat.rows:
+            cur_local.executemany(
+                "INSERT INTO prateleiras (id, nome, criado_em) VALUES (?, ?, ?)",
+                [(r["id"], r["nome"], r["criado_em"]) for r in res_prat.rows]
+            )
+        totais["prateleiras"] = len(res_prat.rows)
+
+        # B) Lista de Desejos
+        res_desejos = executar_turso_query(
+            "SELECT id, titulo, edicao, editora, melhor_preco, melhor_loja, link_oferta, observacoes, criado_em FROM lista_desejos"
+        )
+        cur_local.execute("DELETE FROM lista_desejos")
+        if res_desejos.rows:
+            cur_local.executemany(
+                """INSERT INTO lista_desejos 
+                   (id, titulo, edicao, editora, melhor_preco, melhor_loja, link_oferta, observacoes, criado_em) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [(r["id"], r["titulo"], r["edicao"], r["editora"], r["melhor_preco"], 
+                  r["melhor_loja"], r["link_oferta"], r["observacoes"], r["criado_em"]) for r in res_desejos.rows]
+            )
+        totais["lista_desejos"] = len(res_desejos.rows)
+
+        # C) Histórico de Destaques
+        res_hist = executar_turso_query(
+            "SELECT id, hq_id, data_destaque, criado_em FROM historico_destaques"
+        )
+        cur_local.execute("DELETE FROM historico_destaques")
+        if res_hist.rows:
+            cur_local.executemany(
+                "INSERT INTO historico_destaques (id, hq_id, data_destaque, criado_em) VALUES (?, ?, ?, ?)",
+                [(r["id"], r["hq_id"], r["data_destaque"], r["criado_em"]) for r in res_hist.rows]
+            )
+        totais["historico_destaques"] = len(res_hist.rows)
+
+        # D) HQs (Tabela principal com paginação)
+        cur_local.execute("DELETE FROM hqs")
+
+        cur_local.execute("PRAGMA table_info(hqs)")
+        cols_locais = [row["name"] for row in cur_local.fetchall()]
+
+        res_count = executar_turso_query("SELECT COUNT(*) FROM hqs")
+        total_hqs = res_count.rows[0][0] if res_count.rows else 0
+
+        campos_canonicos = [
+            "id", "titulo", "edicao", "editora", "genero", "escritor", "ilustrador",
+            "prateleira", "lido", "avaliacao", "valor", "estado_conservacao",
+            "capa", "resenha", "resumo", "link_edicao", "criado_em"
+        ]
+        campos_inserir = [c for c in campos_canonicos if c in cols_locais]
+        placeholders = ", ".join(["?"] * len(campos_inserir))
+        sql_insert_hqs = f"INSERT INTO hqs ({', '.join(campos_inserir)}) VALUES ({placeholders})"
+
+        offset = 0
+        hqs_inseridas = 0
+
+        while offset < total_hqs:
+            limite_atual = min(tamanho_lote, total_hqs - offset)
+            res_lote = executar_turso_query(
+                f"SELECT * FROM hqs ORDER BY id LIMIT {limite_atual} OFFSET {offset}"
+            )
+            if not res_lote.rows:
+                break
+
+            registros_para_lote = []
+            for r in res_lote.rows:
+                linha = [r.get(col) for col in campos_inserir]
+                registros_para_lote.append(linha)
+
+            cur_local.executemany(sql_insert_hqs, registros_para_lote)
+            hqs_inseridas += len(registros_para_lote)
+            offset += len(registros_para_lote)
+
+            if progresso_callback:
+                progresso_callback(hqs_inseridas, total_hqs)
+
+        conn_local.commit()
+        totais["hqs"] = hqs_inseridas
+        totais["tempo_segundos"] = round(time.time() - inicio_t, 2)
+        return totais
+
+    except Exception as e:
+        conn_local.rollback()
+        raise e
+    finally:
+        conn_local.close()
+
+
+def sincronizar_local_para_turso(
+    db_origem_path: str = DB_DEFAULT_PATH,
+    fazer_backup_turso_previo: bool = True,
+    tamanho_lote: int = 100,
+    progresso_callback: Optional[Any] = None
+) -> Dict[str, Any]:
+    """
+    Sincroniza todos os dados do banco SQLite local para o Turso Cloud (Nuvem).
+    Antes de sobrescrever o Turso, pode criar um backup local do estado anterior da nuvem.
+    """
+    url, token = get_turso_credentials(ignorar_flag_local=True)
+    if not url or not token:
+        raise ValueError("Turso Cloud não está configurado. Verifique TURSO_DATABASE_URL e TURSO_AUTH_TOKEN no arquivo .env.")
+
+    if not os.path.exists(db_origem_path):
+        raise FileNotFoundError(f"Banco de dados local não encontrado em: {db_origem_path}")
+
+    inicio_t = time.time()
+    backup_turso_path = None
+
+    # 1. Faz backup de segurança do estado atual do Turso Cloud antes de sobrescrever
+    if fazer_backup_turso_previo:
+        try:
+            ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_turso_path = os.path.join(
+                os.path.dirname(db_origem_path) or ".",
+                f"turso_backup_previo_{ts_str}.db"
+            )
+            # Baixa a nuvem para o arquivo de backup local
+            sincronizar_turso_para_local(
+                db_destino_path=backup_turso_path,
+                fazer_backup_previo=False,
+                tamanho_lote=500
+            )
+        except Exception as e_bkp:
+            print(f"Aviso: Não foi possível criar backup prévio do Turso: {e_bkp}")
+            backup_turso_path = None
+
+    # 2. Conecta ao banco SQLite local para ler os dados
+    conn_local = get_sqlite_connection(db_origem_path)
+    cur_local = conn_local.cursor()
+
+    totais = {
+        "hqs": 0,
+        "prateleiras": 0,
+        "lista_desejos": 0,
+        "historico_destaques": 0,
+        "backup_turso_path": backup_turso_path,
+        "tempo_segundos": 0.0
+    }
+
+    try:
+        # Garante schema inicializado no Turso
+        init_db(force=True)
+
+        # 3. Limpa as tabelas no Turso
+        limpar_stmts = [
+            ("DELETE FROM hqs", []),
+            ("DELETE FROM prateleiras", []),
+            ("DELETE FROM lista_desejos", []),
+            ("DELETE FROM historico_destaques", [])
+        ]
+        executar_turso_batch(limpar_stmts, ignorar_flag_local=True)
+
+        # 4. Prateleiras
+        cur_local.execute("SELECT id, nome, criado_em FROM prateleiras")
+        prat_rows = cur_local.fetchall()
+        if prat_rows:
+            prat_stmts = [
+                ("INSERT INTO prateleiras (id, nome, criado_em) VALUES (?, ?, ?)", [r["id"], r["nome"], r["criado_em"]])
+                for r in prat_rows
+            ]
+            for i in range(0, len(prat_stmts), tamanho_lote):
+                executar_turso_batch(prat_stmts[i:i + tamanho_lote], ignorar_flag_local=True)
+        totais["prateleiras"] = len(prat_rows)
+
+        # 5. Lista de Desejos
+        cur_local.execute("SELECT id, titulo, edicao, editora, melhor_preco, melhor_loja, link_oferta, observacoes, criado_em FROM lista_desejos")
+        desejos_rows = cur_local.fetchall()
+        if desejos_rows:
+            desejos_stmts = [
+                (
+                    """INSERT INTO lista_desejos 
+                       (id, titulo, edicao, editora, melhor_preco, melhor_loja, link_oferta, observacoes, criado_em)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [r["id"], r["titulo"], r["edicao"], r["editora"], r["melhor_preco"],
+                     r["melhor_loja"], r["link_oferta"], r["observacoes"], r["criado_em"]]
+                )
+                for r in desejos_rows
+            ]
+            for i in range(0, len(desejos_stmts), tamanho_lote):
+                executar_turso_batch(desejos_stmts[i:i + tamanho_lote], ignorar_flag_local=True)
+        totais["lista_desejos"] = len(desejos_rows)
+
+        # 6. Histórico de Destaques
+        cur_local.execute("SELECT id, hq_id, data_destaque, criado_em FROM historico_destaques")
+        hist_rows = cur_local.fetchall()
+        if hist_rows:
+            hist_stmts = [
+                ("INSERT INTO historico_destaques (id, hq_id, data_destaque, criado_em) VALUES (?, ?, ?, ?)",
+                 [r["id"], r["hq_id"], r["data_destaque"], r["criado_em"]])
+                for r in hist_rows
+            ]
+            for i in range(0, len(hist_stmts), tamanho_lote):
+                executar_turso_batch(hist_stmts[i:i + tamanho_lote], ignorar_flag_local=True)
+        totais["historico_destaques"] = len(hist_rows)
+
+        # 7. HQs (Tabela principal)
+        campos_turso = [
+            "id", "titulo", "edicao", "editora", "genero", "escritor", "ilustrador",
+            "prateleira", "lido", "avaliacao", "valor", "estado_conservacao",
+            "capa", "resenha", "resumo", "link_edicao", "criado_em"
+        ]
+        placeholders = ", ".join(["?"] * len(campos_turso))
+        sql_insert_hq = f"INSERT INTO hqs ({', '.join(campos_turso)}) VALUES ({placeholders})"
+
+        cur_local.execute("SELECT COUNT(*) FROM hqs")
+        total_hqs = cur_local.fetchone()[0]
+
+        cur_local.execute("SELECT * FROM hqs ORDER BY id ASC")
+        hqs_enviadas = 0
+
+        while True:
+            lote = cur_local.fetchmany(tamanho_lote)
+            if not lote:
+                break
+
+            stmts_lote = []
+            for r in lote:
+                vals = [r[col] if col in r.keys() else None for col in campos_turso]
+                stmts_lote.append((sql_insert_hq, vals))
+
+            executar_turso_batch(stmts_lote, ignorar_flag_local=True)
+            hqs_enviadas += len(lote)
+
+            if progresso_callback:
+                progresso_callback(hqs_enviadas, total_hqs)
+
+        totais["hqs"] = hqs_enviadas
+        totais["tempo_segundos"] = round(time.time() - inicio_t, 2)
+        return totais
+
+    finally:
+        conn_local.close()
+
+
 
 
 

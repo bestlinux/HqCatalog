@@ -1765,9 +1765,178 @@ class TestHqCatalog(unittest.TestCase):
             mock_ai.assert_not_called()
             self.assertEqual(res_scraper.get("roteiro"), "Grant Morrison")
 
+    def test_sincronizar_turso_para_local(self):
+        """Testa o mecanismo de replicação/backup do Turso Cloud para o SQLite local."""
+        import database
+        test_sync_db = "test_sync_destination.db"
+        if os.path.exists(test_sync_db):
+            os.remove(test_sync_db)
+
+        # 1. Sem Turso configurado deve lançar ValueError
+        with patch("database.is_using_turso", return_value=False):
+            with self.assertRaises(ValueError):
+                database.sincronizar_turso_para_local(db_destino_path=test_sync_db)
+
+        # 2. Com Turso mockado deve sincronizar tabelas e preencher o banco
+        fake_turso_rows_hqs = database.TursoResultSet(
+            columns=["id", "titulo", "edicao", "editora", "genero", "escritor", "ilustrador", "prateleira", "lido", "avaliacao", "valor", "estado_conservacao", "capa", "resenha", "resumo", "link_edicao", "criado_em"],
+            rows=[
+                database.TursoRow([1, "Batman Ano Um", "1", "Panini", "Super-heróis", "Frank Miller", "David Mazzucchelli", "Prateleira 1", "Lido", 5, 45.0, "Excelente", "data:image/jpeg;base64,123", "Obra prima", "Sinopse", "https://link", "2026-01-01 10:00:00"], {c: i for i, c in enumerate(["id", "titulo", "edicao", "editora", "genero", "escritor", "ilustrador", "prateleira", "lido", "avaliacao", "valor", "estado_conservacao", "capa", "resenha", "resumo", "link_edicao", "criado_em"])}),
+                database.TursoRow([2, "Watchmen", "1", "Panini", "Super-heróis", "Alan Moore", "Dave Gibbons", "Prateleira 1", "Lido", 5, 120.0, "Excelente", "", "", "Sinopse Watchmen", "", "2026-01-01 10:00:00"], {c: i for i, c in enumerate(["id", "titulo", "edicao", "editora", "genero", "escritor", "ilustrador", "prateleira", "lido", "avaliacao", "valor", "estado_conservacao", "capa", "resenha", "resumo", "link_edicao", "criado_em"])}),
+            ]
+        )
+        fake_prat = database.TursoResultSet(columns=["id", "nome", "criado_em"], rows=[database.TursoRow([1, "Prateleira 1", "2026-01-01"], {"id": 0, "nome": 1, "criado_em": 2})])
+        fake_desejos = database.TursoResultSet(columns=["id", "titulo", "edicao", "editora", "melhor_preco", "melhor_loja", "link_oferta", "observacoes", "criado_em"], rows=[])
+        fake_hist = database.TursoResultSet(columns=["id", "hq_id", "data_destaque", "criado_em"], rows=[])
+        fake_count = database.TursoResultSet(columns=["count"], rows=[database.TursoRow([2], {"count": 0})])
+
+        def mock_query(sql, params=None):
+            sql_upper = sql.upper().strip()
+            if "PRATELEIRAS" in sql_upper:
+                return fake_prat
+            if "LISTA_DESEJOS" in sql_upper:
+                return fake_desejos
+            if "HISTORICO_DESTAQUES" in sql_upper:
+                return fake_hist
+            if "COUNT(*)" in sql_upper:
+                return fake_count
+            if "FROM HQS" in sql_upper:
+                return fake_turso_rows_hqs
+            return database.TursoResultSet(columns=[], rows=[])
+
+        prog_chamadas = []
+        def callback_prog(a, t):
+            prog_chamadas.append((a, t))
+
+        with patch("database.is_using_turso", return_value=True), \
+             patch("database.executar_turso_query", side_effect=mock_query):
+            res = database.sincronizar_turso_para_local(
+                db_destino_path=test_sync_db,
+                fazer_backup_previo=False,
+                progresso_callback=callback_prog
+            )
+
+        self.assertEqual(res["hqs"], 2)
+        self.assertEqual(res["prateleiras"], 1)
+        self.assertTrue(len(prog_chamadas) > 0)
+
+        # Valida que salvou no sqlite
+        conn = database.get_sqlite_connection(test_sync_db)
+        cur = conn.cursor()
+        cur.execute("SELECT id, titulo, capa FROM hqs ORDER BY id")
+        rows = cur.fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["titulo"], "Batman Ano Um")
+        self.assertEqual(rows[0]["capa"], "data:image/jpeg;base64,123")
+        conn.close()
+
+        if os.path.exists(test_sync_db):
+            os.remove(test_sync_db)
+
+    def test_sincronizar_local_para_turso(self):
+        """Testa o mecanismo de envio do banco SQLite local para o Turso Cloud."""
+        import database
+        test_source_db = "test_sync_source.db"
+        if os.path.exists(test_source_db):
+            os.remove(test_source_db)
+
+        database.init_db(test_source_db, force=True)
+        database.cadastrar_prateleira("Prateleira Teste", test_source_db)
+        database.salvar_hqs([{
+            "titulo": "Sandman",
+            "edicao": "1",
+            "editora": "Vertigo",
+            "lido": "Lido",
+            "avaliacao": 5,
+            "valor": 99.9,
+            "estado_conservacao": "Excelente",
+            "capa": "",
+            "resumo": "Prelúdios e Noturnos",
+            "resenha": "Excelente"
+        }], "Prateleira Teste", test_source_db)
+
+        chamadas_batch = []
+        def mock_batch(stmts, max_retries=3, ignorar_flag_local=False):
+            chamadas_batch.append(stmts)
+            return [database.TursoResultSet([], []) for _ in stmts]
+
+        prog_chamadas = []
+        def callback_prog(a, t):
+            prog_chamadas.append((a, t))
+
+        with patch("database.get_turso_credentials", return_value=("https://fake.turso.io", "fake_token")), \
+             patch("database.executar_turso_batch", side_effect=mock_batch):
+            res = database.sincronizar_local_para_turso(
+                db_origem_path=test_source_db,
+                fazer_backup_turso_previo=False,
+                progresso_callback=callback_prog
+            )
+
+        self.assertEqual(res["hqs"], 1)
+        self.assertEqual(res["prateleiras"], 1)
+        self.assertTrue(len(chamadas_batch) >= 2)
+        self.assertTrue(len(prog_chamadas) > 0)
+
+        if os.path.exists(test_source_db):
+            os.remove(test_source_db)
+
+    def test_excluir_prateleira(self):
+        """Testa exclusão de prateleiras com transferência e com exclusão conjunta de HQs."""
+        import database
+        test_db = "test_prat_delete.db"
+        if os.path.exists(test_db):
+            os.remove(test_db)
+
+        database.init_db(test_db, force=True)
+        database.cadastrar_prateleira("Prateleira Temporária", test_db)
+        database.cadastrar_prateleira("Prateleira Destino", test_db)
+
+        # Insere duas HQs na prateleira temporária
+        database.salvar_hqs(
+            itens=[
+                {"titulo": "HQ 1", "edicao": "1", "editora": "Panini", "prateleira": "Prateleira Temporária"},
+                {"titulo": "HQ 2", "edicao": "2", "editora": "Panini", "prateleira": "Prateleira Temporária"},
+            ],
+            db_path=test_db,
+            ignorar_duplicadas=False
+        )
+
+        # 1. Exclui a prateleira e transfere as HQs
+        res1 = database.excluir_prateleira(
+            nome_prateleira="Prateleira Temporária",
+            destino_hqs="Prateleira Destino",
+            excluir_hqs_junto=False,
+            db_path=test_db
+        )
+        self.assertTrue(res1["sucesso"])
+        self.assertEqual(res1["hqs_afetadas"], 2)
+
+        # Garante que as HQs agora estão na Prateleira Destino
+        prats_atuais = database.obter_prateleiras(test_db)
+        self.assertNotIn("Prateleira Temporária", prats_atuais)
+        hqs_transferidas = database.listar_todas_hqs(prateleira_filtro="Prateleira Destino", db_path=test_db)
+        self.assertEqual(len(hqs_transferidas), 2)
+
+        # 2. Exclui a prateleira destino com exclusão conjunta das HQs
+        res2 = database.excluir_prateleira(
+            nome_prateleira="Prateleira Destino",
+            excluir_hqs_junto=True,
+            db_path=test_db
+        )
+        self.assertTrue(res2["sucesso"])
+        self.assertEqual(res2["hqs_afetadas"], 2)
+
+        # Garante que as HQs foram removidas
+        hqs_restantes = database.listar_todas_hqs(db_path=test_db)
+        self.assertEqual(len(hqs_restantes), 0)
+
+        if os.path.exists(test_db):
+            os.remove(test_db)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
