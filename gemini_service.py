@@ -4665,28 +4665,71 @@ def pesquisar_reserp_google(
     timeout: int = 15
 ) -> List[Dict[str, Any]]:
     """
-    Executa busca no Google via API do Reserp.ai (sem bloqueios de Cloudflare ou IP).
+    Executa busca no Google com estratégia resiliente multi-motor:
+      1. Reserp.ai API (Google SERP)
+      2. SerpApi Google Search (Failover automático caso a cota do Reserp.ai esteja esgotada - HTTP 402)
     Retorna lista de resultados com 'title', 'url', 'text'/'snippet'.
     """
     if not termo_busca or requests is None:
         return []
+
+    # 1. TENTATIVA VIA RESERP.AI
     key = api_key or os.getenv("RESERP_API_KEY") or DEFAULT_RESERP_API_KEY
-    try:
-        google_search_url = f"https://www.google.com/search?q={urllib.parse.quote(termo_busca)}&hl=pt-BR&gl=br"
-        res_resp = requests.post(
-            "https://api.reserp.ai/v2/serp/search",
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json"
-            },
-            json={"url": google_search_url},
-            timeout=timeout
-        )
-        if res_resp.status_code == 200:
-            r_data = res_resp.json()
-            return r_data.get("results", [])
-    except Exception as e:
-        print(f"Erro Reserp: {e}")
+    if key:
+        try:
+            google_search_url = f"https://www.google.com/search?q={urllib.parse.quote(termo_busca)}&hl=pt-BR&gl=br"
+            res_resp = requests.post(
+                "https://api.reserp.ai/v2/serp/search",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json"
+                },
+                json={"url": google_search_url},
+                timeout=timeout
+            )
+            if res_resp.status_code == 200:
+                r_data = res_resp.json()
+                results = r_data.get("results", [])
+                if results:
+                    return results
+            elif res_resp.status_code == 402:
+                print("[Aviso Reserp.ai: Cota mensal gratuita esgotada (402 Payment Required). Acionando SerpApi...]")
+        except Exception as e:
+            print(f"[Aviso Reserp: {e}]")
+
+    # 2. FAILOVER VIA SERPAPI (GOOGLE SEARCH ENGINE)
+    serp_key = os.getenv("SERPAPI_API_KEY") or DEFAULT_SERPAPI_KEY or ""
+    if serp_key:
+        try:
+            params = {
+                "api_key": serp_key,
+                "engine": "google",
+                "q": termo_busca,
+                "hl": "pt-BR",
+                "gl": "br",
+                "num": 10
+            }
+            r_serp = requests.get("https://serpapi.com/search", params=params, timeout=timeout)
+            if r_serp.status_code == 200:
+                data_serp = r_serp.json()
+                organic = data_serp.get("organic_results", [])
+                mapped = []
+                for item in organic:
+                    link = item.get("link") or ""
+                    title = item.get("title") or ""
+                    snippet = item.get("snippet") or ""
+                    text_block = f"{title}\n{link}\n{snippet}"
+                    mapped.append({
+                        "title": title,
+                        "url": link,
+                        "snippet": snippet,
+                        "text": text_block
+                    })
+                if mapped:
+                    return mapped
+        except Exception as ex_serp:
+            print(f"[Aviso SerpApi Fallback: {ex_serp}]")
+
     return []
 
 

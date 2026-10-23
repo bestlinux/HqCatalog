@@ -9,6 +9,7 @@ import time
 import urllib.parse
 from datetime import datetime
 from typing import Optional, Any
+import re
 import requests
 import streamlit as st
 import pandas as pd
@@ -338,15 +339,15 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
     # Termo de pesquisa padrão otimizado para SERP
     query_padrao = f"{titulo} {edicao} {editora} \"guia dos quadrinhos\"".strip()
     termo_busca = st.text_input(
-        "🔎 Termo de Busca no Google (Reserp.ai):",
+        "🔎 Termo de Busca no Google (SerpApi / Reserp.ai):",
         value=query_padrao,
         key=f"input_reserp_query_{val_id}",
-        help="Pesquisa no Google via Reserp.ai sem bloqueios de Cloudflare ou IP."
+        help="Pesquisa no Google via SerpApi e Reserp.ai sem bloqueios de Cloudflare ou IP."
     )
 
     c_btn1, c_btn2 = st.columns([2, 1])
     with c_btn1:
-        btn_pesquisar = st.button("🔎 Pesquisar Fontes na Web (Reserp.ai)", key=f"btn_pesquisar_reserp_{val_id}", type="primary", use_container_width=True)
+        btn_pesquisar = st.button("🔎 Pesquisar Fontes no Google", key=f"btn_pesquisar_reserp_{val_id}", type="primary", use_container_width=True)
     with c_btn2:
         btn_limpar = st.button("🔄 Nova Busca", key=f"btn_limpar_reserp_{val_id}", use_container_width=True)
 
@@ -378,7 +379,7 @@ def dialog_buscar_fonte(id_padrao: Optional[int] = None):
     sem_fontes = not bool(st.session_state.get(session_reserp_key, {}).get("fontes"))
 
     if btn_pesquisar or termo_mudou or (session_reserp_key not in st.session_state) or sem_fontes:
-        with st.spinner("🔍 Consultando Google via Reserp.ai (sem bloqueios)..."):
+        with st.spinner("🔍 Consultando Google (SerpApi / Reserp.ai)..."):
             fn_fontes = getattr(gemini_service, "buscar_fontes_hq_reserp", None)
             dados_fontes = {}
             if fn_fontes:
@@ -635,7 +636,7 @@ Retorne ESTRITAMENTE um JSON com as chaves:
                     st.success(f"✅ Dados e opções de capas extraídos com sucesso via **{modelo_usado or 'Gemini'}**! Revise os campos abaixo.")
 
     else:
-        st.warning("⚠️ Nenhuma fonte encontrada automaticamente via Reserp.ai. Você pode ajustar o termo de busca acima ou colar o link/conteúdo manualmente abaixo.")
+        st.warning("⚠️ Nenhuma fonte encontrada automaticamente no Google. Você pode ajustar o termo de busca acima ou colar o link/conteúdo manualmente abaixo.")
 
     # Opção manual de colar link ou texto da página (posicionada antes dos widgets para permitir extração direta)
     with st.expander("📋 Opção Manual: Colar Link do Guia dos Quadrinhos ou Conteúdo (HTML / Texto)", expanded=(not bool(fontes_lista) and not bool(st.session_state.get(session_extraidos_key)))):
@@ -1024,6 +1025,557 @@ Retorne ESTRITAMENTE um JSON com as chaves: "roteiro", "ilustrador", "valor", "r
                     st.session_state.pop(f"fonte_capas_encontradas_{val_id}", None)
                     st.session_state.pop(f"fonte_input_capa_{val_id}", None)
                     st.session_state.pop(f"fonte_modelo_usado_{val_id}", None)
+                    st.rerun()
+
+
+
+
+@st.dialog("🔗 Link Manual (Guia dos Quadrinhos)", width="large")
+def dialog_link_manual(id_padrao: Optional[int] = None):
+    val_id = int(id_padrao) if id_padrao and id_padrao > 0 else 1
+    hq_alvo = database.obter_hq_por_id(int(val_id))
+    if not hq_alvo:
+        st.warning(f"Quadrinho com ID #{val_id} não encontrado.")
+        if st.button("❌ Fechar", key="btn_close_link_manual_empty", use_container_width=True):
+            st.session_state.pop(f"abrir_modal_link_manual_{val_id}", None)
+            st.rerun()
+        return
+
+    titulo = (hq_alvo.get("titulo") or "").strip()
+    edicao = (hq_alvo.get("edicao") or "").strip()
+    editora = (hq_alvo.get("editora") or "").strip()
+    if editora.lower() in ["desconhecida", "não informada", "nao informada"]:
+        editora = ""
+
+    st.markdown(f"#### 🔗 Extração por Link Manual: **{titulo} {edicao} {editora}**".strip())
+
+    detalhes_atuais = []
+    if hq_alvo.get("escritor") and str(hq_alvo["escritor"]).lower() not in ["não informado", "nao informado", ""]:
+        detalhes_atuais.append(f"✍️ **Roteiro:** `{hq_alvo['escritor']}`")
+    if hq_alvo.get("ilustrador") and str(hq_alvo["ilustrador"]).lower() not in ["não informado", "nao informado", ""]:
+        detalhes_atuais.append(f"🎨 **Desenho:** `{hq_alvo['ilustrador']}`")
+    if hq_alvo.get("valor") and float(hq_alvo["valor"]) > 0:
+        detalhes_atuais.append(f"💰 **Preço:** `R$ {float(hq_alvo['valor']):.2f}`".replace(".", ","))
+    if hq_alvo.get("link_edicao"):
+        detalhes_atuais.append(f"🔗 [Link Atual]({hq_alvo['link_edicao']})")
+    if detalhes_atuais:
+        st.caption(" • ".join(detalhes_atuais))
+
+    st.markdown("---")
+
+    session_extraidos_key = f"manual_extraidos_fonte_{val_id}"
+    session_capas_key = f"manual_capas_encontradas_{val_id}"
+    session_capa_sel_key = f"manual_input_capa_{val_id}"
+    session_modelo_key = f"manual_modelo_usado_{val_id}"
+
+    link_edicao_atual = hq_alvo.get("link_edicao") or ""
+
+    url_ou_texto = st.text_area(
+        "Link direto da edição (URL) ou Conteúdo copiado (HTML / Texto da página):",
+        value=link_edicao_atual if not st.session_state.get(session_extraidos_key) else "",
+        placeholder="Exemplo de Link: https://www.guiadosquadrinhos.com/edicao/...\nOu cole o código-fonte HTML ou texto copiado da página",
+        key=f"txt_url_link_manual_{val_id}",
+        height=110,
+        help="Cole a URL completa da edição no Guia dos Quadrinhos ou o texto/HTML copiado da página para extração automática."
+    )
+
+    c_mbtn1, c_mbtn2 = st.columns([2, 1])
+    with c_mbtn1:
+        btn_processar_manual = st.button("🚀 Processar Link / Conteúdo Manual", key=f"btn_processar_manual_{val_id}", type="primary", use_container_width=True)
+    with c_mbtn2:
+        btn_limpar_manual = st.button("🔄 Limpar / Nova Extração", key=f"btn_limpar_manual_{val_id}", use_container_width=True)
+
+    if btn_limpar_manual:
+        st.session_state.pop(session_extraidos_key, None)
+        st.session_state.pop(session_capas_key, None)
+        st.session_state.pop(session_capa_sel_key, None)
+        st.session_state.pop(session_modelo_key, None)
+        st.session_state.pop(f"manual_input_roteiro_{val_id}", None)
+        st.session_state.pop(f"manual_input_ilustrador_{val_id}", None)
+        st.session_state.pop(f"manual_input_valor_{val_id}", None)
+        st.session_state.pop(f"manual_input_link_{val_id}", None)
+        st.session_state.pop(f"manual_input_resumo_{val_id}", None)
+        st.session_state.pop(f"manual_capa_custom_flag_{val_id}", None)
+        st.rerun()
+
+    if btn_processar_manual:
+        if not url_ou_texto.strip():
+            st.warning("⚠️ Cole o link ou o conteúdo HTML/texto primeiro antes de processar!")
+        else:
+            st.session_state.pop(session_extraidos_key, None)
+            st.session_state.pop(session_capas_key, None)
+            st.session_state.pop(session_capa_sel_key, None)
+            st.session_state.pop(session_modelo_key, None)
+            st.session_state.pop(f"manual_input_roteiro_{val_id}", None)
+            st.session_state.pop(f"manual_input_ilustrador_{val_id}", None)
+            st.session_state.pop(f"manual_input_valor_{val_id}", None)
+            st.session_state.pop(f"manual_input_link_{val_id}", None)
+            st.session_state.pop(f"manual_input_resumo_{val_id}", None)
+
+            texto_extraido = url_ou_texto.strip()
+            url_manual_gq = ""
+            origem_manual = ""
+            mod_manual_usado = None
+
+            if "guiadosquadrinhos.com" in texto_extraido:
+                if not texto_extraido.startswith("http"):
+                    texto_extraido = "https://" + texto_extraido.lstrip("/")
+                if "www.guiadosquadrinhos.com" not in texto_extraido:
+                    texto_extraido = texto_extraido.replace("guiadosquadrinhos.com", "www.guiadosquadrinhos.com")
+
+            if texto_extraido.startswith("http"):
+                url_manual_gq = texto_extraido
+
+            dados_man = {}
+
+            # 1. TENTATIVA DIRETA COM PYTHON PURO (SEM IA / SEM ZENROWS)
+            if not texto_extraido.startswith("http"):
+                with st.spinner("⚡ 1/5: Extraindo dados do texto colado via Python puro..."):
+                    if "<div" in texto_extraido or "class=" in texto_extraido or "historia" in texto_extraido.lower() or "personagens:" in texto_extraido.lower() or "roteiro:" in texto_extraido.lower():
+                        dados_man = gemini_service.extrair_dados_texto_ou_html_gq(texto_extraido, url_orig=url_manual_gq)
+                        if dados_man and (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo")):
+                            origem_manual = "html_puro"
+                            mod_manual_usado = "Python Extractor (Texto Puro da Página)"
+            else:
+                with st.spinner("⚡ 1/5: Tentando baixar página com Python puro (curl_cffi / BeautifulSoup)..."):
+                    try:
+                        if "guiadosquadrinhos.com" in texto_extraido:
+                            html_puro = gemini_service.buscar_html_edicao_guia_dos_quadrinhos(texto_extraido)
+                        else:
+                            try:
+                                from curl_cffi import requests as cffi_requests
+                                r = cffi_requests.get(texto_extraido, impersonate="chrome120", timeout=8)
+                            except Exception:
+                                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
+                                r = requests.get(texto_extraido, headers=headers, timeout=10)
+                            html_puro = r.text if r.status_code == 200 else ""
+
+                        if html_puro and len(html_puro) > 500:
+                            dados_puro = gemini_service.extrair_dados_texto_ou_html_gq(html_puro, url_orig=url_manual_gq)
+                            if dados_puro and (dados_puro.get("roteiro") or dados_puro.get("desenho") or dados_puro.get("resumo")):
+                                dados_man = dados_puro
+                                origem_manual = "html_puro"
+                                mod_manual_usado = "Python Extractor (Página Oficial - Sem IA)"
+                    except Exception as e_puro:
+                        print(f"[Aviso Python puro manual: {e_puro}]")
+
+            # 2. TENTATIVA VIA ZENROWS
+            if (not dados_man or not (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo"))) and texto_extraido.startswith("http"):
+                with st.spinner("🌐 2/5: Tentando acessar e extrair via ZenRows Scraper API..."):
+                    try:
+                        html_zen = gemini_service.buscar_html_zenrows(texto_extraido)
+                        if html_zen and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_zen) or len(html_zen) > 500):
+                            dados_zen = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_zen, url_orig=url_manual_gq)
+                            if not dados_zen or not (dados_zen.get("roteiro") or dados_zen.get("desenho") or dados_zen.get("resumo")):
+                                dados_zen = gemini_service.extrair_dados_texto_ou_html_gq(html_zen, url_orig=url_manual_gq)
+                            if dados_zen and (dados_zen.get("roteiro") or dados_zen.get("desenho") or dados_zen.get("resumo")):
+                                dados_man = dados_zen
+                                origem_manual = "zenrows"
+                                mod_manual_usado = "ZenRows Scraper (HTML Oficial Guia dos Quadrinhos)"
+                    except Exception as e_zen:
+                        print(f"[Aviso ZenRows manual: {e_zen}]")
+
+            # 2.2 TENTATIVA VIA SCRAPERAPI
+            if (not dados_man or not (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo"))) and texto_extraido.startswith("http"):
+                with st.spinner("🌐 3/5: Tentando acessar e extrair via ScraperAPI (Failover Anti-Bloqueio)..."):
+                    try:
+                        html_scraper = gemini_service.buscar_html_scraperapi(texto_extraido)
+                        if html_scraper and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_scraper) or len(html_scraper) > 500):
+                            dados_scraper = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_scraper, url_orig=url_manual_gq)
+                            if not dados_scraper or not (dados_scraper.get("roteiro") or dados_scraper.get("desenho") or dados_scraper.get("resumo")):
+                                dados_scraper = gemini_service.extrair_dados_texto_ou_html_gq(html_scraper, url_orig=url_manual_gq)
+                            if dados_scraper and (dados_scraper.get("roteiro") or dados_scraper.get("desenho") or dados_scraper.get("resumo")):
+                                dados_man = dados_scraper
+                                origem_manual = "scraperapi"
+                                mod_manual_usado = "ScraperAPI Scraper (HTML Oficial Guia dos Quadrinhos)"
+                    except Exception as e_scraper:
+                        print(f"[Aviso ScraperAPI manual: {e_scraper}]")
+
+            # 2.3 TENTATIVA VIA SCRAPINGBEE
+            if (not dados_man or not (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo"))) and texto_extraido.startswith("http"):
+                with st.spinner("🌐 4/5: Tentando acessar e extrair via ScrapingBee (Failover Anti-Bloqueio)..."):
+                    try:
+                        html_sbee = gemini_service.buscar_html_scrapingbee(texto_extraido)
+                        if html_sbee and (gemini_service.eh_html_valido_guia_dos_quadrinhos(html_sbee) or len(html_sbee) > 500):
+                            dados_sbee = gemini_service.extrair_dados_html_guia_dos_quadrinhos(html_sbee, url_orig=url_manual_gq)
+                            if not dados_sbee or not (dados_sbee.get("roteiro") or dados_sbee.get("desenho") or dados_sbee.get("resumo")):
+                                dados_sbee = gemini_service.extrair_dados_texto_ou_html_gq(html_sbee, url_orig=url_manual_gq)
+                            if dados_sbee and (dados_sbee.get("roteiro") or dados_sbee.get("desenho") or dados_sbee.get("resumo")):
+                                dados_man = dados_sbee
+                                origem_manual = "scrapingbee"
+                                mod_manual_usado = "ScrapingBee Scraper (HTML Oficial Guia dos Quadrinhos)"
+                    except Exception as e_sbee:
+                        print(f"[Aviso ScrapingBee manual: {e_sbee}]")
+
+            # 3. FALLBACK GEMINI IA
+            if not dados_man or not dados_man.get("resumo") or not (dados_man.get("roteiro") or dados_man.get("desenho")):
+                with st.spinner("🤖 5/5: Extraindo dados com IA Gemini (Fallback Inteligente)..."):
+                    texto_auxiliar = texto_extraido
+                    if texto_extraido.startswith("http") and not ("<div" in texto_extraido or "historia" in texto_extraido.lower()):
+                        try:
+                            m_slug = re.search(r'/edicao/([^/]+)/', url_manual_gq)
+                            slug_pesq = m_slug.group(1).replace("-n-", " ").replace("-", " ") if m_slug else titulo
+                            res_gq = gemini_service.pesquisar_reserp_google(f"site:guiadosquadrinhos.com \"{slug_pesq}\"")
+                            if not res_gq:
+                                res_gq = gemini_service.pesquisar_reserp_google(f"site:guiadosquadrinhos.com {slug_pesq}")
+                            if res_gq:
+                                texto_auxiliar = "\n\n".join([f"{item.get('title', '')}\n{item.get('snippet', '')}\n{item.get('text', '')}" for item in res_gq[:4]])
+                        except Exception:
+                            pass
+
+                    prompt_man = f"""Você é o especialista mestre na enciclopédia Guia dos Quadrinhos (guiadosquadrinhos.com) e nos quadrinhos publicados no Brasil.
+O usuário forneceu um link ou conteúdo para catalogar esta edição:
+{f'URL Oficial da Edição: {url_manual_gq}' if url_manual_gq else ''}
+Título de referência: "{titulo}"
+Edição de referência: "{edicao}"
+Editora de referência: "{editora}"
+
+Conteúdo/Resultados:
+---
+{texto_auxiliar[:14000]}
+---
+REGRAS DE EXTRAÇÃO:
+- Identifique a edição correspondente e extraia cada história individual com detalhes.
+- Monte o resumo completo com todas as histórias contidas nesta edição (Título, Publicação Original, Roteiro, Arte, Personagens e Sinopse).
+- Extraia roteiro (nomes de todos os roteiristas separados por vírgula), ilustrador (todos os desenhistas/arte separados por vírgula), valor (preço de capa em reais, número float), resumo e link_edicao ({url_manual_gq or 'URL oficial'}).
+Retorne ESTRITAMENTE um JSON com as chaves: "roteiro", "ilustrador", "valor", "resumo", "link_edicao"."""
+                    cliente = gemini_service.get_gemini_client()
+                    resp_man = None
+                    for mod in ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite']:
+                        try:
+                            resp_man = cliente.models.generate_content(model=mod, contents=prompt_man)
+                            if resp_man and resp_man.text:
+                                mod_manual_usado = mod
+                                origem_manual = "ia_gemini"
+                                break
+                        except Exception:
+                            continue
+                    dados_ia = gemini_service.limpar_e_parsear_json_dict(resp_man.text) if resp_man and resp_man.text else {}
+                    if dados_ia:
+                        if mod_manual_usado:
+                            dados_ia["_modelo_usado"] = mod_manual_usado
+                            st.session_state[session_modelo_key] = mod_manual_usado
+                        if not dados_man:
+                            dados_man = dados_ia
+                        else:
+                            for k, v in dados_ia.items():
+                                if not dados_man.get(k) and v:
+                                    dados_man[k] = v
+
+            if dados_man:
+                if mod_manual_usado:
+                    dados_man["_modelo_usado"] = mod_manual_usado
+                    st.session_state[session_modelo_key] = mod_manual_usado
+                st.session_state[session_extraidos_key] = dados_man
+                st.session_state[f"manual_input_roteiro_{val_id}"] = dados_man.get("roteiro") or ""
+                st.session_state[f"manual_input_ilustrador_{val_id}"] = dados_man.get("ilustrador") or dados_man.get("desenho") or ""
+                try:
+                    st.session_state[f"manual_input_valor_{val_id}"] = float(dados_man.get("valor") or dados_man.get("preco_capa") or 0.0)
+                except Exception:
+                    st.session_state[f"manual_input_valor_{val_id}"] = 0.0
+                st.session_state[f"manual_input_resumo_{val_id}"] = dados_man.get("resumo") or ""
+                st.session_state[f"manual_input_link_{val_id}"] = dados_man.get("link_edicao") or dados_man.get("url_edicao") or url_manual_gq or ""
+
+                capa_man = dados_man.get("capa_b64") or dados_man.get("capa_url") or dados_man.get("capa") or ""
+                link_final_man = st.session_state[f"manual_input_link_{val_id}"]
+                if link_final_man and "/edicao/" in link_final_man:
+                    fn_der_capa = getattr(gemini_service, "derivar_url_capa_guia_dos_quadrinhos", None)
+                    if fn_der_capa:
+                        url_der = fn_der_capa(link_final_man, editora=editora, edicao=edicao)
+                        if url_der and (not capa_man or "ShowImage.aspx" not in capa_man or not (capa_man.startswith("http") or capa_man.startswith("data:image"))):
+                            capa_man = url_der
+
+                if capa_man and str(capa_man).startswith("http") and ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man):
+                    with st.spinner("🖼️ Baixando capa em alta resolução (resolvendo bloqueio Cloudflare)..."):
+                        b64_capa = gemini_service.baixar_imagem_url_base64(str(capa_man).strip(), fallback_url=url_manual_gq)
+                        if b64_capa and b64_capa.startswith("data:image"):
+                            capa_man = b64_capa
+
+                # Busca opções de capas online em alta definição
+                termo_capa_busca = f"{titulo} {edicao} {editora}".strip()
+                capas_encontradas = gemini_service.buscar_capas_online(
+                    titulo=termo_capa_busca,
+                    edicao=edicao,
+                    editora=editora,
+                    escritor=dados_man.get("roteiro") or "",
+                    limite=12,
+                    url_edicao=url_manual_gq
+                )
+                if capa_man and (capa_man.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man)):
+                    if not any(c.get("url") == capa_man for c in capas_encontradas):
+                        capas_encontradas.insert(0, {
+                            "url": capa_man,
+                            "titulo": f"{titulo} nº {edicao} (Guia dos Quadrinhos Oficial)",
+                            "fonte": "Guia dos Quadrinhos",
+                            "thumbnail": capa_man
+                        })
+                st.session_state[session_capas_key] = capas_encontradas
+                if capa_man:
+                    st.session_state[session_capa_sel_key] = str(capa_man).strip()
+                elif capas_encontradas:
+                    st.session_state[session_capa_sel_key] = capas_encontradas[0]["url"]
+                elif hq_alvo.get("capa"):
+                    st.session_state[session_capa_sel_key] = hq_alvo.get("capa")
+
+                if origem_manual == "html_puro":
+                    st.success("✅ Conteúdo extraído com **100% de fidelidade diretamente do HTML/Texto oficial** (Python puro)! Revise os campos abaixo.")
+                elif origem_manual == "zenrows":
+                    st.success("✅ Conteúdo extraído com sucesso via **ZenRows Scraper** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
+                elif origem_manual == "scraperapi":
+                    st.success("✅ Conteúdo extraído com sucesso via **ScraperAPI** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
+                elif origem_manual == "scrapingbee":
+                    st.success("✅ Conteúdo extraído com sucesso via **ScrapingBee** (HTML Oficial Guia dos Quadrinhos)! Revise os campos abaixo.")
+                else:
+                    st.success(f"✅ Conteúdo processado com sucesso via **{mod_manual_usado or 'Gemini'}**! Revise os campos abaixo.")
+            else:
+                st.error("❌ Não foi possível extrair os dados da página ou texto informado através dos scrapers ou IA. Verifique se o link/texto está correto e tente novamente.")
+
+    dados_salvar = st.session_state.get(session_extraidos_key)
+    if dados_salvar:
+        with st.container(border=True):
+            st.markdown("### 📝 Validar e Salvar Dados da Edição")
+            mod_usado = st.session_state.get(session_modelo_key) or (dados_salvar.get("_modelo_usado") if isinstance(dados_salvar, dict) else None)
+            if mod_usado:
+                st.info(f"🤖 **Origem/Modelo utilizado na extração:** `{mod_usado}`")
+            st.caption("Revise ou edite as informações abaixo antes de gravar no banco de dados:")
+
+            if session_capa_sel_key not in st.session_state:
+                st.session_state[session_capa_sel_key] = hq_alvo.get("capa") or ""
+            if f"manual_input_roteiro_{val_id}" not in st.session_state:
+                st.session_state[f"manual_input_roteiro_{val_id}"] = hq_alvo.get("escritor") if hq_alvo.get("escritor") != "Não informado" else ""
+            if f"manual_input_ilustrador_{val_id}" not in st.session_state:
+                st.session_state[f"manual_input_ilustrador_{val_id}"] = hq_alvo.get("ilustrador") if hq_alvo.get("ilustrador") != "Não informado" else ""
+            if f"manual_input_valor_{val_id}" not in st.session_state:
+                st.session_state[f"manual_input_valor_{val_id}"] = float(hq_alvo.get("valor") or 0.0)
+            if f"manual_input_link_{val_id}" not in st.session_state:
+                st.session_state[f"manual_input_link_{val_id}"] = hq_alvo.get("link_edicao") or ""
+            if f"manual_input_resumo_{val_id}" not in st.session_state:
+                st.session_state[f"manual_input_resumo_{val_id}"] = hq_alvo.get("resumo") or ""
+
+            col_form_c1, col_form_c2 = st.columns([1, 1])
+            with col_form_c1:
+                st.text_input("✍️ Roteirista(s):", key=f"manual_input_roteiro_{val_id}")
+                st.text_input("🎨 Ilustrador(es) / Arte:", key=f"manual_input_ilustrador_{val_id}")
+                st.number_input("💰 Preço de Capa (R$):", min_value=0.0, step=0.50, format="%.2f", key=f"manual_input_valor_{val_id}")
+            with col_form_c2:
+                st.text_input("🔗 Link Oficial da Edição (Guia dos Quadrinhos):", key=f"manual_input_link_{val_id}")
+                st.text_area("📝 Resumo / Sinopse da Edição:", height=108, key=f"manual_input_resumo_{val_id}")
+
+            st.markdown("---")
+            st.markdown("#### 🖼️ Capa da Edição")
+
+            capas_disponiveis = st.session_state.get(session_capas_key, [])
+            capa_selecionada = st.session_state.get(session_capa_sel_key) or ""
+
+            if capa_selecionada:
+                col_prev1, col_prev2 = st.columns([1.2, 3])
+                with col_prev1:
+                    st.image(obter_imagem_capa(capa_selecionada), width=160, caption="Capa Selecionada")
+                with col_prev2:
+                    st.success("✅ **Capa ativa selecionada para este quadrinho.**")
+                    if str(capa_selecionada).startswith("data:image"):
+                        st.caption("🖼️ Imagem personalizada (Upload do Usuário / Câmera)")
+                    else:
+                        st.caption(f"🔗 `{capa_selecionada[:80]}...`" if len(capa_selecionada) > 80 else f"🔗 `{capa_selecionada}`")
+            else:
+                st.info("🖼️ Nenhuma capa selecionada ainda.")
+
+            # Seção de Upload da Própria Capa
+            with st.expander("📤 Fazer Upload da Própria Capa (Arquivo ou Câmera)", expanded=bool(st.session_state.get(f"manual_capa_custom_flag_{val_id}"))):
+                st.caption("Envie uma imagem do seu computador/celular ou fotografe a capa com a câmera:")
+                tab_up_arq, tab_up_cam = st.tabs(["📁 Arquivo / Galeria", "📷 Câmera Web"])
+                foto_up_escolhida = None
+                with tab_up_arq:
+                    up_file = st.file_uploader(
+                        "Selecione uma imagem da capa (JPG, PNG, WEBP):",
+                        type=["jpg", "jpeg", "png", "webp"],
+                        key=f"uploader_capa_manual_{val_id}"
+                    )
+                    if up_file:
+                        foto_up_escolhida = up_file
+                with tab_up_cam:
+                    cam_file = st.camera_input("Fotografar capa:", key=f"camera_capa_manual_{val_id}")
+                    if cam_file:
+                        foto_up_escolhida = cam_file
+
+                if foto_up_escolhida is not None:
+                    # Converte automaticamente a imagem enviada para Base64 para garantir a seleção
+                    b64_custom = processar_imagem_capa(foto_up_escolhida)
+                    if b64_custom:
+                        st.session_state[session_capa_sel_key] = b64_custom
+                        st.session_state[f"manual_capa_custom_flag_{val_id}"] = True
+                        capas_atuais = st.session_state.get(session_capas_key, [])
+                        if not any(c.get("url") == b64_custom for c in capas_atuais):
+                            capas_atuais.insert(0, {
+                                "url": b64_custom,
+                                "titulo": f"{titulo} (Sua Capa Personalizada)",
+                                "fonte": "Upload do Usuário",
+                                "thumbnail": b64_custom
+                            })
+                            st.session_state[session_capas_key] = capas_atuais
+
+                    col_u1, col_u2 = st.columns([1, 2])
+                    with col_u1:
+                        st.image(foto_up_escolhida, width=130, caption="Pré-visualização do Upload")
+                    with col_u2:
+                        st.success("✅ **Imagem carregada e selecionada como capa ativa!**")
+                        if st.button("🔄 Aplicar e Atualizar Visualização", key=f"btn_aplicar_upload_manual_{val_id}", type="primary"):
+                            st.rerun()
+
+            if capas_disponiveis:
+                st.markdown(f"**Opções de capas encontradas ({len(capas_disponiveis)}):** *Escolha a capa desejada e clique em **Selecionar**.*")
+                for i in range(0, len(capas_disponiveis), 3):
+                    cols_c = st.columns(3, gap="small")
+                    for j in range(3):
+                        idx_c = i + j
+                        if idx_c < len(capas_disponiveis):
+                            item_c = capas_disponiveis[idx_c]
+                            u_c = item_c.get("url") or ""
+                            t_c = item_c.get("titulo") or titulo
+                            f_c = item_c.get("fonte") or "Web"
+                            is_sel = (capa_selecionada == u_c)
+                            with cols_c[j]:
+                                with st.container(border=True):
+                                    st.image(obter_imagem_capa(u_c), width="stretch")
+                                    st.caption(f"**{t_c[:50]}**\n\n*{f_c}*")
+                                    if is_sel:
+                                        st.button("✅ Selecionada", key=f"btn_man_capa_sel_{val_id}_{idx_c}", disabled=True, width="stretch")
+                                    else:
+                                        if st.button("👉 Selecionar", key=f"btn_man_capa_sel_{val_id}_{idx_c}", width="stretch", type="secondary"):
+                                            st.session_state[session_capa_sel_key] = u_c
+                                            st.session_state.pop(f"manual_capa_custom_flag_{val_id}", None)
+                                            st.rerun()
+
+            with st.expander("🔗 Informar URL manual da capa (opcional)", expanded=False):
+                url_manual = st.text_input("URL direta da imagem:", key=f"input_manual_capa_url_dlg_{val_id}", placeholder="https://.../capa.jpg")
+                if url_manual:
+                    if st.button("Aplicar URL", key=f"btn_aplicar_man_capa_dlg_{val_id}"):
+                        st.session_state[session_capa_sel_key] = url_manual.strip()
+                        st.rerun()
+
+            st.markdown("---")
+            col_sv1, col_sv2 = st.columns([2, 1])
+            with col_sv1:
+                if st.button("💾 Confirmar e Salvar no Banco de Dados", key=f"btn_confirmar_salvar_manual_{val_id}", type="primary", use_container_width=True):
+                    rot_final = (st.session_state.get(f"manual_input_roteiro_{val_id}") or "").strip()
+                    ilu_final = (st.session_state.get(f"manual_input_ilustrador_{val_id}") or "").strip()
+                    val_final = float(st.session_state.get(f"manual_input_valor_{val_id}") or 0.0)
+                    link_final = (st.session_state.get(f"manual_input_link_{val_id}") or "").strip()
+                    res_final = (st.session_state.get(f"manual_input_resumo_{val_id}") or "").strip()
+
+                    # 1. Obtenção da Capa com prioridade máxima para upload pendente
+                    capa_final = ""
+                    up_pend = st.session_state.get(f"uploader_capa_manual_{val_id}")
+                    cam_pend = st.session_state.get(f"camera_capa_manual_{val_id}")
+                    if up_pend is not None:
+                        try:
+                            b64_up_salv = processar_imagem_capa(up_pend)
+                            if b64_up_salv:
+                                capa_final = b64_up_salv
+                        except Exception:
+                            pass
+                    elif cam_pend is not None:
+                        try:
+                            b64_cam_salv = processar_imagem_capa(cam_pend)
+                            if b64_cam_salv:
+                                capa_final = b64_cam_salv
+                        except Exception:
+                            pass
+
+                    if not capa_final:
+                        capa_final = (st.session_state.get(session_capa_sel_key) or "").strip()
+
+                    # 2. Resolução da Capa (se for link HTTP, tenta baixar como Base64 de alta resolução)
+                    capa_salvar = None
+                    if capa_final:
+                        if capa_final.startswith("data:image"):
+                            capa_salvar = capa_final
+                        elif capa_final.startswith("http"):
+                            with st.spinner("📥 Baixando imagem da capa para salvar no banco..."):
+                                try:
+                                    b64_dl = gemini_service.baixar_imagem_url_base64(capa_final, fallback_url=link_final)
+                                    if b64_dl and b64_dl.startswith("data:image"):
+                                        capa_salvar = b64_dl
+                                    else:
+                                        capa_salvar = capa_final
+                                except Exception:
+                                    capa_salvar = capa_final
+
+                    # 3. Salva a Capa com garantia total
+                    if capa_salvar:
+                        database.definir_capa(int(val_id), capa_salvar)
+
+                    # 4. Atualiza os outros campos da HQ
+                    campos_update = []
+                    valores_update = []
+
+                    if rot_final:
+                        campos_update.append("escritor = ?")
+                        valores_update.append(rot_final)
+                    if ilu_final:
+                        campos_update.append("ilustrador = ?")
+                        valores_update.append(ilu_final)
+                    if res_final:
+                        campos_update.append("resumo = ?")
+                        valores_update.append(res_final)
+                    if val_final > 0:
+                        campos_update.append("valor = ?")
+                        valores_update.append(val_final)
+                    if capa_salvar:
+                        campos_update.append("capa = ?")
+                        valores_update.append(capa_salvar)
+                    if link_final and link_final.startswith("http"):
+                        campos_update.append("link_edicao = ?")
+                        valores_update.append(link_final)
+
+                    if campos_update:
+                        valores_update.append(val_id)
+                        sql_update = f"UPDATE hqs SET {', '.join(campos_update)} WHERE id = ?"
+                        try:
+                            if database.is_using_turso():
+                                database.executar_turso_query(sql_update, valores_update)
+                            else:
+                                conn = database.get_sqlite_connection()
+                                try:
+                                    c = conn.cursor()
+                                    c.execute(sql_update, tuple(valores_update))
+                                    conn.commit()
+                                finally:
+                                    conn.close()
+
+                            st.session_state.pop(session_extraidos_key, None)
+                            st.session_state.pop(session_capas_key, None)
+                            st.session_state.pop(session_capa_sel_key, None)
+                            st.session_state.pop(session_modelo_key, None)
+                            st.session_state.pop(f"manual_input_roteiro_{val_id}", None)
+                            st.session_state.pop(f"manual_input_ilustrador_{val_id}", None)
+                            st.session_state.pop(f"manual_input_valor_{val_id}", None)
+                            st.session_state.pop(f"manual_input_link_{val_id}", None)
+                            st.session_state.pop(f"manual_input_resumo_{val_id}", None)
+                            st.session_state.pop(f"manual_capa_custom_flag_{val_id}", None)
+                            st.session_state.pop(f"abrir_modal_link_manual_{val_id}", None)
+                            st.session_state["edicao_do_dia_id"] = int(val_id)
+                            st.success("🎉 Edição e Capa atualizadas com sucesso no banco de dados!")
+                            time.sleep(1.2)
+                            st.rerun()
+                        except Exception as ex_db:
+                            st.error(f"Erro ao salvar no banco de dados: {ex_db}")
+                    else:
+                        st.warning("Nenhum dado informado para atualizar.")
+
+            with col_sv2:
+                if st.button("❌ Cancelar", key=f"btn_canc_form_manual_{val_id}", use_container_width=True):
+                    st.session_state.pop(f"abrir_modal_link_manual_{val_id}", None)
+                    st.session_state.pop(session_extraidos_key, None)
+                    st.session_state.pop(session_capas_key, None)
+                    st.session_state.pop(session_capa_sel_key, None)
+                    st.session_state.pop(session_modelo_key, None)
+                    st.session_state.pop(f"manual_capa_custom_flag_{val_id}", None)
+                    st.session_state.pop(f"manual_input_roteiro_{val_id}", None)
+                    st.session_state.pop(f"manual_input_ilustrador_{val_id}", None)
+                    st.session_state.pop(f"manual_input_valor_{val_id}", None)
+                    st.session_state.pop(f"manual_input_link_{val_id}", None)
+                    st.session_state.pop(f"manual_input_resumo_{val_id}", None)
                     st.rerun()
 
 
@@ -3941,17 +4493,24 @@ if hq_dia:
                 if st.button("🌐 Buscar Fonte", key="btn_buscar_fonte_dia", use_container_width=True, type="primary" if not tem_capa else "secondary", help="Busca a fonte da HQ via Google e Reserp.ai"):
                     dialog_buscar_fonte(int(hq_dia["id"]))
             with col_btn_c2:
-                if st.button("🖼️ Buscar Capas", key="btn_buscar_capa_dia", use_container_width=True, help="Procurar opções de capa desta HQ na internet"):
-                    dialog_buscar_capa(int(hq_dia["id"]))
+                btn_abrir_link_man = st.button("🔗 Link Manual", key="btn_link_manual_dia", use_container_width=True, type="secondary", help="Inserir link direto do Guia dos Quadrinhos para extrair dados da HQ")
+                if btn_abrir_link_man:
+                    st.session_state[f"abrir_modal_link_manual_{int(hq_dia['id'])}"] = True
+                    dialog_link_manual(int(hq_dia["id"]))
+                elif st.session_state.get(f"abrir_modal_link_manual_{int(hq_dia['id'])}"):
+                    dialog_link_manual(int(hq_dia["id"]))
 
             col_btn_c3, col_btn_c4 = st.columns(2)
             with col_btn_c3:
+                if st.button("🖼️ Buscar Capas", key="btn_buscar_capa_dia", use_container_width=True, help="Procurar opções de capa desta HQ na internet"):
+                    dialog_buscar_capa(int(hq_dia["id"]))
+            with col_btn_c4:
                 if st.button("💰 Buscar Preço", key="btn_buscar_preco_capa_dia", use_container_width=True, help="Consultar e comparar preços online desta HQ"):
                     dialog_buscar_preco(int(hq_dia["id"]))
-            with col_btn_c4:
-                label_foto = "📷 Enviar Foto" if not tem_capa else "📷 Alterar Foto"
-                if st.button(label_foto, key="btn_add_capa_dia", use_container_width=True, help="Tire uma foto ou faça upload da capa desta edição"):
-                    dialog_cadastrar_capa(int(hq_dia["id"]))
+
+            label_foto = "📷 Enviar Foto" if not tem_capa else "📷 Alterar Foto"
+            if st.button(label_foto, key="btn_add_capa_dia", use_container_width=True, help="Tire uma foto ou faça upload da capa desta edição"):
+                dialog_cadastrar_capa(int(hq_dia["id"]))
 
         with col_detalhes:
             st.subheader(f"📖 {hq_dia['titulo']}")
@@ -3982,6 +4541,10 @@ if hq_dia:
                 meta_itens.append(f"💰 **Valor:** `R$ {valor_dia:.2f}`")
             else:
                 meta_itens.append(f"💰 **Valor:** `Não informado`")
+
+            termo_gq_google = " ".join(f"{hq_dia['titulo']} {hq_dia.get('edicao') or ''} guiadosquadrinhos".split())
+            url_google_gq = f"https://www.google.com/search?q={urllib.parse.quote_plus(termo_gq_google)}"
+            meta_itens.append(f"🌐 **Link GuiaDosQuadrinhos:** [{termo_gq_google} ➔]({url_google_gq})")
 
             if meta_itens:
                 st.markdown(" • ".join(meta_itens))
