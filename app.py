@@ -2286,7 +2286,10 @@ def dialog_avaliar_hq(id_padrao: Optional[int] = None):
         ed_hq = hq_rate.get("edicao") or ""
         ed_str = f" ({ed_hq})" if ed_hq else ""
         st.markdown(f"📖 **HQ:** **{tit_hq}**{ed_str} `(ID #{id_para_avaliar})`")
-        nota_atual = int(hq_rate.get("avaliacao") or 0)
+        try:
+            nota_atual = min(max(int(hq_rate.get("avaliacao") or 0), 0), 5)
+        except (ValueError, TypeError):
+            nota_atual = 0
         nova_nota = st.selectbox(
             "Selecione a Nota:",
             options=[0, 1, 2, 3, 4, 5],
@@ -3005,7 +3008,7 @@ def renderizar_pagina_em_leitura():
 
                 st.markdown("")
 
-                col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns([1.8, 1.4, 1.2, 1.2, 1.2])
+                col_b1, col_b2, col_b3, col_b4, col_b5, col_b6 = st.columns([1.6, 1.4, 1.2, 1.2, 1.1, 1.1])
                 with col_b1:
                     if st.button("✅ Concluir (Lido)", key=f"btn_concluir_lendo_{hq_id}_{idx}", use_container_width=True, type="primary", help="Marcar esta HQ como 'Lido'"):
                         database.definir_status_leitura(hq_id, "Lido")
@@ -3017,12 +3020,15 @@ def renderizar_pagina_em_leitura():
                         st.session_state["pagina_atual"] = "storyteller"
                         st.rerun()
                 with col_b3:
-                    if st.button("✍️ Resenha", key=f"btn_resenha_lendo_{hq_id}_{idx}", use_container_width=True, help="Escrever resenha ou avaliar"):
-                        dialog_resenha(hq_id)
+                    if st.button("⭐ Avaliar", key=f"btn_avaliar_lendo_{hq_id}_{idx}", use_container_width=True, help="Avaliar com nota de 0 a 5 estrelas"):
+                        dialog_avaliar_hq(hq_id)
                 with col_b4:
+                    if st.button("✍️ Resenha", key=f"btn_resenha_lendo_{hq_id}_{idx}", use_container_width=True, help="Escrever ou ler resenha pessoal"):
+                        dialog_resenha(hq_id)
+                with col_b5:
                     if st.button("✏️ Editar", key=f"btn_editar_lendo_{hq_id}_{idx}", use_container_width=True, help="Editar informações desta HQ"):
                         dialog_editar_hq(hq_id)
-                with col_b5:
+                with col_b6:
                     if st.button("⏳ Pausar", key=f"btn_pausar_lendo_{hq_id}_{idx}", use_container_width=True, help="Mudar status para 'Não Lido'"):
                         database.definir_status_leitura(hq_id, "Não Lido")
                         st.info(f"Status de **'{hq_item['titulo']}'** alterado para 'Não Lido'.")

@@ -2598,8 +2598,9 @@ def sincronizar_turso_para_local(
     Sincroniza todos os dados do Turso Cloud para o banco de dados SQLite local (hqs_inventario.db).
     Gera automaticamente uma cópia de segurança antes da sincronização.
     """
-    if not is_using_turso():
-        raise ValueError("Turso Cloud não está configurado ou ativo no ambiente (.env).")
+    url, token = get_turso_credentials(ignorar_flag_local=True)
+    if not url or not token:
+        raise ValueError("Turso Cloud não está configurado. Verifique TURSO_DATABASE_URL e TURSO_AUTH_TOKEN no arquivo .env.")
 
     inicio_t = time.time()
     backup_path = None
@@ -2632,7 +2633,7 @@ def sincronizar_turso_para_local(
         cur_local.execute("BEGIN TRANSACTION")
 
         # A) Prateleiras
-        res_prat = executar_turso_query("SELECT id, nome, criado_em FROM prateleiras")
+        res_prat = executar_turso_query("SELECT id, nome, criado_em FROM prateleiras", ignorar_flag_local=True)
         cur_local.execute("DELETE FROM prateleiras")
         if res_prat.rows:
             cur_local.executemany(
@@ -2643,7 +2644,8 @@ def sincronizar_turso_para_local(
 
         # B) Lista de Desejos
         res_desejos = executar_turso_query(
-            "SELECT id, titulo, edicao, editora, melhor_preco, melhor_loja, link_oferta, observacoes, criado_em FROM lista_desejos"
+            "SELECT id, titulo, edicao, editora, melhor_preco, melhor_loja, link_oferta, observacoes, criado_em FROM lista_desejos",
+            ignorar_flag_local=True
         )
         cur_local.execute("DELETE FROM lista_desejos")
         if res_desejos.rows:
@@ -2658,7 +2660,8 @@ def sincronizar_turso_para_local(
 
         # C) Histórico de Destaques
         res_hist = executar_turso_query(
-            "SELECT id, hq_id, data_destaque, criado_em FROM historico_destaques"
+            "SELECT id, hq_id, data_destaque, criado_em FROM historico_destaques",
+            ignorar_flag_local=True
         )
         cur_local.execute("DELETE FROM historico_destaques")
         if res_hist.rows:
@@ -2674,7 +2677,7 @@ def sincronizar_turso_para_local(
         cur_local.execute("PRAGMA table_info(hqs)")
         cols_locais = [row["name"] for row in cur_local.fetchall()]
 
-        res_count = executar_turso_query("SELECT COUNT(*) FROM hqs")
+        res_count = executar_turso_query("SELECT COUNT(*) FROM hqs", ignorar_flag_local=True)
         total_hqs = res_count.rows[0][0] if res_count.rows else 0
 
         campos_canonicos = [
@@ -2692,7 +2695,8 @@ def sincronizar_turso_para_local(
         while offset < total_hqs:
             limite_atual = min(tamanho_lote, total_hqs - offset)
             res_lote = executar_turso_query(
-                f"SELECT * FROM hqs ORDER BY id LIMIT {limite_atual} OFFSET {offset}"
+                f"SELECT * FROM hqs ORDER BY id LIMIT {limite_atual} OFFSET {offset}",
+                ignorar_flag_local=True
             )
             if not res_lote.rows:
                 break
