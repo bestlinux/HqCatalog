@@ -573,12 +573,9 @@ def transcrever_audio_resenha(
 
 
 # -------------------------------------------------------------
-# PESQUISA DE PREÇOS COM SERPAPI (GOOGLE SHOPPING)
+# PESQUISA DE PREÇOS E BUSCA GOOGLE COM SERPAPI
 # -------------------------------------------------------------
 DEFAULT_SERPAPI_KEY = os.getenv("SERPAPI_API_KEY", "")
-DEFAULT_ZENROWS_KEY = os.getenv("ZENROWS_API_KEY", "3ba8103ac0b970c71c6cd5dd37627934c3745faf")
-DEFAULT_SCRAPERAPI_KEY = os.getenv("SCRAPERAPI_API_KEY", "cbd4215c1c6716aeace9bbc367e9f575")
-DEFAULT_SCRAPINGBEE_KEY = os.getenv("SCRAPINGBEE_API_KEY", "0I1S0PQIV4WNTFUGIJA9D6EI6I9ULQBC3WFNO0HFN53ICE84ZFLAGZBYMNQGPSXJGKGAB1PTPZX9IOGD")
 
 TERMOS_EXCLUSAO_NAO_LIVRO = [
     "boneco", "boneca", "action figure", "action figures", "estátua", "estatua", "figura de ação",
@@ -1290,7 +1287,7 @@ def buscar_capas_online(
                 pass
 
     # =========================================================================
-    # 2. GOOGLE RESERP (MERCADO LIVRE E LOJAS ADICIONAIS)
+    # 2. GOOGLE BUSCA (MERCADO LIVRE E LOJAS ADICIONAIS)
     # =========================================================================
     if len(capas_candidatas) < limite:
         try:
@@ -3904,7 +3901,25 @@ def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
     except Exception:
         pass
 
-    # 3. Tentativa via Wayback Machine
+    # 3. Tentativa via Camoufox (navegador anti-detect com resolução de Cloudflare Turnstile)
+    try:
+        if assegurar_camoufox_instalado():
+            from camoufox.sync_api import Camoufox
+            with Camoufox(headless=True, humanize=True, disable_coop=True, os="windows", i_know_what_im_doing=True) as browser:
+                page = browser.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=25000)
+                for _ in range(8):
+                    c = page.content()
+                    if eh_html_valido_guia_dos_quadrinhos(c):
+                        return c
+                    time.sleep(1.5)
+                c = page.content()
+                if eh_html_valido_guia_dos_quadrinhos(c):
+                    return c
+    except Exception as ex_cfox:
+        print(f"[Aviso Camoufox HTML: {ex_cfox}]")
+
+    # 4. Tentativa via Wayback Machine
     urls_para_tentar_wb = [url]
     m_code = re.search(r"/edicao/([^/]+)/([a-zA-Z0-9]+)/(\d+)", url)
     if m_code:
@@ -3938,30 +3953,6 @@ def buscar_html_edicao_guia_dos_quadrinhos(url: str) -> str:
     return ""
 
 
-def get_zenrows_api_key(api_key: Optional[str] = None) -> str:
-    """
-    Retorna a chave da API ZenRows priorizando:
-    1. Parâmetro explícito
-    2. streamlit.secrets
-    3. Variável de ambiente ZENROWS_API_KEY
-    4. Chave padrão configurada
-    """
-    if api_key and str(api_key).strip():
-        return str(api_key).strip()
-    try:
-        import streamlit as st
-        if hasattr(st, "secrets") and "ZENROWS_API_KEY" in st.secrets:
-            k = str(st.secrets["ZENROWS_API_KEY"]).strip()
-            if k:
-                return k
-    except Exception:
-        pass
-    k_env = os.getenv("ZENROWS_API_KEY", "").strip()
-    if k_env:
-        return k_env
-    return DEFAULT_ZENROWS_KEY
-
-
 def eh_html_valido_guia_dos_quadrinhos(html: str) -> bool:
     """Verifica se o HTML retornado contém dados reais da edição do Guia dos Quadrinhos e não um desafio Cloudflare."""
     if not html or len(html.strip()) < 30:
@@ -3970,248 +3961,11 @@ def eh_html_valido_guia_dos_quadrinhos(html: str) -> bool:
     if "just a moment" in h or "cf-chl" in h or "challenge-platform" in h:
         return False
     return any(k in h for k in [
-        "historia", "ampliar_capa", "preco de capa", "data_publi",
-        "box_dados", "texto_pag_detalhe", "credito da capa", "editora_link"
+        "historia", "história", "ampliar_capa", "preco de capa", "preço de capa", "data_publi",
+        "box_dados", "texto_pag_detalhe", "credito da capa", "crédito da capa", "editora_link"
     ])
 
 
-def buscar_html_zenrows(url: str, api_key: Optional[str] = None, timeout: int = 40) -> str:
-    """
-    Baixa o HTML de uma página utilizando a API do ZenRows (Web Scraping Anti-Bloqueio / Anti-Cloudflare).
-    1. Normaliza a URL (adiciona www. e https:// para o Guia dos Quadrinhos evitando redirecionamentos).
-    2. Tenta primeiro com mode='auto' (mais rápido e econômico).
-    3. Se o Cloudflare retornar tela de desafio/bloqueio sem o conteúdo da edição, escala automaticamente
-       para js_render='true' (executa navegador headless com anti-bot avançado no ZenRows).
-    """
-    if not url or not str(url).strip().startswith("http"):
-        return ""
-
-    norm_url = str(url).strip()
-    if norm_url.startswith("http://"):
-        norm_url = norm_url.replace("http://", "https://")
-    if "guiadosquadrinhos.com" in norm_url and "www.guiadosquadrinhos.com" not in norm_url:
-        norm_url = norm_url.replace("guiadosquadrinhos.com", "www.guiadosquadrinhos.com")
-
-    chave = get_zenrows_api_key(api_key)
-    if not chave:
-        print("[ZenRows] Chave de API não informada.")
-        return ""
-
-    configs_tentativas = [
-        {'mode': 'auto'},
-        {'js_render': 'true'}
-    ]
-
-    for idx, params in enumerate(configs_tentativas):
-        resp_text = None
-        status_code = None
-
-        # 1. Tentativa via cliente oficial ZenRowsClient
-        try:
-            from zenrows import ZenRowsClient
-            client = ZenRowsClient(chave)
-            resp = client.get(norm_url, params=params, timeout=timeout)
-            status_code = getattr(resp, "status_code", None)
-            if resp is not None and resp.status_code == 200 and resp.text and len(resp.text.strip()) > 30:
-                resp_text = resp.text
-            else:
-                print(f"[ZenRows] Tentativa {idx+1} ZenRowsClient retornou status {status_code}")
-        except Exception as ex_client:
-            print(f"[ZenRows] Exceção tentativa {idx+1} ZenRowsClient: {ex_client}")
-
-        # 2. Fallback direto via requests apenas se o cliente oficial falhou por erro de conexão/importação
-        if resp_text is None and requests is not None:
-            try:
-                req_params = dict(params)
-                req_params["apikey"] = chave
-                req_params["url"] = norm_url
-                r = requests.get("https://api.zenrows.com/v1/", params=req_params, timeout=timeout)
-                status_code = getattr(r, "status_code", None)
-                if r is not None and r.status_code == 200 and r.text and len(r.text.strip()) > 30:
-                    resp_text = r.text
-                else:
-                    print(f"[ZenRows] Tentativa {idx+1} fallback direto retornou status {status_code}")
-            except Exception as ex_req:
-                print(f"[ZenRows] Exceção tentativa {idx+1} fallback direto: {ex_req}")
-
-        # Validação do conteúdo retornado
-        if resp_text:
-            if "guiadosquadrinhos.com" not in norm_url or eh_html_valido_guia_dos_quadrinhos(resp_text):
-                return resp_text
-            elif idx == 0:
-                print("[ZenRows] Resposta no modo auto é desafio Cloudflare. Escalando para js_render='true'...")
-
-    return ""
-
-
-def get_scraperapi_key(api_key: Optional[str] = None) -> str:
-    """
-    Retorna a chave da API ScraperAPI priorizando:
-    1. Parâmetro explícito
-    2. streamlit.secrets
-    3. Variável de ambiente SCRAPERAPI_API_KEY
-    4. Chave padrão configurada
-    """
-    if api_key and str(api_key).strip():
-        return str(api_key).strip()
-    try:
-        import streamlit as st
-        if hasattr(st, "secrets") and "SCRAPERAPI_API_KEY" in st.secrets:
-            k = str(st.secrets["SCRAPERAPI_API_KEY"]).strip()
-            if k:
-                return k
-    except Exception:
-        pass
-    k_env = os.getenv("SCRAPERAPI_API_KEY", "").strip()
-    if k_env:
-        return k_env
-    return DEFAULT_SCRAPERAPI_KEY
-
-
-def buscar_html_scraperapi(url: str, api_key: Optional[str] = None, timeout: int = 40) -> str:
-    """
-    Baixa o HTML de uma página utilizando a API do ScraperAPI (Web Scraping Anti-Bloqueio / Anti-Cloudflare).
-    Atua como camada de failover quando o Python puro e o ZenRows falharem.
-    """
-    if not url or not str(url).strip().startswith("http"):
-        return ""
-
-    norm_url = str(url).strip()
-    if norm_url.startswith("http://"):
-        norm_url = norm_url.replace("http://", "https://")
-    if "guiadosquadrinhos.com" in norm_url and "www.guiadosquadrinhos.com" not in norm_url:
-        norm_url = norm_url.replace("guiadosquadrinhos.com", "www.guiadosquadrinhos.com")
-
-    chave = get_scraperapi_key(api_key)
-    if not chave:
-        print("[ScraperAPI] Chave de API não informada.")
-        return ""
-
-    if requests is None:
-        print("[ScraperAPI] Módulo 'requests' não disponível.")
-        return ""
-
-    try:
-        payload = {
-            'api_key': chave,
-            'url': norm_url,
-            'output_format': 'json',
-            'autoparse': 'true'
-        }
-        r = requests.get('https://api.scraperapi.com/', params=payload, timeout=timeout)
-        if r is not None and r.status_code == 200 and r.text and len(r.text.strip()) > 30:
-            resp_content = r.text
-            # Se a resposta vier encapsulada em JSON (caso retornado com output_format='json')
-            if resp_content.strip().startswith("{") and resp_content.strip().endswith("}"):
-                try:
-                    data_json = json.loads(resp_content)
-                    if isinstance(data_json, dict):
-                        for field in ["body", "html", "content", "response"]:
-                            if field in data_json and isinstance(data_json[field], str) and len(data_json[field]) > 30:
-                                resp_content = data_json[field]
-                                break
-                except Exception:
-                    pass
-
-            if "guiadosquadrinhos.com" not in norm_url or eh_html_valido_guia_dos_quadrinhos(resp_content):
-                return resp_content
-            print("[ScraperAPI] HTML retornado não passou na validação do Guia dos Quadrinhos.")
-        else:
-            status_code = getattr(r, "status_code", None)
-            print(f"[ScraperAPI] Requisição retornou status {status_code}")
-    except Exception as ex_scraper:
-        print(f"[ScraperAPI] Exceção ao buscar página: {ex_scraper}")
-
-    return ""
-
-
-def get_scrapingbee_api_key(api_key: Optional[str] = None) -> str:
-    """
-    Retorna a chave da API ScrapingBee priorizando:
-    1. Parâmetro explícito
-    2. streamlit.secrets
-    3. Variável de ambiente SCRAPINGBEE_API_KEY
-    4. Chave padrão configurada
-    """
-    if api_key and str(api_key).strip():
-        return str(api_key).strip()
-    try:
-        import streamlit as st
-        if hasattr(st, "secrets") and "SCRAPINGBEE_API_KEY" in st.secrets:
-            k = str(st.secrets["SCRAPINGBEE_API_KEY"]).strip()
-            if k:
-                return k
-    except Exception:
-        pass
-    k_env = os.getenv("SCRAPINGBEE_API_KEY", "").strip()
-    if k_env:
-        return k_env
-    return DEFAULT_SCRAPINGBEE_KEY
-
-
-def buscar_html_scrapingbee(url: str, api_key: Optional[str] = None, timeout: int = 40) -> str:
-    """
-    Baixa o HTML de uma página utilizando a API do ScrapingBee (Web Scraping Anti-Bloqueio / Anti-Cloudflare).
-    Atua como camada de failover quando o Python puro, ZenRows e ScraperAPI falharem.
-    Utiliza stealth_proxy='true' para contornar com sucesso a proteção Cloudflare.
-    """
-    if not url or not str(url).strip().startswith("http"):
-        return ""
-
-    norm_url = str(url).strip()
-    if norm_url.startswith("http://"):
-        norm_url = norm_url.replace("http://", "https://")
-    if "guiadosquadrinhos.com" in norm_url and "www.guiadosquadrinhos.com" not in norm_url:
-        norm_url = norm_url.replace("guiadosquadrinhos.com", "www.guiadosquadrinhos.com")
-
-    chave = get_scrapingbee_api_key(api_key)
-    if not chave:
-        print("[ScrapingBee] Chave de API não informada.")
-        return ""
-
-    resp_text = None
-    params_bee = {'stealth_proxy': 'true'}
-
-    # 1. Tentativa via cliente oficial ScrapingBeeClient
-    try:
-        from scrapingbee import ScrapingBeeClient
-        client = ScrapingBeeClient(api_key=chave)
-        fn_get = getattr(client, "html_api", None) or getattr(client, "get", None)
-        if fn_get:
-            resp = fn_get(norm_url, params=params_bee, timeout=timeout)
-            if resp is not None and getattr(resp, "status_code", None) == 200:
-                txt = getattr(resp, "text", "") or ""
-                if not txt and hasattr(resp, "content"):
-                    try:
-                        txt = resp.content.decode("utf-8", errors="replace")
-                    except Exception:
-                        pass
-                if txt and len(txt.strip()) > 30:
-                    resp_text = txt
-    except Exception as ex_client:
-        print(f"[ScrapingBee] Cliente oficial ScrapingBee falhou: {ex_client}")
-
-    # 2. Fallback direto via requests se o cliente oficial falhar ou não estiver instalado
-    if not resp_text and requests is not None:
-        try:
-            req_params = dict(params_bee)
-            req_params["api_key"] = chave
-            req_params["url"] = norm_url
-            r = requests.get("https://app.scrapingbee.com/api/v1/", params=req_params, timeout=timeout)
-            if r is not None and r.status_code == 200 and r.text and len(r.text.strip()) > 30:
-                resp_text = r.text
-            else:
-                status_code = getattr(r, "status_code", None)
-                print(f"[ScrapingBee] Requisição direta retornou status {status_code}")
-        except Exception as ex_req:
-            print(f"[ScrapingBee] Exceção na requisição direta: {ex_req}")
-
-    if resp_text:
-        if "guiadosquadrinhos.com" not in norm_url or eh_html_valido_guia_dos_quadrinhos(resp_text):
-            return resp_text
-        print("[ScrapingBee] HTML retornado não passou na validação do Guia dos Quadrinhos.")
-
-    return ""
 
 
 def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dict[str, Any]:
@@ -4654,10 +4408,8 @@ def extrair_dados_texto_ou_html_gq(conteudo: str, url_orig: str = "") -> Dict[st
 
 
 # =============================================================
-# INTEGRAÇÃO RESERP.AI (GOOGLE SEARCH SERP ENGINE)
+# BUSCA NA WEB / GOOGLE VIA SERPAPI
 # =============================================================
-DEFAULT_RESERP_API_KEY = os.getenv("RESERP_API_KEY", "HROQunnPEHw2JlSTbfl_lYxLKq0D9mM7QHXf_QxIY5M")
-
 
 def pesquisar_reserp_google(
     termo_busca: str,
@@ -4665,40 +4417,13 @@ def pesquisar_reserp_google(
     timeout: int = 15
 ) -> List[Dict[str, Any]]:
     """
-    Executa busca no Google com estratégia resiliente multi-motor:
-      1. Reserp.ai API (Google SERP)
-      2. SerpApi Google Search (Failover automático caso a cota do Reserp.ai esteja esgotada - HTTP 402)
+    Executa busca no Google via SerpApi.
     Retorna lista de resultados com 'title', 'url', 'text'/'snippet'.
     """
     if not termo_busca or requests is None:
         return []
 
-    # 1. TENTATIVA VIA RESERP.AI
-    key = api_key or os.getenv("RESERP_API_KEY") or DEFAULT_RESERP_API_KEY
-    if key:
-        try:
-            google_search_url = f"https://www.google.com/search?q={urllib.parse.quote(termo_busca)}&hl=pt-BR&gl=br"
-            res_resp = requests.post(
-                "https://api.reserp.ai/v2/serp/search",
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json"
-                },
-                json={"url": google_search_url},
-                timeout=timeout
-            )
-            if res_resp.status_code == 200:
-                r_data = res_resp.json()
-                results = r_data.get("results", [])
-                if results:
-                    return results
-            elif res_resp.status_code == 402:
-                print("[Aviso Reserp.ai: Cota mensal gratuita esgotada (402 Payment Required). Acionando SerpApi...]")
-        except Exception as e:
-            print(f"[Aviso Reserp: {e}]")
-
-    # 2. FAILOVER VIA SERPAPI (GOOGLE SEARCH ENGINE)
-    serp_key = os.getenv("SERPAPI_API_KEY") or DEFAULT_SERPAPI_KEY or ""
+    serp_key = api_key or os.getenv("SERPAPI_API_KEY") or DEFAULT_SERPAPI_KEY or ""
     if serp_key:
         try:
             params = {
@@ -4728,14 +4453,18 @@ def pesquisar_reserp_google(
                 if mapped:
                     return mapped
         except Exception as ex_serp:
-            print(f"[Aviso SerpApi Fallback: {ex_serp}]")
+            print(f"[Aviso Busca Google SerpApi: {ex_serp}]")
 
     return []
 
 
+# Alias para padronização de nomenclatura
+pesquisar_google_web = pesquisar_reserp_google
+
+
 def extrair_metadados_item_reserp(r: Dict[str, Any]) -> Dict[str, str]:
     """
-    Extrai com precisão o título real da página, url canônica e snippet a partir do payload do Reserp.ai.
+    Extrai com precisão o título real da página, url canônica e snippet a partir do resultado da busca.
     """
     url = r.get("url") or ""
     raw_text = r.get("text") or r.get("snippet") or ""
@@ -4776,7 +4505,7 @@ def buscar_fontes_hq_reserp(
     termo_custom: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Busca páginas e fontes de referência na web para uma HQ específica usando Reserp.ai (Google SERP).
+    Busca páginas e fontes de referência na web para uma HQ específica usando SerpApi (Google SERP).
     Utiliza estratégia multi-etapas resiliente para encontrar a edição exata no Guia dos Quadrinhos.
     """
     t = (titulo or "").strip()
@@ -5032,90 +4761,6 @@ def buscar_dados_guia_dos_quadrinhos(
                     })
 
     # -----------------------------------------------------------------
-    # ETAPA 2.1: TENTATIVA VIA ZENROWS (SE O PYTHON PURO FALHOU / BLOQUEIO)
-    # -----------------------------------------------------------------
-    if not conseguiu_extrair and url_resolvida and "/edicao/" in url_resolvida:
-        html_zen = buscar_html_zenrows(url_resolvida)
-        if html_zen:
-            dados_extraidos = extrair_dados_html_guia_dos_quadrinhos(html_zen, url_resolvida)
-            if dados_extraidos and (dados_extraidos.get("roteiro") or dados_extraidos.get("desenho") or dados_extraidos.get("resumo")):
-                conseguiu_extrair = True
-                resultado["roteiro"] = dados_extraidos.get("roteiro") or ""
-                resultado["desenho"] = dados_extraidos.get("desenho") or ""
-                resultado["preco_capa"] = float(dados_extraidos.get("preco_capa") or 0.0)
-                resultado["preco_capa_formatado"] = dados_extraidos.get("preco_capa_formatado") or "R$ 0,00"
-                resultado["resumo"] = dados_extraidos.get("resumo") or ""
-                if dados_extraidos.get("publicado_em"):
-                    resultado["publicado_em"] = dados_extraidos.get("publicado_em") or ""
-                resultado["metodo"] = "ZenRows Scraper (Página Oficial Guia dos Quadrinhos)"
-
-                if dados_extraidos.get("capa_url"):
-                    c_url = dados_extraidos["capa_url"]
-                    resultado["capa_url"] = c_url
-                    resultado["capas_alternativas"].append({
-                        "url": c_url,
-                        "thumbnail": c_url,
-                        "titulo": f"{titulo_limpo} nº {edicao_limpa} (Capa Oficial Guia dos Quadrinhos)",
-                        "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)"
-                    })
-
-    # -----------------------------------------------------------------
-    # ETAPA 2.2: TENTATIVA VIA SCRAPERAPI (FAILOVER SE O ZENROWS FALHOU)
-    # -----------------------------------------------------------------
-    if not conseguiu_extrair and url_resolvida and "/edicao/" in url_resolvida:
-        html_scraper = buscar_html_scraperapi(url_resolvida)
-        if html_scraper:
-            dados_extraidos = extrair_dados_html_guia_dos_quadrinhos(html_scraper, url_resolvida)
-            if dados_extraidos and (dados_extraidos.get("roteiro") or dados_extraidos.get("desenho") or dados_extraidos.get("resumo")):
-                conseguiu_extrair = True
-                resultado["roteiro"] = dados_extraidos.get("roteiro") or ""
-                resultado["desenho"] = dados_extraidos.get("desenho") or ""
-                resultado["preco_capa"] = float(dados_extraidos.get("preco_capa") or 0.0)
-                resultado["preco_capa_formatado"] = dados_extraidos.get("preco_capa_formatado") or "R$ 0,00"
-                resultado["resumo"] = dados_extraidos.get("resumo") or ""
-                if dados_extraidos.get("publicado_em"):
-                    resultado["publicado_em"] = dados_extraidos.get("publicado_em") or ""
-                resultado["metodo"] = "ScraperAPI Scraper (Página Oficial Guia dos Quadrinhos)"
-
-                if dados_extraidos.get("capa_url"):
-                    c_url = dados_extraidos["capa_url"]
-                    resultado["capa_url"] = c_url
-                    resultado["capas_alternativas"].append({
-                        "url": c_url,
-                        "thumbnail": c_url,
-                        "titulo": f"{titulo_limpo} nº {edicao_limpa} (Capa Oficial Guia dos Quadrinhos)",
-                        "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)"
-                    })
-
-    # -----------------------------------------------------------------
-    # ETAPA 2.3: TENTATIVA VIA SCRAPINGBEE (FAILOVER SE SCRAPERAPI FALHOU)
-    # -----------------------------------------------------------------
-    if not conseguiu_extrair and url_resolvida and "/edicao/" in url_resolvida:
-        html_sbee = buscar_html_scrapingbee(url_resolvida)
-        if html_sbee:
-            dados_extraidos = extrair_dados_html_guia_dos_quadrinhos(html_sbee, url_resolvida)
-            if dados_extraidos and (dados_extraidos.get("roteiro") or dados_extraidos.get("desenho") or dados_extraidos.get("resumo")):
-                conseguiu_extrair = True
-                resultado["roteiro"] = dados_extraidos.get("roteiro") or ""
-                resultado["desenho"] = dados_extraidos.get("desenho") or ""
-                resultado["preco_capa"] = float(dados_extraidos.get("preco_capa") or 0.0)
-                resultado["preco_capa_formatado"] = dados_extraidos.get("preco_capa_formatado") or "R$ 0,00"
-                resultado["resumo"] = dados_extraidos.get("resumo") or ""
-                if dados_extraidos.get("publicado_em"):
-                    resultado["publicado_em"] = dados_extraidos.get("publicado_em") or ""
-                resultado["metodo"] = "ScrapingBee Scraper (Página Oficial Guia dos Quadrinhos)"
-
-                if dados_extraidos.get("capa_url"):
-                    c_url = dados_extraidos["capa_url"]
-                    resultado["capa_url"] = c_url
-                    resultado["capas_alternativas"].append({
-                        "url": c_url,
-                        "thumbnail": c_url,
-                        "titulo": f"{titulo_limpo} nº {edicao_limpa} (Capa Oficial Guia dos Quadrinhos)",
-                        "fonte": "Guia dos Quadrinhos (guiadosquadrinhos.com)"
-                    })
-
-    # -----------------------------------------------------------------
     # ETAPA 3: CONSULTA COMPLEMENTAR POR IA COM GOOGLE SEARCH GROUNDING
     # (Ativada se dados essenciais estiverem vazios)
     # -----------------------------------------------------------------
@@ -5139,8 +4784,8 @@ def buscar_dados_guia_dos_quadrinhos(
             termo_pesquisa_gq = f"site:guiadosquadrinhos.com \"{titulo_limpo}\" {edicao_limpa} {editora_termo}".strip()
             url_ref = url_resolvida if (url_resolvida and url_resolvida.startswith("http") and "/edicao/" in url_resolvida) else ""
 
-            # --- INTEGRAÇÃO RESERP.AI ---
-            reserp_text = ""
+            # --- BUSCA GOOGLE (SERPAPI) ---
+            google_text = ""
             try:
                 results = pesquisar_reserp_google(termo_pesquisa_gq)
                 if not url_ref and results:
@@ -5149,17 +4794,26 @@ def buscar_dados_guia_dos_quadrinhos(
                         if "guiadosquadrinhos.com/edicao/" in u:
                             url_ref = u
                             break
-                reserp_text = "\n\n".join([r.get("text", "") for r in results[:5] if r.get("text")])
+                google_text = "\n\n".join([r.get("text", "") for r in results[:5] if r.get("text")])
             except Exception as e:
-                print(f"Erro Reserp: {e}")
+                print(f"Erro Busca Google: {e}")
 
+            contexto_gq = f"""Referência da Edição no Guia dos Quadrinhos:
+URL: {url_ref or 'https://www.guiadosquadrinhos.com'}
+Título: {titulo_limpo}
+Edição: {edicao_limpa}
+Editora: {editora_limpa}
+
+Resultados da Busca no Google:
+{google_text}
+"""
             prompt_gq = f"""Você é o Especialista Mestre na enciclopédia GUIA DOS QUADRINHOS (guiadosquadrinhos.com).
 Consulte as informações completas da seguinte edição no Guia dos Quadrinhos baseando-se nos resultados de busca abaixo.
 {f"URL exata da edição no Guia dos Quadrinhos: {url_ref}" if url_ref else ""}
 Termo de busca: {termo_pesquisa_gq}
 
-Resultados da Busca (Reserp.ai):
-{reserp_text}
+Resultados da Busca:
+{google_text}
 
 Dados da edição:
 - Título: {titulo_limpo}

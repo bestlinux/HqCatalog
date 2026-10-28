@@ -1438,9 +1438,6 @@ class TestHqCatalog(unittest.TestCase):
 
         # 6. Universo DC 3ª Série 8 com URL do Guia dos Quadrinhos e Fallback por IA
         with patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
-             patch("gemini_service.buscar_html_zenrows", return_value=""), \
-             patch("gemini_service.buscar_html_scraperapi", return_value=""), \
-             patch("gemini_service.buscar_html_scrapingbee", return_value=""), \
              patch("gemini_service.get_gemini_client") as mock_client:
             mock_chat = MagicMock()
             mock_resp_ai = MagicMock()
@@ -1497,31 +1494,6 @@ class TestHqCatalog(unittest.TestCase):
         self.assertEqual(obter_imagem_capa("https://exemplo.com/capa.jpg"), "https://exemplo.com/capa.jpg")
         self.assertEqual(obter_imagem_capa("data:image/jpeg;base64,123"), "data:image/jpeg;base64,123")
 
-    def test_zenrows_api_key_resolution(self):
-        # 1. Parâmetro explícito
-        self.assertEqual(gemini_service.get_zenrows_api_key("custom_key_123"), "custom_key_123")
-        # 2. Variável de ambiente
-        with patch.dict(os.environ, {"ZENROWS_API_KEY": "env_key_456"}):
-            self.assertEqual(gemini_service.get_zenrows_api_key(), "env_key_456")
-        # 3. Padrão pré-configurado
-        with patch.dict(os.environ, {"ZENROWS_API_KEY": ""}):
-            self.assertTrue(len(gemini_service.get_zenrows_api_key()) > 10)
-
-    def test_buscar_html_zenrows_mock(self):
-        # Teste via ZenRowsClient
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.text = "<html><body><div class='historia'>Roteiro: Alan Moore</div></body></html>"
-        with patch("zenrows.ZenRowsClient.get", return_value=mock_resp):
-            html = gemini_service.buscar_html_zenrows("https://www.guiadosquadrinhos.com/edicao/teste")
-            self.assertIn("Alan Moore", html)
-
-        # Teste fallback requests direto
-        with patch("zenrows.ZenRowsClient.get", side_effect=Exception("Client indisponível")), \
-             patch("requests.get", return_value=mock_resp):
-            html_req = gemini_service.buscar_html_zenrows("https://www.guiadosquadrinhos.com/edicao/teste")
-            self.assertIn("Alan Moore", html_req)
-
     def test_buscar_html_edicao_guia_dos_quadrinhos_curl_cffi(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -1530,8 +1502,8 @@ class TestHqCatalog(unittest.TestCase):
             html = gemini_service.buscar_html_edicao_guia_dos_quadrinhos("https://www.guiadosquadrinhos.com/edicao/teste")
             self.assertIn("Alan Moore", html)
 
-    def test_fluxo_extracao_tres_niveis_zenrows(self):
-        # 1. Quando o Python puro resolve, o ZenRows NÃO deve ser chamado (economiza cota)
+    def test_fluxo_extracao_dois_niveis_direto_e_ia(self):
+        # 1. Quando o Python puro resolve, a IA Gemini NÃO deve ser chamada
         html_puro_fake = """
         <html>
             <div id="dados_edicao">
@@ -1545,7 +1517,6 @@ class TestHqCatalog(unittest.TestCase):
         """
         with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
              patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=html_puro_fake), \
-             patch("gemini_service.buscar_html_zenrows") as mock_zen, \
              patch("gemini_service.buscar_capas_online", return_value=[]), \
              patch("gemini_service.get_gemini_client") as mock_ai:
             res = gemini_service.buscar_dados_guia_dos_quadrinhos(
@@ -1553,217 +1524,43 @@ class TestHqCatalog(unittest.TestCase):
                 url_edicao="https://www.guiadosquadrinhos.com/edicao/sandman-teste/123/456"
             )
             self.assertEqual(res.get("roteiro"), "Neil Gaiman")
-            mock_zen.assert_not_called()
             mock_ai.assert_not_called()
 
-        # 2. Quando o Python puro falha, o ZenRows é acionado no nível 2 e não chama IA
-        html_zen_fake = """
-        <html>
-            <div id="dados_edicao">
-                Preço de capa: R$ 29,90
-            </div>
-            <div class="historia">Cavaleiro das Trevas</div>
-            <div>Roteiro: Frank Miller</div>
-            <div>Desenho: Klaus Janson</div>
-            <div>Sinopse: O retorno de Batman.</div>
-        </html>
-        """
+        # 2. Quando o Python puro falha, a IA Gemini é chamada via SerpApi / busca web
         with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
              patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
-             patch("gemini_service.buscar_html_zenrows", return_value=html_zen_fake) as mock_zen, \
-             patch("gemini_service.buscar_capas_online", return_value=[]), \
-             patch("gemini_service.get_gemini_client") as mock_ai:
-            res_zen = gemini_service.buscar_dados_guia_dos_quadrinhos(
-                "Batman Teste", "1", "Abril",
-                url_edicao="https://www.guiadosquadrinhos.com/edicao/batman-teste/123/789"
-            )
-            mock_zen.assert_called_once()
-            mock_ai.assert_not_called()
-            self.assertEqual(res_zen.get("roteiro"), "Frank Miller")
-            self.assertEqual(res_zen.get("desenho"), "Klaus Janson")
-            self.assertIn("ZenRows", res_zen.get("metodo", ""))
-
-    def test_scraperapi_api_key_resolution(self):
-        # 1. Parâmetro explícito
-        self.assertEqual(gemini_service.get_scraperapi_key("custom_scraper_key_123"), "custom_scraper_key_123")
-        # 2. Variável de ambiente
-        with patch.dict(os.environ, {"SCRAPERAPI_API_KEY": "env_scraper_key_456"}):
-            self.assertEqual(gemini_service.get_scraperapi_key(), "env_scraper_key_456")
-        # 3. Padrão pré-configurado
-        with patch.dict(os.environ, {"SCRAPERAPI_API_KEY": ""}):
-            self.assertTrue(len(gemini_service.get_scraperapi_key()) > 10)
-
-    def test_buscar_html_scraperapi_mock(self):
-        # Teste mock requests.get com HTML direto
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.text = "<html><body><div class='historia'>Roteiro: Grant Morrison</div></body></html>"
-        with patch("requests.get", return_value=mock_resp):
-            html = gemini_service.buscar_html_scraperapi("https://www.guiadosquadrinhos.com/edicao/teste-scraper")
-            self.assertIn("Grant Morrison", html)
-
-    def test_fluxo_extracao_quatro_niveis_scraperapi(self):
-        # 1. Quando ZenRows resolve no nível 2, ScraperAPI NÃO é chamado
-        html_zen_fake = """
-        <html>
-            <div id="dados_edicao">Preço de capa: R$ 35,00</div>
-            <div class="historia">Monstro do Pântano</div>
-            <div>Roteiro: Alan Moore</div>
-            <div>Desenho: Stephen Bissette</div>
-            <div>Sinopse: Lição de Anatomia.</div>
-        </html>
-        """
-        with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
-             patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
-             patch("gemini_service.buscar_html_zenrows", return_value=html_zen_fake) as mock_zen, \
-             patch("gemini_service.buscar_html_scraperapi") as mock_scraper, \
-             patch("gemini_service.buscar_capas_online", return_value=[]), \
-             patch("gemini_service.get_gemini_client") as mock_ai:
-            res_zen = gemini_service.buscar_dados_guia_dos_quadrinhos(
-                "Monstro do Pântano", "1", "Panini",
-                url_edicao="https://www.guiadosquadrinhos.com/edicao/monstro-pantano/123/456"
-            )
-            mock_zen.assert_called_once()
-            mock_scraper.assert_not_called()
-            mock_ai.assert_not_called()
-            self.assertEqual(res_zen.get("roteiro"), "Alan Moore")
-
-        # 2. Quando Python puro e ZenRows falham, ScraperAPI é acionado e não chama IA
-        html_scraper_fake = """
-        <html>
-            <div id="dados_edicao">Preço de capa: R$ 42,00</div>
-            <div class="historia">X-Men Massacre de Mutantes</div>
-            <div>Roteiro: Chris Claremont</div>
-            <div>Desenho: John Romita Jr.</div>
-            <div>Sinopse: Tragédia nos túneis Morlock.</div>
-        </html>
-        """
-        with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
-             patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
-             patch("gemini_service.buscar_html_zenrows", return_value="") as mock_zen, \
-             patch("gemini_service.buscar_html_scraperapi", return_value=html_scraper_fake) as mock_scraper, \
-             patch("gemini_service.buscar_capas_online", return_value=[]), \
-             patch("gemini_service.get_gemini_client") as mock_ai:
-            res_scraper = gemini_service.buscar_dados_guia_dos_quadrinhos(
-                "X-Men Massacre", "1", "Abril",
-                url_edicao="https://www.guiadosquadrinhos.com/edicao/x-men-massacre/123/999"
-            )
-            mock_zen.assert_called_once()
-            mock_scraper.assert_called_once()
-            mock_ai.assert_not_called()
-            self.assertEqual(res_scraper.get("roteiro"), "Chris Claremont")
-            self.assertEqual(res_scraper.get("desenho"), "John Romita Jr.")
-            self.assertIn("ScraperAPI", res_scraper.get("metodo", ""))
-
-        # 3. Quando Python puro, ZenRows e ScraperAPI falham, IA Gemini é chamada
-        with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
-             patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
-             patch("gemini_service.buscar_html_zenrows", return_value="") as mock_zen, \
-             patch("gemini_service.buscar_html_scraperapi", return_value="") as mock_scraper, \
-             patch("gemini_service.buscar_html_scrapingbee", return_value="") as mock_sbee, \
-             patch("gemini_service.pesquisar_reserp_google", return_value=[]), \
+             patch("gemini_service.pesquisar_reserp_google", return_value=[{"title": "Edição 1", "snippet": "Roteiro de Frank Miller"}]), \
              patch("gemini_service.buscar_capas_online", return_value=[]), \
              patch("gemini_service.get_gemini_client") as mock_ai:
             mock_chat = MagicMock()
             mock_resp_ai = MagicMock()
-            mock_resp_ai.text = '{"roteiro": "Warren Ellis", "desenho": "Bryan Hitch", "preco_capa": 25.0, "resumo": "The Authority"}'
+            mock_resp_ai.text = '{"roteiro": "Frank Miller", "desenho": "Klaus Janson", "preco_capa": 29.90, "resumo": "O retorno de Batman"}'
             mock_chat.send_message.return_value = mock_resp_ai
             mock_instance = MagicMock()
             mock_instance.chats.create.return_value = mock_chat
             mock_ai.return_value = mock_instance
 
             res_ai = gemini_service.buscar_dados_guia_dos_quadrinhos(
-                "Authority", "1", "Panini",
-                url_edicao="https://www.guiadosquadrinhos.com/edicao/authority/123/888"
+                "Batman Teste", "1", "Abril",
+                url_edicao="https://www.guiadosquadrinhos.com/edicao/batman-teste/123/789"
             )
-            mock_zen.assert_called_once()
-            mock_scraper.assert_called_once()
-            mock_sbee.assert_called_once()
             mock_ai.assert_called()
-            self.assertEqual(res_ai.get("roteiro"), "Warren Ellis")
+            self.assertEqual(res_ai.get("roteiro"), "Frank Miller")
+            self.assertEqual(res_ai.get("desenho"), "Klaus Janson")
 
-    def test_scrapingbee_api_key_resolution(self):
-        # 1. Parâmetro explícito
-        self.assertEqual(gemini_service.get_scrapingbee_api_key("custom_bee_key_123"), "custom_bee_key_123")
-        # 2. Variável de ambiente
-        with patch.dict(os.environ, {"SCRAPINGBEE_API_KEY": "env_bee_key_456"}):
-            self.assertEqual(gemini_service.get_scrapingbee_api_key(), "env_bee_key_456")
-        # 3. Padrão pré-configurado
-        with patch.dict(os.environ, {"SCRAPINGBEE_API_KEY": ""}):
-            self.assertTrue(len(gemini_service.get_scrapingbee_api_key()) > 10)
-
-    def test_buscar_html_scrapingbee_mock(self):
-        # Teste via ScrapingBeeClient
+    def test_pesquisar_google_web_serpapi_mock(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.text = "<html><body><div class='historia'>Roteiro: Chuck Dixon</div></body></html>"
-        with patch("scrapingbee.ScrapingBeeClient.html_api", return_value=mock_resp):
-            html = gemini_service.buscar_html_scrapingbee("https://www.guiadosquadrinhos.com/edicao/teste-scrapingbee")
-            self.assertIn("Chuck Dixon", html)
-
-        # Teste fallback requests direto
-        with patch("scrapingbee.ScrapingBeeClient.html_api", side_effect=Exception("Client indisponível")), \
-             patch("scrapingbee.ScrapingBeeClient.get", side_effect=Exception("Client indisponível")), \
-             patch("requests.get", return_value=mock_resp):
-            html_req = gemini_service.buscar_html_scrapingbee("https://www.guiadosquadrinhos.com/edicao/teste-scrapingbee")
-            self.assertIn("Chuck Dixon", html_req)
-
-    def test_fluxo_extracao_cinco_niveis_scrapingbee(self):
-        # 1. Quando Python puro, ZenRows e ScraperAPI falham, ScrapingBee resolve no nível 4 e NÃO chama IA Gemini
-        html_sbee_fake = """
-        <html>
-            <div id="dados_edicao">Preço de capa: R$ 3,50</div>
-            <div class="historia">Vigilantes de Gotham</div>
-            <div>Roteiro: Chuck Dixon</div>
-            <div>Desenho: Jim Balent</div>
-            <div>Sinopse: Batman nas ruas de Gotham.</div>
-        </html>
-        """
-        with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
-             patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
-             patch("gemini_service.buscar_html_zenrows", return_value="") as mock_zen, \
-             patch("gemini_service.buscar_html_scraperapi", return_value="") as mock_scraper, \
-             patch("gemini_service.buscar_html_scrapingbee", return_value=html_sbee_fake) as mock_sbee, \
-             patch("gemini_service.buscar_capas_online", return_value=[]), \
-             patch("gemini_service.get_gemini_client") as mock_ai:
-            res_sbee = gemini_service.buscar_dados_guia_dos_quadrinhos(
-                "Batman Vigilantes", "20", "Abril",
-                url_edicao="https://www.guiadosquadrinhos.com/edicao/batman-vigilantes-de-gotham-n-20/bgv0301/5078"
-            )
-            mock_zen.assert_called_once()
-            mock_scraper.assert_called_once()
-            mock_sbee.assert_called_once()
-            mock_ai.assert_not_called()
-            self.assertEqual(res_sbee.get("roteiro"), "Chuck Dixon")
-            self.assertEqual(res_sbee.get("desenho"), "Jim Balent")
-            self.assertIn("ScrapingBee", res_sbee.get("metodo", ""))
-
-        # 2. Quando ScraperAPI resolve no nível 3, ScrapingBee NÃO deve ser acionado
-        html_scraper_fake = """
-        <html>
-            <div id="dados_edicao">Preço de capa: R$ 5,00</div>
-            <div class="historia">Liga da Justiça</div>
-            <div>Roteiro: Grant Morrison</div>
-            <div>Desenho: Howard Porter</div>
-            <div>Sinopse: Nova ordem mundial.</div>
-        </html>
-        """
-        with patch("gemini_service.obter_dados_canonicos_guia_dos_quadrinhos", return_value=None), \
-             patch("gemini_service.buscar_html_edicao_guia_dos_quadrinhos", return_value=""), \
-             patch("gemini_service.buscar_html_zenrows", return_value="") as mock_zen, \
-             patch("gemini_service.buscar_html_scraperapi", return_value=html_scraper_fake) as mock_scraper, \
-             patch("gemini_service.buscar_html_scrapingbee") as mock_sbee, \
-             patch("gemini_service.buscar_capas_online", return_value=[]), \
-             patch("gemini_service.get_gemini_client") as mock_ai:
-            res_scraper = gemini_service.buscar_dados_guia_dos_quadrinhos(
-                "JLA", "1", "Panini",
-                url_edicao="https://www.guiadosquadrinhos.com/edicao/jla/1/1"
-            )
-            mock_zen.assert_called_once()
-            mock_scraper.assert_called_once()
-            mock_sbee.assert_not_called()
-            mock_ai.assert_not_called()
-            self.assertEqual(res_scraper.get("roteiro"), "Grant Morrison")
+        mock_resp.json.return_value = {
+            "organic_results": [
+                {"title": "Guia dos Quadrinhos Batman", "link": "https://guiadosquadrinhos.com/1", "snippet": "Informações"}
+            ]
+        }
+        with patch("requests.get", return_value=mock_resp):
+            res = gemini_service.pesquisar_reserp_google("Batman 1 Guia dos Quadrinhos")
+            self.assertIsInstance(res, list)
+            self.assertEqual(len(res), 1)
+            self.assertEqual(res[0]["title"], "Guia dos Quadrinhos Batman")
 
     def test_sincronizar_turso_para_local(self):
         """Testa o mecanismo de replicação/backup do Turso Cloud para o SQLite local."""
@@ -1773,7 +1570,8 @@ class TestHqCatalog(unittest.TestCase):
             os.remove(test_sync_db)
 
         # 1. Sem Turso configurado deve lançar ValueError
-        with patch("database.is_using_turso", return_value=False):
+        with patch("database.is_using_turso", return_value=False), \
+             patch("database.get_turso_credentials", return_value=(None, None)):
             with self.assertRaises(ValueError):
                 database.sincronizar_turso_para_local(db_destino_path=test_sync_db)
 
@@ -1790,7 +1588,7 @@ class TestHqCatalog(unittest.TestCase):
         fake_hist = database.TursoResultSet(columns=["id", "hq_id", "data_destaque", "criado_em"], rows=[])
         fake_count = database.TursoResultSet(columns=["count"], rows=[database.TursoRow([2], {"count": 0})])
 
-        def mock_query(sql, params=None):
+        def mock_query(sql, params=None, **kwargs):
             sql_upper = sql.upper().strip()
             if "PRATELEIRAS" in sql_upper:
                 return fake_prat
