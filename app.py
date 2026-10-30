@@ -21,12 +21,16 @@ load_dotenv()
 
 import importlib
 import database
-importlib.reload(database)
+if not hasattr(database, "exportar_inventario_csv_bytes"):
+    importlib.reload(database)
 import gemini_service
+if not getattr(gemini_service, "_CACHE_KEY_V2", False):
+    importlib.reload(gemini_service)
 import auth
 import jev_engine
 
 DEFAULT_NO_COVER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "No_Image_Available.jpg")
+_DEFAULT_NO_COVER_B64_CACHE: Optional[str] = None
 
 def processar_imagem_capa(imagem: Any, max_dim: int = 700, quality: int = 85) -> str:
     """Redimensiona e converte uma foto (PIL, UploadedFile ou bytes) em uma string base64 compacta (JPEG)."""
@@ -47,12 +51,16 @@ def processar_imagem_capa(imagem: Any, max_dim: int = 700, quality: int = 85) ->
 def obter_imagem_capa(capa_val: Any) -> Any:
     """Retorna a URL, base64 ou imagem PIL da capa, com fallback para No_Image_Available.jpg."""
     def _fallback_no_cover() -> Any:
+        global _DEFAULT_NO_COVER_B64_CACHE
+        if _DEFAULT_NO_COVER_B64_CACHE:
+            return _DEFAULT_NO_COVER_B64_CACHE
         for p in [DEFAULT_NO_COVER_PATH, os.path.join(os.path.dirname(os.path.abspath(__file__)), "No_Image_Available.jpg")]:
             if os.path.exists(p):
                 try:
                     with open(p, "rb") as f_nc:
                         b64_nc = base64.b64encode(f_nc.read()).decode("utf-8")
-                    return f"data:image/jpeg;base64,{b64_nc}"
+                    _DEFAULT_NO_COVER_B64_CACHE = f"data:image/jpeg;base64,{b64_nc}"
+                    return _DEFAULT_NO_COVER_B64_CACHE
                 except Exception:
                     return p
         return None
@@ -2534,9 +2542,10 @@ with st.sidebar:
     st.markdown("---")
 
     # Exportação do inventário para CSV
-    df_export = database.listar_todas_hqs()
-    if not df_export.empty:
-        csv_data = df_export.to_csv(index=False).encode("utf-8")
+    csv_data = database.exportar_inventario_csv_bytes()
+    if csv_data:
+        pass
+        # CSV otimizado em cache via database.exportar_inventario_csv_bytes()
         st.download_button(
             label="📥 Exportar Inventário (CSV)",
             data=csv_data,

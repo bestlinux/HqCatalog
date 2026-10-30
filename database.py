@@ -186,7 +186,7 @@ def executar_turso_query(sql: str, params: Optional[List[Any]] = None, max_retri
     ultimo_erro = None
     for tentativa in range(1, max_retries + 1):
         try:
-            r = session.post(endpoint, json=payload, headers=headers, timeout=12)
+            r = session.post(endpoint, json=payload, headers=headers, timeout=45)
             r.raise_for_status()
             data = r.json()
             res_block = data.get("results", [{}])[0]
@@ -203,6 +203,9 @@ def executar_turso_query(sql: str, params: Optional[List[Any]] = None, max_retri
                 vals = [_deserializar_valor_turso(cell) for cell in r_raw]
                 rows.append(TursoRow(vals, cols_map))
 
+            global _TURSO_MUTATION_ID
+            if result_data.get("affected_row_count", 0) > 0 or not sql.lstrip().upper().startswith("SELECT"):
+                _TURSO_MUTATION_ID = globals().get("_TURSO_MUTATION_ID", 0) + 1
             return TursoResultSet(
                 columns=cols,
                 rows=rows,
@@ -241,7 +244,7 @@ def executar_turso_batch(statements: List[Tuple[str, Optional[List[Any]]]], max_
     ultimo_erro = None
     for tentativa in range(1, max_retries + 1):
         try:
-            r = session.post(endpoint, json={"requests": requests_list}, headers=headers, timeout=20)
+            r = session.post(endpoint, json={"requests": requests_list}, headers=headers, timeout=60)
             r.raise_for_status()
             data = r.json()
 
@@ -1055,6 +1058,95 @@ def salvar_hqs(
     return len(itens_salvos)
 
 
+_TURSO_MUTATION_ID: int = 0
+_LISTAR_HQS_CACHE: Dict[Any, Any] = {}
+_THUMB_GRID_CACHE: Dict[Tuple[int, int, str], str] = {}
+_THUMB_STRINGS_SET: set = set()
+_CSV_EXPORT_CACHE: Dict[Any, bytes] = {}
+_CHAT_CTX_CACHE: Dict[Any, List[Dict[str, Any]]] = {}
+
+
+def _obter_assinatura_db(db_path: str = DB_DEFAULT_PATH) -> Tuple[Any, ...]:
+    """Retorna uma assinatura leve do estado atual do banco para invalidação instantânea de cache."""
+    if is_using_turso() and db_path == DB_DEFAULT_PATH:
+        return ("turso", globals().get("_TURSO_MUTATION_ID", 0))
+    try:
+        st_main = os.stat(db_path)
+        wal_path = f"{db_path}-wal"
+        wal_mtime = os.stat(wal_path).st_mtime_ns if os.path.exists(wal_path) else 0
+        return ("sqlite", db_path, st_main.st_mtime_ns, st_main.st_size, wal_mtime)
+    except Exception:
+        return ("sqlite", db_path, time.time_ns())
+
+
+def _gerar_miniatura_grid_capa(hq_id: int, capa_str: str) -> str:
+    """Converte capas Base64 pesadas (>8KB) em miniaturas leves (~2KB) para o st.data_editor, mantendo cache em memória."""
+    if not capa_str or not isinstance(capa_str, str):
+        return ""
+    c_s = capa_str.strip()
+    if len(c_s) <= 8000 or not c_s.startswith("data:image"):
+        return c_s
+    cache_key = (int(hq_id or 0), len(c_s), c_s[-32:])
+    cached = _THUMB_GRID_CACHE.get(cache_key)
+    if cached:
+        return cached
+    try:
+        import io
+        from PIL import Image
+        raw_b = base64.b64decode(c_s.split(",", 1)[1])
+        im = Image.open(io.BytesIO(raw_b)).convert("RGB")
+        im.thumbnail((65, 95), Image.Resampling.BILINEAR)
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=65, optimize=True)
+        thumb_b64 = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+        _THUMB_GRID_CACHE[cache_key] = thumb_b64
+        _THUMB_STRINGS_SET.add(thumb_b64)
+        return thumb_b64
+    except Exception:
+        return c_s
+
+
+def _otimizar_df_capas_grid(df_in: Any) -> Any:
+    """Substitui strings Base64 gigantes pela miniatura otimizada no DataFrame do grid."""
+    if pd is None or not isinstance(df_in, pd.DataFrame) or df_in.empty or "capa" not in df_in.columns:
+        return df_in
+    df_out = df_in.copy()
+    ids_col = df_out["id"].tolist() if "id" in df_out.columns else [0] * len(df_out)
+    capas_col = df_out["capa"].tolist()
+    df_out["capa"] = [
+        _gerar_miniatura_grid_capa(h_id, c_val) if isinstance(c_val, str) and len(c_val) > 8000 else (c_val or "")
+        for h_id, c_val in zip(ids_col, capas_col)
+    ]
+    return df_out
+
+
+def exportar_inventario_csv_bytes(db_path: str = DB_DEFAULT_PATH) -> bytes:
+    """Gera o arquivo CSV leve do inventário (sem os blobs Base64 de imagem) com cache automático por mtime."""
+    sig = _obter_assinatura_db(db_path)
+    if sig in _CSV_EXPORT_CACHE:
+        return _CSV_EXPORT_CACHE[sig]
+    sql = "SELECT id, titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, resumo, resenha, link_edicao, criado_em FROM hqs ORDER BY LOWER(TRIM(titulo)) ASC, id ASC"
+    try:
+        if is_using_turso() and db_path == DB_DEFAULT_PATH:
+            res = executar_turso_query(sql)
+            rows = [dict(zip(res.columns, r)) for r in res.rows]
+            df_csv = pd.DataFrame(rows) if pd is not None else None
+        else:
+            conn = get_sqlite_connection(db_path)
+            try:
+                df_csv = pd.read_sql_query(sql, conn) if pd is not None else None
+            finally:
+                conn.close()
+        if df_csv is not None and not df_csv.empty:
+            csv_bytes = df_csv.to_csv(index=False).encode("utf-8")
+            _CSV_EXPORT_CACHE.clear()
+            _CSV_EXPORT_CACHE[sig] = csv_bytes
+            return csv_bytes
+    except Exception as ex:
+        print(f"Aviso exportar_inventario_csv_bytes: {ex}")
+    return b""
+
+
 def listar_todas_hqs(
     busca: Optional[str] = None,
     prateleira_filtro: Optional[str] = None,
@@ -1126,13 +1218,19 @@ def listar_todas_hqs(
         "id_desc": " ORDER BY id DESC"
     }
     query += mapa_ordenacao.get(ordem_por, " ORDER BY LOWER(TRIM(titulo)) ASC, id ASC")
+    sig_cache = (_obter_assinatura_db(db_path), query, tuple(params))
+    if sig_cache in _LISTAR_HQS_CACHE:
+        cached_val = _LISTAR_HQS_CACHE[sig_cache]
+        return cached_val.copy() if hasattr(cached_val, "copy") else list(cached_val)
 
     if is_using_turso() and db_path == DB_DEFAULT_PATH:
         try:
             res = executar_turso_query(query, params)
             rows = [dict(zip(res.columns, r)) for r in res.rows]
             if pd is not None:
-                return pd.DataFrame(rows)
+                df_opt = _otimizar_df_capas_grid(pd.DataFrame(rows))
+                _LISTAR_HQS_CACHE[sig_cache] = df_opt
+                return df_opt.copy()
             return rows
         except Exception as ex:
             print(f"Aviso Turso listar_todas_hqs: {ex}")
@@ -1142,6 +1240,11 @@ def listar_todas_hqs(
         try:
             if pd is not None:
                 df = pd.read_sql_query(query, conn, params=params)
+                df_opt = _otimizar_df_capas_grid(df)
+                if len(_LISTAR_HQS_CACHE) > 24:
+                    _LISTAR_HQS_CACHE.clear()
+                _LISTAR_HQS_CACHE[sig_cache] = df_opt
+                return df_opt.copy()
                 return df
             else:
                 cursor = conn.cursor()
@@ -1893,7 +1996,7 @@ def atualizar_hq(
         val_avaliacao,
         val_valor,
         estado_conservacao.strip(),
-        capa.strip(),
+        (obter_hq_por_id(hq_id, db_path) or {}).get("capa", capa.strip()) if capa.strip() in _THUMB_STRINGS_SET else capa.strip(),
         resenha.strip(),
         resumo.strip(),
         hq_id
@@ -2187,7 +2290,16 @@ def alternar_status_leitura(hq_id: int, novo_status: Optional[str] = None, db_pa
 
 def obter_contexto_hqs_para_chat(db_path: str = DB_DEFAULT_PATH) -> List[Dict[str, Any]]:
     """Retorna todas as HQs do banco em formato de lista de dicionários para alimentar o chatbot."""
+    sig = _obter_assinatura_db(db_path)
+    if sig in _CHAT_CTX_CACHE:
+        return list(_CHAT_CTX_CACHE[sig])
     df_ou_lista = listar_todas_hqs(db_path=db_path)
+    if pd is not None and isinstance(df_ou_lista, pd.DataFrame):
+        df_sem_capa = df_ou_lista.drop(columns=["capa"], errors="ignore")
+        res_ctx = df_sem_capa.to_dict(orient="records")
+        _CHAT_CTX_CACHE.clear()
+        _CHAT_CTX_CACHE[sig] = res_ctx
+        return list(res_ctx)
     if pd is not None and isinstance(df_ou_lista, pd.DataFrame):
         return df_ou_lista.to_dict(orient="records")
     elif isinstance(df_ou_lista, list):
@@ -2757,7 +2869,7 @@ def sincronizar_local_para_turso(
             sincronizar_turso_para_local(
                 db_destino_path=backup_turso_path,
                 fazer_backup_previo=False,
-                tamanho_lote=500
+                tamanho_lote=150
             )
         except Exception as e_bkp:
             print(f"Aviso: Não foi possível criar backup prévio do Turso: {e_bkp}")
@@ -2853,11 +2965,18 @@ def sincronizar_local_para_turso(
                 break
 
             stmts_lote = []
+            bytes_lote = 0
             for r in lote:
                 vals = [r[col] if col in r.keys() else None for col in campos_turso]
+                peso_r = sum(len(str(v)) for v in vals if v is not None)
+                if stmts_lote and (bytes_lote + peso_r > 1_500_000):
+                    executar_turso_batch(stmts_lote, ignorar_flag_local=True)
+                    stmts_lote = []
+                    bytes_lote = 0
                 stmts_lote.append((sql_insert_hq, vals))
-
-            executar_turso_batch(stmts_lote, ignorar_flag_local=True)
+                bytes_lote += peso_r
+            if stmts_lote:
+                executar_turso_batch(stmts_lote, ignorar_flag_local=True)
             hqs_enviadas += len(lote)
 
             if progresso_callback:

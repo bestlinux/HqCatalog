@@ -1888,6 +1888,7 @@ def assegurar_camoufox_instalado() -> bool:
 
 
 _CACHE_CAPAS_GQ: Dict[str, str] = {}
+_CACHE_KEY_V2 = True
 
 
 def _guardar_capa_gq_cache(url_edicao: str, url_img: str, b64_str: str) -> None:
