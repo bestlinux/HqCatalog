@@ -46,16 +46,23 @@ def processar_imagem_capa(imagem: Any, max_dim: int = 700, quality: int = 85) ->
 
 def obter_imagem_capa(capa_val: Any) -> Any:
     """Retorna a URL, base64 ou imagem PIL da capa, com fallback para No_Image_Available.jpg."""
-    if capa_val is None:
-        if os.path.exists(DEFAULT_NO_COVER_PATH):
-            return DEFAULT_NO_COVER_PATH
+    def _fallback_no_cover() -> Any:
+        for p in [DEFAULT_NO_COVER_PATH, os.path.join(os.path.dirname(os.path.abspath(__file__)), "No_Image_Available.jpg")]:
+            if os.path.exists(p):
+                try:
+                    with open(p, "rb") as f_nc:
+                        b64_nc = base64.b64encode(f_nc.read()).decode("utf-8")
+                    return f"data:image/jpeg;base64,{b64_nc}"
+                except Exception:
+                    return p
         return None
 
-    # Se já for objeto de imagem carregado (PIL, BytesIO, UploadedFile, bytes), retorna diretamente
+    if capa_val is None:
+        return _fallback_no_cover()
+
     if isinstance(capa_val, (Image.Image, io.BytesIO, bytes)) or hasattr(capa_val, "read"):
         return capa_val
 
-    # Se não for string, tenta converter com segurança
     if not isinstance(capa_val, str):
         try:
             capa_val = str(capa_val)
@@ -65,32 +72,16 @@ def obter_imagem_capa(capa_val: Any) -> Any:
     capa_str = capa_val.strip()
     if capa_str:
         if capa_str.startswith("http") and ("guiadosquadrinhos.com" in capa_str or "ShowImage.aspx" in capa_str):
-            # Imagens do Guia dos Quadrinhos são bloqueadas por anti-hotlink do Cloudflare
-            # Nunca envie ShowImage.aspx cru diretamente para a tag <img> do navegador
             b64_c = gemini_service.obter_capa_gq_cache(capa_str)
             if b64_c and b64_c.startswith("data:image"):
                 return b64_c
             b64_dl = gemini_service.baixar_imagem_url_base64(capa_str)
             if b64_dl and b64_dl.startswith("data:image"):
                 return b64_dl
-            # Fallback seguro: se não conseguiu carregar via headless, usa No_Image_Available para não quebrar a tela
-            if os.path.exists(DEFAULT_NO_COVER_PATH):
-                return DEFAULT_NO_COVER_PATH
+            return _fallback_no_cover()
         return capa_str
-    
-    if os.path.exists(DEFAULT_NO_COVER_PATH):
-        try:
-            return Image.open(DEFAULT_NO_COVER_PATH)
-        except Exception:
-            return DEFAULT_NO_COVER_PATH
-            
-    caminho_rel = os.path.join(os.path.dirname(os.path.abspath(__file__)), "No_Image_Available.jpg")
-    if os.path.exists(caminho_rel):
-        try:
-            return Image.open(caminho_rel)
-        except Exception:
-            return caminho_rel
-    return None
+
+    return _fallback_no_cover()
 
 # Configuração da página do Streamlit
 st.set_page_config(
@@ -4730,14 +4721,15 @@ def renderizar_pagina_atualizacao_manual():
     st.caption(f"Edição selecionada: **#{hq_sel['id']}** • Cadastrada em `{hq_sel.get('criado_em') or '-'}`")
 
     # Card principal da edição selecionada (idêntico à Edição do Dia)
-    with st.container(border=True):
+    with st.container(border=True, key=f"card_att_man_{val_id}"):
         col_capa, col_detalhes = st.columns([1.1, 3.2], gap="medium")
 
         with col_capa:
             img_capa = obter_imagem_capa(hq_sel.get("capa"))
             tem_capa = bool(hq_sel.get("capa") and str(hq_sel["capa"]).strip())
             legenda_capa = "Foto da Capa" if tem_capa else "Capa Padrão (Não cadastrada)"
-            st.image(img_capa, caption=legenda_capa, use_container_width=True)
+            with st.container(key=f"capa_box_att_man_{val_id}_{len(str(hq_sel.get('capa') or ''))}"):
+                st.image(img_capa, caption=legenda_capa, use_container_width=True)
 
             btn_abrir_link_man = st.button(
                 "🔗 Link Manual",
@@ -5359,7 +5351,8 @@ if hq_dia:
             img_capa = obter_imagem_capa(hq_dia.get("capa"))
             tem_capa = bool(hq_dia.get("capa") and str(hq_dia["capa"]).strip())
             legenda_capa = "Foto da Capa" if tem_capa else "Capa Padrão (Não cadastrada)"
-            st.image(img_capa, caption=legenda_capa, use_container_width=True)
+            with st.container(key=f"capa_box_dia_{hq_dia['id']}_{len(str(hq_dia.get('capa') or ''))}"):
+                st.image(img_capa, caption=legenda_capa, use_container_width=True)
             
             btn_abrir_link_man = st.button("🔗 Link Manual", key="btn_link_manual_dia", use_container_width=True, type="secondary", help="Inserir link direto do Guia dos Quadrinhos para extrair dados da HQ")
             if btn_abrir_link_man:
@@ -5439,7 +5432,17 @@ if hq_dia:
             col_b1, col_b2, col_b3, col_b4, col_b5, col_b6 = st.columns([1.1, 1.1, 1.3, 1.0, 1.0, 1.0])
             with col_b1:
                 if st.button("🎲 Sortear Outra", key="btn_sortear_outra_dia", use_container_width=True, help="Sortear aleatoriamente outro quadrinho da sua coleção sem repetir recentes"):
-                    outra_hq = database.sortear_edicao_do_dia(excluir_id=int(hq_dia["id"]), data_destaque=data_hoje)
+                    old_id_dia = int(hq_dia["id"])
+                    for k_old in [
+                        f"abrir_modal_link_manual_{old_id_dia}",
+                        f"manual_extraidos_fonte_{old_id_dia}",
+                        f"manual_capas_encontradas_{old_id_dia}",
+                        f"manual_input_capa_{old_id_dia}",
+                        f"manual_modelo_usado_{old_id_dia}",
+                        f"manual_capa_custom_flag_{old_id_dia}",
+                    ]:
+                        st.session_state.pop(k_old, None)
+                    outra_hq = database.sortear_edicao_do_dia(excluir_id=old_id_dia, data_destaque=data_hoje)
                     if outra_hq:
                         st.session_state["edicao_do_dia_id"] = outra_hq["id"]
                         st.rerun()

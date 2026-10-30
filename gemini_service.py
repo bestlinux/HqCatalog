@@ -1891,26 +1891,29 @@ _CACHE_CAPAS_GQ: Dict[str, str] = {}
 
 
 def _guardar_capa_gq_cache(url_edicao: str, url_img: str, b64_str: str) -> None:
-    """Armazena a string Base64 da capa no cache em memória indexado por várias chaves para consulta instantânea."""
+    """Armazena a string Base64 da capa no cache em memória indexado estritamente pela edição ou path único da imagem."""
     global _CACHE_CAPAS_GQ
     if not b64_str or not b64_str.startswith("data:image"):
         return
     if url_edicao:
         _CACHE_CAPAS_GQ[url_edicao] = b64_str
-        m_id_ed = re.search(r"/(\d+)$", url_edicao)
+        m_id_ed = re.search(r"/edicao/[^/]+/[^/]+/(\d+)", url_edicao)
         if m_id_ed:
-            _CACHE_CAPAS_GQ[f"id_{m_id_ed.group(1)}"] = b64_str
+            _CACHE_CAPAS_GQ[f"edicao_id_{m_id_ed.group(1)}"] = b64_str
     if url_img:
-        _CACHE_CAPAS_GQ[url_img] = b64_str
-        clean_img = re.sub(r"&[wh]=\d+", "", url_img)
-        _CACHE_CAPAS_GQ[clean_img] = b64_str
-        m_id_img = re.search(r"id=(\d+)", url_img)
-        if m_id_img:
-            _CACHE_CAPAS_GQ[f"id_{m_id_img.group(1)}"] = b64_str
-
+        m_path = re.search(r"[?&]path=([^&#]+)", url_img, re.I)
+        if m_path:
+            path_val = m_path.group(1).strip().lower()
+            if path_val:
+                _CACHE_CAPAS_GQ[f"path_{path_val}"] = b64_str
+            _CACHE_CAPAS_GQ[url_img] = b64_str
+            clean_img = re.sub(r"&[wh]=\d+", "", url_img)
+            _CACHE_CAPAS_GQ[clean_img] = b64_str
+        elif "ShowImage.aspx" not in url_img:
+            _CACHE_CAPAS_GQ[url_img] = b64_str
 
 def obter_capa_gq_cache(url_img: Optional[str] = None, url_edicao: Optional[str] = None) -> Optional[str]:
-    """Retorna a string base64 da capa se ela estiver no cache em memória vinculada estritamente à edição ou URL."""
+    """Retorna a string base64 da capa se ela estiver no cache em memória vinculada estritamente à edição ou path único."""
     global _CACHE_CAPAS_GQ
     if not _CACHE_CAPAS_GQ:
         return None
@@ -1922,11 +1925,16 @@ def obter_capa_gq_cache(url_img: Optional[str] = None, url_edicao: Optional[str]
         clean_cand = re.sub(r"&[wh]=\d+", "", cand)
         if clean_cand in _CACHE_CAPAS_GQ:
             return _CACHE_CAPAS_GQ[clean_cand]
-        m_id = re.search(r"id=(\d+)|/(\d+)$", cand)
-        if m_id:
-            key_id = f"id_{m_id.group(1) or m_id.group(2)}"
-            if key_id in _CACHE_CAPAS_GQ:
-                return _CACHE_CAPAS_GQ[key_id]
+        m_path = re.search(r"[?&]path=([^&#]+)", cand, re.I)
+        if m_path:
+            key_path = f"path_{m_path.group(1).strip().lower()}"
+            if key_path in _CACHE_CAPAS_GQ:
+                return _CACHE_CAPAS_GQ[key_path]
+        m_id_ed = re.search(r"/edicao/[^/]+/[^/]+/(\d+)", cand)
+        if m_id_ed:
+            key_ed = f"edicao_id_{m_id_ed.group(1)}"
+            if key_ed in _CACHE_CAPAS_GQ:
+                return _CACHE_CAPAS_GQ[key_ed]
     return None
 
 
