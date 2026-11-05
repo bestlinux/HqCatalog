@@ -1213,7 +1213,7 @@ def listar_todas_hqs(
         "estado_conservacao_asc": " ORDER BY LOWER(TRIM(estado_conservacao)) ASC, LOWER(TRIM(titulo)) ASC",
         "estado_conservacao_desc": " ORDER BY LOWER(TRIM(estado_conservacao)) DESC, LOWER(TRIM(titulo)) ASC",
         "criado_em_asc": " ORDER BY criado_em ASC, id ASC",
-        "criado_em_desc": " ORDER BY criado_em DESC, id DESC",
+        "criado_em_desc": " ORDER BY id DESC, criado_em DESC",
         "id_asc": " ORDER BY id ASC",
         "id_desc": " ORDER BY id DESC"
     }

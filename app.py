@@ -24,7 +24,7 @@ import database
 if not hasattr(database, "exportar_inventario_csv_bytes"):
     importlib.reload(database)
 import gemini_service
-if not getattr(gemini_service, "_CACHE_KEY_V2", False):
+if not getattr(gemini_service, "_CACHE_KEY_V3", False):
     importlib.reload(gemini_service)
 import auth
 import jev_engine
@@ -2346,6 +2346,12 @@ with st.sidebar:
             navegar_para("storyteller")
         if st.button("📦 Importação Lote", use_container_width=True, type="primary" if pag_atual == "importacao_lote" else "secondary", help="Importar coleções inteiras com curadoria da IA", key="nav_btn_lote"):
             navegar_para("importacao_lote")
+        if st.button("📸 Foto Prateleira", use_container_width=True, type="primary" if pag_atual == "captura_prateleira" else "secondary", help="Captura da Foto da Prateleira e Identificação via IA", key="nav_btn_captura_prat"):
+            navegar_para("captura_prateleira")
+        if st.button("💬 Curador Virtual", use_container_width=True, type="primary" if pag_atual == "curador_virtual" else "secondary", help="Curador Virtual: Assistente & Recomendações da Coleção", key="nav_btn_curador"):
+            navegar_para("curador_virtual")
+        if st.button("➕ Cadastro Manual", use_container_width=True, type="primary" if pag_atual == "cadastro_manual" else "secondary", help="Cadastrar nova HQ informando o Link Manual do Guia dos Quadrinhos", key="nav_btn_cadastro_manual"):
+            navegar_para("cadastro_manual")
     with c_nav2:
         if st.button("📖 Em Leitura", use_container_width=True, type="primary" if pag_atual == "em_leitura" else "secondary", key="nav_btn_lendo"):
             navegar_para("em_leitura")
@@ -2357,6 +2363,10 @@ with st.sidebar:
             navegar_para("quiz_acervo")
         if st.button("🔗 Atualização Manual", use_container_width=True, type="primary" if pag_atual == "atualizacao_manual" else "secondary", help="Selecionar HQ por ID e processar dados via Link Manual", key="nav_btn_atualizacao_manual"):
             navegar_para("atualizacao_manual")
+        if st.button("🛠️ CRUD Assistido", use_container_width=True, type="primary" if pag_atual == "crud_assistido" else "secondary", help="Operações de CRUD assistidas por IA", key="nav_btn_crud_ass"):
+            navegar_para("crud_assistido")
+        if st.button("🛒 Radar & Desejos", use_container_width=True, type="primary" if pag_atual == "radar_precos" else "secondary", help="Radar de Preços em Lojas & Lista de Desejos", key="nav_btn_radar_precos"):
+            navegar_para("radar_precos")
 
     st.markdown("---")
     
@@ -5321,6 +5331,1479 @@ if st.query_params.get("pagina") == "atualizacao_manual" or st.session_state.get
 
 
 
+def renderizar_pagina_cadastro_manual():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("➕ Cadastro Manual (via Link Manual)")
+        st.markdown(
+            "Informe o **Link Manual** da edição no **Guia dos Quadrinhos** (ou cole o HTML/texto da página) "
+            "para extrair e cadastrar automaticamente uma **nova HQ completa**: título, edição, editora, gênero, roteirista, ilustrador, preço de capa, resumo e capa em alta resolução."
+        )
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_cad_man_top"):
+            voltar_ao_catalogo()
+
+    st.markdown("---")
+
+    # Exibe confirmação se uma HQ acabou de ser cadastrada
+    ultimo_cad = st.session_state.get("cad_man_ultimo_salvo")
+    if ultimo_cad:
+        with st.container(border=True):
+            st.success(f"🎉 **Nova HQ cadastrada com sucesso no acervo!** (ID **#{ultimo_cad.get('id')}**)")
+            c_uc1, c_uc2 = st.columns([1, 3.5])
+            with c_uc1:
+                st.image(obter_imagem_capa(ultimo_cad.get("capa")), width=130, caption=f"ID #{ultimo_cad.get('id')}")
+            with c_uc2:
+                st.markdown(f"#### 📖 {ultimo_cad.get('titulo')} {(' - Ed. ' + str(ultimo_cad.get('edicao'))) if ultimo_cad.get('edicao') else ''}")
+                st.markdown(
+                    f"🏢 **Editora:** `{ultimo_cad.get('editora') or '-'}` • "
+                    f"🏷️ **Gênero:** `{ultimo_cad.get('genero') or 'Outro'}` • "
+                    f"📍 **Prateleira:** `{ultimo_cad.get('prateleira') or '-'}` • "
+                    f"💰 **Valor:** `R$ {float(ultimo_cad.get('valor') or 0.0):.2f}`"
+                )
+                st.markdown(
+                    f"✍️ **Roteirista:** {ultimo_cad.get('escritor') or 'Não informado'} | "
+                    f"🎨 **Ilustrador:** {ultimo_cad.get('ilustrador') or 'Não informado'}"
+                )
+                if ultimo_cad.get("resumo"):
+                    with st.expander("📝 Ver Resumo Cadastrado", expanded=False):
+                        st.write(ultimo_cad["resumo"])
+            if st.button("✨ Ocultar Aviso", key="btn_fechar_aviso_cad_man"):
+                pass
+                st.session_state.pop("cad_man_ultimo_salvo", None)
+                st.rerun()
+
+    session_extraidos_key = "cad_man_extraidos_fonte"
+    session_capas_key = "cad_man_capas_encontradas"
+    session_capa_sel_key = "cad_man_input_capa"
+    session_modelo_key = "cad_man_modelo_usado"
+
+    def _limpar_estado_cad_man(limpar_url: bool = True):
+        if limpar_url:
+            st.session_state["cad_man_url_ver"] = int(st.session_state.get("cad_man_url_ver") or 0) + 1
+        for k_rm in [
+            session_extraidos_key,
+            session_capas_key,
+            session_capa_sel_key,
+            session_modelo_key,
+            "cad_man_input_titulo",
+            "cad_man_input_edicao",
+            "cad_man_input_editora",
+            "cad_man_input_genero",
+            "cad_man_input_roteiro",
+            "cad_man_input_ilustrador",
+            "cad_man_input_valor",
+            "cad_man_input_link",
+            "cad_man_input_resumo",
+            "cad_man_input_resenha",
+            "cad_man_capa_custom_flag",
+        ]:
+            st.session_state.pop(k_rm, None)
+
+    st.markdown("### 🔗 1. Informar Link Manual (Guia dos Quadrinhos)")
+    with st.container(border=True):
+        url_ou_texto = st.text_area(
+            "Link direto da edição (URL) ou Conteúdo copiado (HTML / Texto da página):",
+            placeholder="Exemplo de Link: https://www.guiadosquadrinhos.com/edicao/...\nOu cole o código-fonte HTML ou texto copiado da página",
+            key=f"txt_url_page_cadastro_manual_{st.session_state.get('cad_man_url_ver', 0)}",
+            height=110,
+            help="Cole a URL completa da edição no Guia dos Quadrinhos ou o texto/HTML copiado da página para extrair todos os dados e cadastrar a HQ."
+        )
+
+        c_mbtn1, c_mbtn2 = st.columns([2, 1])
+        with c_mbtn1:
+            btn_processar_manual = st.button("🚀 Processar Link / Conteúdo para Cadastro", key="btn_processar_cad_manual", type="primary", use_container_width=True)
+        with c_mbtn2:
+            btn_limpar_manual = st.button("🔄 Limpar / Novo Cadastro", key="btn_limpar_cad_manual", use_container_width=True)
+
+        if btn_limpar_manual:
+            _limpar_estado_cad_man()
+            st.rerun()
+
+        if btn_processar_manual:
+            if not url_ou_texto.strip():
+                st.warning("⚠️ Cole o link ou o conteúdo HTML/texto primeiro antes de processar!")
+            else:
+                pass
+                pass
+                st.session_state.pop("cad_man_ultimo_salvo", None)
+
+                texto_extraido = url_ou_texto.strip()
+                url_manual_gq = ""
+                origem_manual = ""
+                mod_manual_usado = None
+
+                if "guiadosquadrinhos.com" in texto_extraido:
+                    if not texto_extraido.startswith("http"):
+                        texto_extraido = "https://" + texto_extraido.lstrip("/")
+                    if "www.guiadosquadrinhos.com" not in texto_extraido:
+                        texto_extraido = texto_extraido.replace("guiadosquadrinhos.com", "www.guiadosquadrinhos.com")
+
+                if texto_extraido.startswith("http"):
+                    url_manual_gq = texto_extraido
+
+                _limpar_estado_cad_man(limpar_url=False)
+                dados_man: Dict[str, Any] = {}
+
+                # 1. TENTATIVA DIRETA COM PYTHON PURO (SEM IA)
+                if not texto_extraido.startswith("http"):
+                    with st.spinner("⚡ 1/2: Extraindo dados do texto/HTML colado via Python puro..."):
+                        if "<div" in texto_extraido or "class=" in texto_extraido or "historia" in texto_extraido.lower() or "personagens:" in texto_extraido.lower() or "roteiro:" in texto_extraido.lower():
+                            dados_man = gemini_service.extrair_dados_texto_ou_html_gq(texto_extraido, url_orig=url_manual_gq)
+                            if dados_man and (dados_man.get("roteiro") or dados_man.get("desenho") or dados_man.get("resumo") or dados_man.get("titulo")):
+                                origem_manual = "html_puro"
+                                mod_manual_usado = "Python Extractor (Texto Puro da Página)"
+                else:
+                    with st.spinner("⚡ 1/2: Baixando página e extraindo ficha com Python puro..."):
+                        try:
+                            if "guiadosquadrinhos.com" in texto_extraido:
+                                html_puro = gemini_service.buscar_html_edicao_guia_dos_quadrinhos(texto_extraido)
+                            else:
+                                try:
+                                    from curl_cffi import requests as cffi_requests
+                                    r = cffi_requests.get(texto_extraido, impersonate="chrome120", timeout=8)
+                                except Exception:
+                                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
+                                    r = requests.get(texto_extraido, headers=headers, timeout=10)
+                                html_puro = r.text if r.status_code == 200 else ""
+
+                            if html_puro and len(html_puro) > 500:
+                                dados_puro = gemini_service.extrair_dados_texto_ou_html_gq(html_puro, url_orig=url_manual_gq)
+                                if dados_puro and (dados_puro.get("roteiro") or dados_puro.get("desenho") or dados_puro.get("resumo") or dados_puro.get("titulo")):
+                                    dados_man = dados_puro
+                                    origem_manual = "html_puro"
+                                    mod_manual_usado = "Python Extractor (Página Oficial - Sem IA)"
+                        except Exception as e_puro:
+                            print(f"[Aviso Python puro cadastro manual: {e_puro}]")
+
+                # Garante extração de título e edição pelo slug da URL se ainda estiverem vazios
+                if url_manual_gq and (not dados_man.get("titulo") or not dados_man.get("edicao")):
+                    fn_tit_ed = getattr(gemini_service, "_extrair_titulo_edicao_gq", None)
+                    if fn_tit_ed:
+                        t_slug, e_slug = fn_tit_ed("", url_manual_gq, dados_man.get("editora", ""))
+                        if t_slug and not dados_man.get("titulo"):
+                            dados_man["titulo"] = t_slug
+                        if e_slug and not dados_man.get("edicao"):
+                            dados_man["edicao"] = e_slug
+
+                # 2. CASO O HTML NÃO POSSA SER BAIXADO DIRETAMENTE OU FALTEM CAMPOS, EXTRAIR VIA IA GEMINI
+                if not dados_man or not dados_man.get("titulo") or not dados_man.get("resumo") or not (dados_man.get("roteiro") or dados_man.get("desenho")):
+                    with st.spinner("🤖 2/2: Extraindo dados completos com IA Gemini (Fallback Inteligente)..."):
+                        texto_auxiliar = texto_extraido
+                        if texto_extraido.startswith("http") and not ("<div" in texto_extraido or "historia" in texto_extraido.lower()):
+                            try:
+                                m_slug = re.search(r'/edicao/([^/]+)/', url_manual_gq)
+                                slug_pesq = m_slug.group(1).replace("-n-", " ").replace("-", " ") if m_slug else texto_extraido
+                                res_gq = gemini_service.pesquisar_reserp_google(f'site:guiadosquadrinhos.com "{slug_pesq}"')
+                                if not res_gq:
+                                    res_gq = gemini_service.pesquisar_reserp_google(f"site:guiadosquadrinhos.com {slug_pesq}")
+                                if res_gq:
+                                    texto_auxiliar = "\n\n".join([f"{item.get('title', '')}\n{item.get('snippet', '')}\n{item.get('text', '')}" for item in res_gq[:4]])
+                            except Exception:
+                                pass
+
+                        prompt_man = f"""Você é o especialista mestre na enciclopédia Guia dos Quadrinhos (guiadosquadrinhos.com) e nos quadrinhos publicados no Brasil.
+O usuário forneceu um link ou conteúdo para CADASTRAR uma nova HQ:
+{f'URL Oficial da Edição: {url_manual_gq}' if url_manual_gq else ''}
+
+Conteúdo/Resultados:
+---
+{texto_auxiliar[:14000]}
+---
+REGRAS DE EXTRAÇÃO:
+- Identifique o "titulo" oficial da série/HQ no Brasil (sem o número da edição no título), o número da "edicao" (apenas o número ou volume, ex: "1", "21"), a "editora" brasileira (ex: "Panini", "Abril", "Mythos") e o "genero" (ex: "Super-heróis", "Suspense", "Vertigo", "Mangá", "Ficção Científica").
+- Monte o "resumo" completo com todas as histórias contidas nesta edição (Título, Publicação Original, Roteiro, Arte, Personagens e Sinopse).
+- Extraia "roteiro" (nomes de todos os roteiristas separados por vírgula), "ilustrador" (todos os desenhistas/arte separados por vírgula), "valor" (preço de capa em reais, número float) e "link_edicao" ({url_manual_gq or 'URL oficial'}).
+Retorne ESTRITAMENTE um JSON com as chaves: "titulo", "edicao", "editora", "genero", "roteiro", "ilustrador", "valor", "resumo", "link_edicao"."""
+                        cliente = gemini_service.get_gemini_client()
+                        resp_man = None
+                        for mod in ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite']:
+                            try:
+                                resp_man = cliente.models.generate_content(model=mod, contents=prompt_man)
+                                if resp_man and resp_man.text:
+                                    mod_manual_usado = mod
+                                    origem_manual = "ia_gemini"
+                                    break
+                            except Exception:
+                                continue
+                        dados_ia = gemini_service.limpar_e_parsear_json_dict(resp_man.text) if resp_man and resp_man.text else {}
+                        if dados_ia:
+                            if mod_manual_usado:
+                                dados_ia["_modelo_usado"] = mod_manual_usado
+                                st.session_state[session_modelo_key] = mod_manual_usado
+                            if not dados_man:
+                                dados_man = dados_ia
+                            else:
+                                for k, v in dados_ia.items():
+                                    if not dados_man.get(k) and v:
+                                        dados_man[k] = v
+
+                if dados_man:
+                    if mod_manual_usado:
+                        dados_man["_modelo_usado"] = mod_manual_usado
+                        st.session_state[session_modelo_key] = mod_manual_usado
+                    st.session_state[session_extraidos_key] = dados_man
+
+                    tit_ext = (dados_man.get("titulo") or "").strip()
+                    ed_ext = str(dados_man.get("edicao") or "").strip()
+                    edit_ext = (dados_man.get("editora") or "").strip()
+                    gen_ext = (dados_man.get("genero") or "Super-heróis").strip()
+
+                    st.session_state["cad_man_input_titulo"] = tit_ext
+                    st.session_state["cad_man_input_edicao"] = ed_ext
+                    st.session_state["cad_man_input_editora"] = edit_ext
+                    st.session_state["cad_man_input_genero"] = gen_ext
+                    st.session_state["cad_man_input_roteiro"] = (dados_man.get("roteiro") or "").strip()
+                    st.session_state["cad_man_input_ilustrador"] = (dados_man.get("ilustrador") or dados_man.get("desenho") or "").strip()
+                    try:
+                        st.session_state["cad_man_input_valor"] = float(dados_man.get("valor") or dados_man.get("preco_capa") or 0.0)
+                    except Exception:
+                        st.session_state["cad_man_input_valor"] = 0.0
+                    st.session_state["cad_man_input_resumo"] = (dados_man.get("resumo") or "").strip()
+                    st.session_state["cad_man_input_link"] = (dados_man.get("link_edicao") or dados_man.get("url_edicao") or url_manual_gq or "").strip()
+
+                    capa_man = dados_man.get("capa_b64") or dados_man.get("capa_url") or dados_man.get("capa") or ""
+                    link_final_man = st.session_state["cad_man_input_link"]
+                    if link_final_man and "/edicao/" in link_final_man:
+                        fn_der_capa = getattr(gemini_service, "derivar_url_capa_guia_dos_quadrinhos", None)
+                        if fn_der_capa:
+                            url_der = fn_der_capa(link_final_man, editora=edit_ext, edicao=ed_ext)
+                            if url_der and (not capa_man or "ShowImage.aspx" not in capa_man or not (capa_man.startswith("http") or capa_man.startswith("data:image"))):
+                                capa_man = url_der
+
+                    if capa_man and str(capa_man).startswith("http") and ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man):
+                        with st.spinner("🖼️ Baixando capa oficial em alta resolução..."):
+                            b64_capa = gemini_service.baixar_imagem_url_base64(str(capa_man).strip(), fallback_url=url_manual_gq)
+                            if b64_capa and b64_capa.startswith("data:image"):
+                                capa_man = b64_capa
+
+                    termo_capa_busca = f"{tit_ext} {ed_ext} {edit_ext}".strip()
+                    capas_encontradas = []
+                    if termo_capa_busca:
+                        capas_encontradas = gemini_service.buscar_capas_online(
+                            titulo=termo_capa_busca,
+                            edicao=ed_ext,
+                            editora=edit_ext,
+                            escritor=dados_man.get("roteiro") or "",
+                            limite=12,
+                            url_edicao=url_manual_gq
+                        )
+                    if capa_man and (capa_man.startswith("data:image") or not ("guiadosquadrinhos.com" in capa_man or "ShowImage.aspx" in capa_man)):
+                        if not any(c.get("url") == capa_man for c in capas_encontradas):
+                            capas_encontradas.insert(0, {
+                                "url": capa_man,
+                                "titulo": f"{tit_ext or 'HQ'} nº {ed_ext} (Guia dos Quadrinhos Oficial)".strip(),
+                                "fonte": "Guia dos Quadrinhos",
+                                "thumbnail": capa_man
+                            })
+                    st.session_state[session_capas_key] = capas_encontradas
+                    if capa_man:
+                        st.session_state[session_capa_sel_key] = str(capa_man).strip()
+                    elif capas_encontradas:
+                        st.session_state[session_capa_sel_key] = capas_encontradas[0]["url"]
+
+                    if origem_manual == "html_puro":
+                        st.success("✅ Dados extraídos diretamente do HTML/Texto oficial (Python puro)! Revise e confirme o cadastro abaixo.")
+                    else:
+                        st.success(f"✅ Dados extraídos com sucesso via **{mod_manual_usado or 'Gemini'}**! Revise e confirme o cadastro abaixo.")
+                else:
+                    st.error("❌ Não foi possível extrair os dados da página ou texto informado. Verifique o link/texto ou preencha os campos manualmente abaixo.")
+
+    dados_salvar = st.session_state.get(session_extraidos_key)
+    if dados_salvar:
+        st.markdown("---")
+        st.markdown("### 📝 2. Revisar e Confirmar Cadastro da Nova HQ")
+        mod_usado = st.session_state.get(session_modelo_key) or (dados_salvar.get("_modelo_usado") if isinstance(dados_salvar, dict) else None)
+        if mod_usado:
+            st.info(f"🤖 **Origem/Modelo utilizado na extração:** `{mod_usado}`")
+
+        # Verifica se já existe HQ idêntica no acervo para avisar o usuário
+        tit_check = (st.session_state.get("cad_man_input_titulo") or "").strip()
+        ed_check = (st.session_state.get("cad_man_input_edicao") or "").strip()
+        if tit_check:
+            existentes_check = database.buscar_hqs_por_titulo_ou_edicao(tit_check, ed_check)
+            if existentes_check:
+                ex_first = existentes_check[0]
+                st.warning(
+                    f"⚠️ **Atenção:** Já existe no acervo uma edição semelhante: **#{ex_first['id']} - {ex_first['titulo']}** "
+                    f"(Edição: `{ex_first.get('edicao') or '-'}`, Editora: `{ex_first.get('editora') or '-'}`, Prateleira: `{ex_first.get('prateleira') or '-'}`). "
+                    f"Você ainda pode prosseguir caso queira cadastrar um novo exemplar.",
+                    icon="🔎"
+                )
+
+        col_f1, col_f2, col_f3 = st.columns([1.4, 1.2, 1.2])
+        with col_f1:
+            st.text_input("📖 Título da HQ *:", key="cad_man_input_titulo")
+            st.text_input("🔖 Edição / Volume:", key="cad_man_input_edicao")
+            st.text_input("🏢 Editora:", key="cad_man_input_editora")
+            st.text_input("🏷️ Gênero:", key="cad_man_input_genero")
+        with col_f2:
+            st.text_input("✍️ Roteirista(s):", key="cad_man_input_roteiro")
+            st.text_input("🎨 Ilustrador(es) / Arte:", key="cad_man_input_ilustrador")
+            st.number_input("💰 Preço de Capa / Valor (R$):", min_value=0.0, step=0.50, format="%.2f", key="cad_man_input_valor")
+            st.text_input("🔗 Link Oficial (Guia dos Quadrinhos):", key="cad_man_input_link")
+        with col_f3:
+            lista_prats_cad = [p for p in database.obter_prateleiras() if p]
+            opcoes_prat_cad = list(lista_prats_cad) if lista_prats_cad else ["Estante 1 - Prateleira 1"]
+            prat_sess = st.session_state.get("prateleira_atual", "")
+            if prat_sess and prat_sess not in opcoes_prat_cad:
+                opcoes_prat_cad.insert(0, prat_sess)
+            opcoes_prat_cad.append("➕ Nova / Digitar outro nome...")
+
+            prat_sel_cad = st.selectbox("📍 Prateleira:", options=opcoes_prat_cad, key="cad_man_sel_prateleira")
+            prat_nova_cad = ""
+            if prat_sel_cad == "➕ Nova / Digitar outro nome...":
+                prat_nova_cad = st.text_input("✍️ Nome da nova prateleira:", key="cad_man_input_nova_prat", placeholder="Ex: Estante DC - Prateleira 2")
+
+            st.selectbox("📖 Status de Leitura:", options=["Não Lido", "Lendo", "Lido"], key="cad_man_sel_lido")
+            st.selectbox("🛡️ Estado de Conservação:", options=["Excelente", "Muito Bom", "Bom", "Regular", "Ruim", "Novo / Lacrado"], key="cad_man_sel_estado")
+            st.slider("⭐ Avaliação (0 = Sem nota):", min_value=0, max_value=5, value=0, key="cad_man_sel_avaliacao")
+
+        st.text_area("📝 Resumo / Sinopse Completa da Edição:", height=140, key="cad_man_input_resumo")
+        st.text_input("✍️ Resenha / Observações Pessoais (Opcional):", key="cad_man_input_resenha")
+
+        st.markdown("---")
+        st.markdown("#### 🖼️ Capa da Edição")
+
+        capas_disponiveis = st.session_state.get(session_capas_key, [])
+        capa_selecionada = st.session_state.get(session_capa_sel_key) or ""
+        titulo_atual_cad = st.session_state.get("cad_man_input_titulo") or "Nova HQ"
+
+        if capa_selecionada:
+            col_prev1, col_prev2 = st.columns([1.2, 3])
+            with col_prev1:
+                with st.container(key=f"capa_box_cad_man_{len(str(capa_selecionada))}"):
+                    st.image(obter_imagem_capa(capa_selecionada), width=160, caption="Capa Selecionada")
+            with col_prev2:
+                st.success("✅ **Capa ativa selecionada para o cadastro desta HQ.**")
+                if str(capa_selecionada).startswith("data:image"):
+                    st.caption("🖼️ Imagem em alta resolução pronta em Base64")
+                else:
+                    st.caption(f"🔗 `{capa_selecionada[:80]}...`" if len(capa_selecionada) > 80 else f"🔗 `{capa_selecionada}`")
+        else:
+            st.info("🖼️ Nenhuma capa selecionada ainda.")
+
+        with st.expander("📤 Fazer Upload da Própria Capa (Arquivo ou Câmera)", expanded=bool(st.session_state.get("cad_man_capa_custom_flag"))):
+            st.caption("Envie uma imagem do seu computador/celular ou fotografe a capa com a câmera:")
+            tab_up_arq, tab_up_cam = st.tabs(["📁 Arquivo / Galeria", "📷 Câmera Web"])
+            foto_up_escolhida = None
+            with tab_up_arq:
+                up_file = st.file_uploader(
+                    "Selecione uma imagem da capa (JPG, PNG, WEBP):",
+                    type=["jpg", "jpeg", "png", "webp"],
+                    key="uploader_capa_cad_manual"
+                )
+                if up_file:
+                    foto_up_escolhida = up_file
+            with tab_up_cam:
+                cam_file = st.camera_input("Fotografar capa:", key="camera_capa_cad_manual")
+                if cam_file:
+                    foto_up_escolhida = cam_file
+
+            if foto_up_escolhida is not None:
+                b64_custom = processar_imagem_capa(foto_up_escolhida)
+                if b64_custom:
+                    st.session_state[session_capa_sel_key] = b64_custom
+                    st.session_state["cad_man_capa_custom_flag"] = True
+                    capas_atuais = st.session_state.get(session_capas_key, [])
+                    if not any(c.get("url") == b64_custom for c in capas_atuais):
+                        capas_atuais.insert(0, {
+                            "url": b64_custom,
+                            "titulo": f"{titulo_atual_cad} (Sua Capa Personalizada)",
+                            "fonte": "Upload do Usuário",
+                            "thumbnail": b64_custom
+                        })
+                        st.session_state[session_capas_key] = capas_atuais
+
+                col_u1, col_u2 = st.columns([1, 2])
+                with col_u1:
+                    st.image(foto_up_escolhida, width=130, caption="Pré-visualização do Upload")
+                with col_u2:
+                    st.success("✅ **Imagem carregada e selecionada como capa ativa!**")
+                    if st.button("🔄 Aplicar e Atualizar Visualização", key="btn_aplicar_upload_cad_manual", type="primary"):
+                        st.rerun()
+
+        if capas_disponiveis:
+            st.markdown(f"**Opções de capas encontradas ({len(capas_disponiveis)}):** *Escolha a capa desejada e clique em **Selecionar**.*")
+            for i in range(0, len(capas_disponiveis), 3):
+                cols_c = st.columns(3, gap="small")
+                for j in range(3):
+                    idx_c = i + j
+                    if idx_c < len(capas_disponiveis):
+                        item_c = capas_disponiveis[idx_c]
+                        u_c = item_c.get("url") or ""
+                        t_c = item_c.get("titulo") or titulo_atual_cad
+                        f_c = item_c.get("fonte") or "Web"
+                        is_sel = (capa_selecionada == u_c)
+                        with cols_c[j]:
+                            with st.container(border=True):
+                                st.image(obter_imagem_capa(u_c), width="stretch")
+                                st.caption(f"**{t_c[:50]}**\n\n*{f_c}*")
+                                if is_sel:
+                                    st.button("✅ Selecionada", key=f"btn_cad_man_capa_sel_{idx_c}", disabled=True, width="stretch")
+                                else:
+                                    if st.button("👉 Selecionar", key=f"btn_cad_man_capa_sel_{idx_c}", width="stretch", type="secondary"):
+                                        st.session_state[session_capa_sel_key] = u_c
+                                        st.session_state.pop("cad_man_capa_custom_flag", None)
+                                        st.rerun()
+
+        with st.expander("🔗 Informar URL manual da capa (opcional)", expanded=False):
+            url_manual_c = st.text_input("URL direta da imagem:", key="input_cad_man_capa_url", placeholder="https://.../capa.jpg")
+            if url_manual_c:
+                if st.button("Aplicar URL", key="btn_aplicar_cad_man_capa"):
+                    st.session_state[session_capa_sel_key] = url_manual_c.strip()
+                    st.rerun()
+
+        st.markdown("---")
+        col_sv1, col_sv2 = st.columns([2, 1])
+        with col_sv1:
+            if st.button("💾 Confirmar e Cadastrar HQ no Banco de Dados", key="btn_confirmar_salvar_cad_manual", type="primary", use_container_width=True):
+                tit_final = (st.session_state.get("cad_man_input_titulo") or "").strip()
+                if not tit_final:
+                    st.error("❌ O campo **Título da HQ** é obrigatório para realizar o cadastro.")
+                else:
+                    ed_final = (st.session_state.get("cad_man_input_edicao") or "").strip()
+                    edit_final = (st.session_state.get("cad_man_input_editora") or "Desconhecida").strip() or "Desconhecida"
+                    gen_final = (st.session_state.get("cad_man_input_genero") or "Outro").strip() or "Outro"
+                    rot_final = (st.session_state.get("cad_man_input_roteiro") or "Não informado").strip() or "Não informado"
+                    ilu_final = (st.session_state.get("cad_man_input_ilustrador") or "Não informado").strip() or "Não informado"
+                    val_final = float(st.session_state.get("cad_man_input_valor") or 0.0)
+                    link_final = (st.session_state.get("cad_man_input_link") or "").strip()
+                    res_final = (st.session_state.get("cad_man_input_resumo") or "").strip()
+                    resenha_final = (st.session_state.get("cad_man_input_resenha") or "").strip()
+                    lido_final = st.session_state.get("cad_man_sel_lido") or "Não Lido"
+                    estado_final = st.session_state.get("cad_man_sel_estado") or "Excelente"
+                    aval_final = int(st.session_state.get("cad_man_sel_avaliacao") or 0)
+
+                    if prat_sel_cad == "➕ Nova / Digitar outro nome...":
+                        prat_final = (prat_nova_cad or "").strip() or "Estante 1 - Prateleira 1"
+                    else:
+                        prat_final = (prat_sel_cad or "").strip() or "Estante 1 - Prateleira 1"
+
+                    capa_final = ""
+                    up_pend = st.session_state.get("uploader_capa_cad_manual")
+                    cam_pend = st.session_state.get("camera_capa_cad_manual")
+                    if up_pend is not None:
+                        try:
+                            b64_up_salv = processar_imagem_capa(up_pend)
+                            if b64_up_salv:
+                                capa_final = b64_up_salv
+                        except Exception:
+                            pass
+                    elif cam_pend is not None:
+                        try:
+                            b64_cam_salv = processar_imagem_capa(cam_pend)
+                            if b64_cam_salv:
+                                capa_final = b64_cam_salv
+                        except Exception:
+                            pass
+
+                    if not capa_final:
+                        capa_final = (st.session_state.get(session_capa_sel_key) or "").strip()
+
+                    capa_salvar = ""
+                    if capa_final:
+                        if capa_final.startswith("data:image"):
+                            capa_salvar = capa_final
+                        elif capa_final.startswith("http"):
+                            with st.spinner("📥 Baixando imagem da capa para salvar no banco..."):
+                                try:
+                                    b64_dl = gemini_service.baixar_imagem_url_base64(capa_final, fallback_url=link_final)
+                                    if b64_dl and b64_dl.startswith("data:image"):
+                                        capa_salvar = b64_dl
+                                    else:
+                                        capa_salvar = capa_final
+                                except Exception:
+                                    capa_salvar = capa_final
+
+                    try:
+                        database.cadastrar_prateleira(prat_final)
+                        sql_ins = """
+                        INSERT INTO hqs (titulo, edicao, editora, genero, escritor, ilustrador, prateleira, lido, avaliacao, valor, estado_conservacao, capa, resenha, resumo, link_edicao)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """
+                        params_ins = [
+                            tit_final, ed_final, edit_final, gen_final, rot_final, ilu_final,
+                            prat_final, lido_final, aval_final, val_final, estado_final,
+                            capa_salvar, resenha_final, res_final, link_final
+                        ]
+                        novo_id = 0
+                        if database.is_using_turso():
+                            res_t = database.executar_turso_query(sql_ins, params_ins)
+                            novo_id = int(res_t.last_insert_rowid or 0)
+                        else:
+                            conn = database.get_sqlite_connection()
+                            try:
+                                c = conn.cursor()
+                                c.execute(sql_ins, tuple(params_ins))
+                                conn.commit()
+                                novo_id = int(c.lastrowid or 0)
+                            finally:
+                                conn.close()
+
+                        st.session_state["cad_man_ultimo_salvo"] = {
+                            "id": novo_id,
+                            "titulo": tit_final,
+                            "edicao": ed_final,
+                            "editora": edit_final,
+                            "genero": gen_final,
+                            "escritor": rot_final,
+                            "ilustrador": ilu_final,
+                            "prateleira": prat_final,
+                            "valor": val_final,
+                            "capa": capa_salvar,
+                            "resumo": res_final,
+                        }
+                        _limpar_estado_cad_man(limpar_url=True)
+                        pass
+                        st.rerun()
+                    except Exception as ex_ins:
+                        st.error(f"Erro ao cadastrar HQ no banco de dados: {ex_ins}")
+
+        with col_sv2:
+            if st.button("❌ Cancelar", key="btn_canc_form_cad_manual", use_container_width=True):
+                _limpar_estado_cad_man(limpar_url=True)
+                pass
+                st.rerun()
+
+    st.markdown("---")
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_cad_man_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
+if st.query_params.get("pagina") == "cadastro_manual" or st.session_state.get("pagina_atual") == "cadastro_manual":
+    renderizar_pagina_cadastro_manual()
+    st.stop()
+
+
+def renderizar_pagina_captura_prateleira():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("📸 Captura da Foto da Prateleira")
+        st.markdown("Tire fotos das prateleiras da sua coleção ou envie imagens para que a IA identifique automaticamente títulos, edições, editoras, autores e resumos.")
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_cap_prat_top"):
+            voltar_ao_catalogo()
+    st.markdown("---")
+    # -------------------------------------------------------------
+    # SEÇÃO 1: IDENTIFICAÇÃO DA PRATELEIRA E CAPTURA
+    # -------------------------------------------------------------
+    col_shelf, col_hint = st.columns([2, 2])
+
+    lista_prateleiras_cadastradas = [p for p in database.obter_prateleiras() if p and p != "Estante 1 - Prateleira 1"]
+
+    with col_shelf:
+        if lista_prateleiras_cadastradas:
+            prat_atual = st.session_state.get("prateleira_atual", "")
+            opcoes_prat = ["-- Selecione uma prateleira --"] + list(lista_prateleiras_cadastradas)
+            if prat_atual and prat_atual not in opcoes_prat and prat_atual != "➕ Nova / Digitar outro nome...":
+                opcoes_prat.insert(1, prat_atual)
+            opcoes_prat.append("➕ Nova / Digitar outro nome...")
+
+            idx_padrao = opcoes_prat.index(prat_atual) if prat_atual in opcoes_prat else 0
+
+            prat_selecionada = st.selectbox(
+                "📍 **Prateleira / Localização Atual:**",
+                options=opcoes_prat,
+                index=idx_padrao,
+                help="Selecione uma prateleira já cadastrada ou digite uma nova para onde as HQs fotografadas serão salvas."
+            )
+
+            if prat_selecionada == "-- Selecione uma prateleira --":
+                prateleira_input = ""
+                st.session_state["prateleira_atual"] = ""
+            elif prat_selecionada == "➕ Nova / Digitar outro nome...":
+                prateleira_input = st.text_input(
+                    "✍️ Digite o nome da nova prateleira:",
+                    placeholder="Ex: Estante Marvel - Prateleira 1, Caixa Mangás...",
+                    help="Digite o nome da nova prateleira."
+                )
+                if prateleira_input.strip():
+                    st.session_state["prateleira_atual"] = prateleira_input.strip()
+            else:
+                prateleira_input = prat_selecionada
+                st.session_state["prateleira_atual"] = prat_selecionada
+        else:
+            prateleira_input = st.text_input(
+                "📍 **Prateleira / Localização Atual:**",
+                value=st.session_state.get("prateleira_atual", ""),
+                placeholder="Ex: Estante Marvel - Prateleira 1, Caixa Mangás...",
+                help="Digite a prateleira ou localização onde as HQs estão guardadas."
+            )
+            st.session_state["prateleira_atual"] = prateleira_input
+
+    with col_hint:
+        st.info(
+            "💡 **Dica para melhor precisão:** "
+            "Enquadre bem as lombadas com boa iluminação e evite reflexos intensos.",
+            icon="✨"
+        )
+
+    st.subheader("📸 Captura da Foto da Prateleira")
+
+    # Abas de entrada: Câmera ou Upload de Imagem (útil para testes ou fotos já salvas)
+    tab_upload, tab_camera = st.tabs(["📁 Enviar Foto / Câmera Nativa (Recomendado)", "📷 Câmera Web ao Vivo (st.camera_input)"])
+
+    imagem_para_processar = None
+
+    with tab_upload:
+        st.markdown(
+            "📱 **Dica para celular:** Ao tocar no botão abaixo, escolha **\"Câmera\"** para fotografar a prateleira em alta resolução."
+        )
+        foto_upload = st.file_uploader(
+            "Selecione uma imagem ou tire uma foto:",
+            type=["jpg", "jpeg", "png", "webp"],
+            help="Funciona diretamente no celular sem necessidade de HTTPS."
+        )
+        if foto_upload is not None:
+            imagem_para_processar = Image.open(foto_upload)
+
+    with tab_camera:
+        st.caption(
+            "⚠️ *Aviso de segurança dos navegadores:* O streaming ao vivo de webcam requer conexão segura (HTTPS ou localhost). "
+            "Se a câmera não abrir no celular via IP local (HTTP), use a aba **\"Câmera Nativa\"** ao lado ou habilite a flag de origem segura no Chrome."
+        )
+        foto_camera = st.camera_input("Aponte para a prateleira:")
+        if foto_camera is not None:
+            imagem_para_processar = Image.open(foto_camera)
+
+
+    # -------------------------------------------------------------
+    # PROCESSAMENTO COM IA & REVISÃO INTERATIVA
+    # -------------------------------------------------------------
+    if imagem_para_processar is not None:
+        st.image(imagem_para_processar, caption="Pré-visualização da Foto Capturada", use_container_width=True)
+
+        col_btn_proc, _ = st.columns([1.2, 2])
+        with col_btn_proc:
+            botao_analisar = st.button("🔍 1. Identificar HQs na Foto", type="primary", use_container_width=True)
+
+        if botao_analisar:
+            if not os.getenv("GEMINI_API_KEY"):
+                st.error("❌ Chave de API do Gemini não configurada! Insira-a na barra lateral.")
+            else:
+                status_placeholder = st.empty()
+                with st.spinner(f"🤖 Analisando lombadas com {resolver_modelo('visao')}..."):
+                    try:
+                        def atualizar_status(mensagem: str):
+                            status_placeholder.info(mensagem, icon="⏳")
+
+                        # Envia para a API do Gemini com retentativas automáticas e fallback
+                        hqs_detectadas = gemini_service.processar_foto_prateleira(
+                            imagem=imagem_para_processar,
+                            api_key=os.getenv("GEMINI_API_KEY"),
+                            modelo=resolver_modelo("visao"),
+                            status_callback=atualizar_status
+                        )
+                        status_placeholder.empty()
+
+                        if hqs_detectadas:
+                            st.session_state["hqs_em_revisao"] = hqs_detectadas
+                            st.session_state["ultimo_resultado_salvamento"] = None
+                            st.rerun()
+                        else:
+                            st.warning("⚠️ Nenhum quadrinho pôde ser identificado nesta foto. Tente aproximar ou melhorar a iluminação.")
+                    except Exception as ex:
+                        status_placeholder.empty()
+                        st.error(f"Erro ao processar imagem: {ex}")
+
+    # Exibe a tabela de revisão e edição se houver itens identificados aguardando confirmação
+    if st.session_state.get("hqs_em_revisao"):
+        st.markdown("### 📋 2. Revisão e Edição dos Itens Identificados")
+        st.info(
+            "💡 **Edição Manual Habilitada:** Você pode alterar qualquer dado diretamente nas células abaixo (Título, Edição, Editora, Autores, Resumo), adicionar novas linhas ou excluir itens antes de confirmar o salvamento.",
+            icon="✏️"
+        )
+
+        df_revisao = pd.DataFrame(st.session_state["hqs_em_revisao"])
+        colunas_obrigatorias = ["titulo", "edicao", "editora", "genero", "escritor", "ilustrador", "resumo"]
+        for col in colunas_obrigatorias:
+            if col not in df_revisao.columns:
+                df_revisao[col] = ""
+
+        df_revisao = df_revisao[colunas_obrigatorias]
+
+        df_editado = st.data_editor(
+            df_revisao,
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                "titulo": st.column_config.TextColumn("Título da HQ *", required=True),
+                "edicao": st.column_config.TextColumn("Edição / Volume"),
+                "editora": st.column_config.TextColumn("Editora"),
+                "genero": st.column_config.TextColumn("Gênero"),
+                "escritor": st.column_config.TextColumn("Roteirista / Escritor"),
+                "ilustrador": st.column_config.TextColumn("Desenhista / Arte"),
+                "resumo": st.column_config.TextColumn("Resumo da História")
+            },
+            key="data_editor_revisao_hqs"
+        )
+
+        st.caption(f"📍 Os itens confirmados serão associados à prateleira: **`{prateleira_input.strip() or 'Não especificada'}`**")
+
+        col_salvar, col_descartar, _ = st.columns([1.5, 1.2, 2])
+        with col_salvar:
+            botao_confirmar_salvar = st.button("💾 3. Confirmar & Salvar no Catálogo", type="primary", use_container_width=True)
+        with col_descartar:
+            botao_descartar = st.button("🗑️ Descartar Revisão", use_container_width=True)
+
+        if botao_descartar:
+            st.session_state["hqs_em_revisao"] = []
+            st.rerun()
+
+        if botao_confirmar_salvar:
+            if not prateleira_input.strip() or prateleira_input.strip() == "-- Selecione uma prateleira --":
+                st.error("❌ Por favor, selecione ou informe o nome da Prateleira Atual antes de salvar.")
+            else:
+                itens_para_salvar = []
+                if isinstance(df_editado, pd.DataFrame):
+                    registros = df_editado.to_dict(orient="records")
+                else:
+                    registros = st.session_state["hqs_em_revisao"]
+
+                for r in registros:
+                    tit = str(r.get("titulo") or "").strip()
+                    if tit:
+                        itens_para_salvar.append(r)
+
+                if not itens_para_salvar:
+                    st.warning("⚠️ Nenhum quadrinho com título preenchido para salvar.")
+                else:
+                    resultado = database.salvar_hqs(
+                        itens_para_salvar,
+                        prateleira_input.strip(),
+                        ignorar_duplicadas=True,
+                        retornar_detalhes=True
+                    )
+                    st.session_state["ultimos_itens_salvos"] = resultado["itens_salvos"]
+                    st.session_state["ultimo_resultado_salvamento"] = resultado
+                    st.session_state["hqs_em_revisao"] = []
+                    st.rerun()
+
+    # Exibe o feedback do último salvamento se houver
+    if st.session_state.get("ultimo_resultado_salvamento"):
+        resultado_ultimo = st.session_state["ultimo_resultado_salvamento"]
+        total_salvo = resultado_ultimo["salvos"]
+        total_duplicados = resultado_ultimo["duplicados"]
+        itens_duplicados = resultado_ultimo.get("itens_duplicados", [])
+        prat_usada = prateleira_input.strip() if prateleira_input.strip() and prateleira_input.strip() != "-- Selecione uma prateleira --" else "sua coleção"
+
+        if total_salvo > 0 and total_duplicados > 0:
+            st.success(f"🎉 **{total_salvo} HQ(s) nova(s) salva(s) com sucesso** na prateleira `{prat_usada}`!")
+            st.info(f"ℹ️ **{total_duplicados} HQ(s) ignorada(s)** pois já constavam no catálogo com mesmo Título e Edição.")
+        elif total_salvo > 0:
+            st.success(f"🎉 **{total_salvo} HQ(s) salva(s) com sucesso** na prateleira `{prat_usada}`!")
+        elif total_duplicados > 0:
+            st.warning(f"⚠️ Nenhuma nova HQ gravada: todas as **{total_duplicados} HQ(s)** já estavam cadastradas no catálogo.")
+
+        if itens_duplicados:
+            with st.expander(f"🔍 Ver detalhes das {len(itens_duplicados)} HQ(s) ignoradas por duplicidade"):
+                for dup in itens_duplicados:
+                    st.write(f"- ⚠️ **{dup.get('titulo')}** ({dup.get('edicao') or 'Sem Edição'}) - Editora: *{dup.get('editora') or 'Desconhecida'}* — `{dup.get('motivo_duplicata')}`")
+
+    # Exibe resumo visual imediato dos últimos itens detectados e salvos
+    if st.session_state.get("ultimos_itens_salvos"):
+        st.markdown("### 📋 Itens Recém-Salvos no Catálogo")
+        st.dataframe(
+            st.session_state["ultimos_itens_salvos"],
+            use_container_width=True,
+            column_config={
+                "titulo": "Título da HQ",
+                "edicao": "Edição / Volume",
+                "editora": "Editora",
+                "genero": "Gênero",
+                "escritor": "Roteirista / Escritor",
+                "ilustrador": "Desenhista / Arte",
+                "resumo": "Resumo da História"
+            }
+        )
+
+    st.markdown("---")
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_cap_prat_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
+def renderizar_pagina_curador_virtual():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("💬 Curador Virtual: Assistente & Recomendações")
+        st.markdown("Explore seu acervo conversando com a IA e receba recomendações personalizadas com base nos resumos e enredos cadastrados.")
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_curador_virt_top"):
+            voltar_ao_catalogo()
+    st.markdown("---")
+    # -------------------------------------------------------------
+    # SEÇÃO 3: CURADOR VIRTUAL: RECOMENDAÇÕES DA COLEÇÃO
+    # -------------------------------------------------------------
+    with st.expander("💬 Curador Virtual: Assistente & Recomendações da Coleção", expanded=True):
+        st.markdown(
+            "Peça recomendações personalizadas com base nos **Resumos das Histórias**, gêneros e enredos cadastrados no seu próprio acervo!"
+        )
+
+        pergunta_curador_acionada = None
+
+        # Botões de perguntas rápidas da coleção
+        col_cur1, col_cur2, col_cur3, col_cur_clear = st.columns([1.2, 1.2, 1.2, 0.6])
+        with col_cur1:
+            if st.button("🇧🇷 Temas Históricos", use_container_width=True, help="Buscar quadrinhos sobre história no acervo"):
+                pergunta_curador_acionada = "Eu gostaria de ler alguma coisa relacionado a temas históricos no Brasil ou no mundo."
+        with col_cur2:
+            if st.button("⭐ Melhores Não Lidos", use_container_width=True, help="Indicar HQs com boas notas que ainda não li"):
+                pergunta_curador_acionada = "Quais são as melhores HQs que eu ainda não li na minha coleção?"
+        with col_cur3:
+            if st.button("🎲 Surpreenda-me", use_container_width=True, help="Pedir uma recomendação aleatória com base na história"):
+                pergunta_curador_acionada = "Me dê uma recomendação especial da minha coleção para ler hoje com base no resumo da história."
+        with col_cur_clear:
+            if st.button("🗑️ Limpar", key="btn_limpar_curador", use_container_width=True, help="Limpar conversa do curador"):
+                st.session_state["chat_mensagens_curador"] = [
+                    {
+                        "role": "assistant",
+                        "content": "👋 Conversa reiniciada! Como posso te ajudar a explorar seu catálogo de HQs hoje?"
+                    }
+                ]
+                st.rerun()
+
+        # Container de exibição das mensagens do curador
+        chat_container_curador = st.container(height=340)
+        with chat_container_curador:
+            for msg in st.session_state["chat_mensagens_curador"]:
+                with st.chat_message(msg["role"], avatar="🤖" if msg["role"] == "assistant" else "👤"):
+                    st.markdown(msg["content"])
+
+        # Opção de envio por Áudio para o Curador
+        with st.expander("🎙️ Falar com o Curador por Voz / Áudio", expanded=False):
+            st.caption("Fale diretamente com o Curador sobre temas, sugestões de leitura ou dúvidas sobre seu acervo:")
+            tab_mic_c, tab_up_c = st.tabs(["🎙️ Gravar Microfone", "📁 Enviar Arquivo de Áudio"])
+            audio_curador = None
+            mime_curador = "audio/wav"
+            with tab_mic_c:
+                rec_c = st.audio_input("Fale sua pergunta sobre o acervo:", key="rec_mic_curador")
+                if rec_c is not None:
+                    audio_curador = rec_c.getvalue()
+                    mime_curador = rec_c.type or "audio/wav"
+            with tab_up_c:
+                up_c = st.file_uploader("Ou envie áudio gravado:", type=["wav", "mp3", "m4a", "ogg", "webm", "aac"], key="up_audio_curador")
+                if up_c is not None:
+                    audio_curador = up_c.getvalue()
+                    mime_curador = up_c.type or "audio/mp3"
+
+            if audio_curador:
+                if st.button("✨ Enviar Pergunta por Áudio", type="primary", key="btn_enviar_audio_curador", use_container_width=True):
+                    if not os.getenv("GEMINI_API_KEY"):
+                        st.error("Chave de API do Gemini não configurada!")
+                    else:
+                        with st.spinner("🎙️ Transcrevendo sua fala com Gemini..."):
+                            try:
+                                pergunta_curador_acionada = gemini_service.transcrever_audio(
+                                    audio_bytes=audio_curador,
+                                    mime_type=mime_curador,
+                                    tipo_contexto="curador",
+                                    api_key=os.getenv("GEMINI_API_KEY"),
+                                    modelo=resolver_modelo("audio")
+                                )
+                            except Exception as e:
+                                st.error(f"Erro ao transcrever áudio: {e}")
+
+        # Entrada de texto do Curador
+        texto_chat_curador = st.chat_input("Pergunte ao Curador sobre suas HQs (ex: 'Quero ler algo de suspense ou terror')...", key="input_chat_curador")
+        pergunta_curador_final = pergunta_curador_acionada or texto_chat_curador
+
+        if pergunta_curador_final:
+            st.session_state["chat_mensagens_curador"].append({"role": "user", "content": pergunta_curador_final})
+
+            catalogo_atual = database.obter_contexto_hqs_para_chat()
+            with st.spinner("🤖 Analisando os resumos e enredos da sua coleção..."):
+                resposta_curador = gemini_service.consultar_chatbot_colecao(
+                    pergunta=pergunta_curador_final,
+                    catalogo_hqs=catalogo_atual,
+                    historico_mensagens=st.session_state["chat_mensagens_curador"][:-1],
+                    api_key=os.getenv("GEMINI_API_KEY"),
+                    modelo=resolver_modelo("chat")
+                )
+
+            st.session_state["chat_mensagens_curador"].append({"role": "assistant", "content": resposta_curador})
+            st.rerun()
+
+    st.markdown("---")
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_curador_virt_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
+def renderizar_pagina_crud_assistido():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("🛠️ Operações de CRUD Assistidas")
+        st.markdown("Gerencie seu acervo de quadrinhos e Lista de Desejos através de comandos em linguagem natural por texto ou voz.")
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_crud_ass_top"):
+            voltar_ao_catalogo()
+    st.markdown("---")
+    # -------------------------------------------------------------
+    # SEÇÃO 4: OPERAÇÕES DE CRUD ASSISTIDAS (AGENT / MCP)
+    # -------------------------------------------------------------
+    with st.expander("🛠️ Operações de CRUD assistidas", expanded=True):
+        st.markdown(
+            "Gerencie seu acervo de quadrinhos através de comandos em linguagem natural com a IA. "
+            "Você pode **adicionar** novas HQs com enriquecimento de dados e anotação de compras, **remover** edições existentes, **atualizar** status de leitura/avaliação/prateleira, ou gerenciar sua Lista de Desejos."
+        )
+
+        comando_audio_acionado = None
+
+        tab_crud_texto, tab_crud_audio = st.tabs(["✍️ Digitar Instrução", "🎙️ Falar Instrução por Áudio"])
+
+        with tab_crud_texto:
+            # Formulário para envio do comando digitado
+            with st.form("form_crud_assistido", clear_on_submit=True):
+                texto_comando = st.text_input(
+                    "💬 **Digite a instrução para o assistente de CRUD:**",
+                    placeholder="Ex: 'Adicione à minha coleção a edição definitiva de Watchmen que comprei hoje por R$ 120,00' ou 'Remova da minha coleção a edição X'...",
+                    key="input_texto_crud_cmd"
+                )
+                col_exec_btn, _ = st.columns([1.2, 4])
+                with col_exec_btn:
+                    btn_executar_crud = st.form_submit_button("🚀 Executar Ação", type="primary", use_container_width=True)
+
+        with tab_crud_audio:
+            st.caption("Fale naturalmente seu comando de gerenciamento do acervo (adicionar, remover ou alterar edições):")
+            tab_mic_crud, tab_up_crud = st.tabs(["🎙️ Gravar Microfone", "📁 Enviar Arquivo de Áudio"])
+            audio_crud = None
+            mime_crud = "audio/wav"
+
+            with tab_mic_crud:
+                rec_crud = st.audio_input("Grave seu comando (ex: 'Adicione Watchmen à minha coleção que comprei por 120 reais'):", key="rec_mic_crud")
+                if rec_crud is not None:
+                    audio_crud = rec_crud.getvalue()
+                    mime_crud = rec_crud.type or "audio/wav"
+
+            with tab_up_crud:
+                up_crud = st.file_uploader("Selecione um arquivo de áudio:", type=["wav", "mp3", "m4a", "ogg", "webm", "aac"], key="up_audio_crud")
+                if up_crud is not None:
+                    audio_crud = up_crud.getvalue()
+                    mime_crud = up_crud.type or "audio/mp3"
+
+            if audio_crud:
+                if st.button("🚀 Transcrever & Executar Ação por Voz", type="primary", key="btn_exec_audio_crud", use_container_width=True):
+                    if not os.getenv("GEMINI_API_KEY"):
+                        st.error("Chave de API do Gemini não configurada!")
+                    else:
+                        with st.spinner("🎙️ Transcrevendo seu comando com Gemini..."):
+                            try:
+                                comando_audio_acionado = gemini_service.transcrever_audio(
+                                    audio_bytes=audio_crud,
+                                    mime_type=mime_crud,
+                                    tipo_contexto="crud",
+                                    api_key=os.getenv("GEMINI_API_KEY"),
+                                    modelo=resolver_modelo("audio")
+                                )
+                            except Exception as e:
+                                st.error(f"Erro ao transcrever áudio: {e}")
+
+        comando_final = comando_audio_acionado or (texto_comando.strip() if 'btn_executar_crud' in locals() and btn_executar_crud and texto_comando.strip() else None)
+
+        if comando_final:
+            if not os.getenv("GEMINI_API_KEY"):
+                st.error("❌ Chave de API do Gemini não configurada! Insira-a na barra lateral.")
+            else:
+                with st.spinner("🤖 Interpretando comando e executando operação no banco de dados..."):
+                    catalogo_completo = database.obter_contexto_hqs_para_chat()
+                    prat_padrao = st.session_state.get("prateleira_atual", "Estante 1 - Prateleira 1")
+
+                    try:
+                        resultado_crud = gemini_service.processar_comando_crud_assistido(
+                            comando=comando_final,
+                            catalogo_hqs=catalogo_completo,
+                            prateleira_padrao=prat_padrao,
+                            api_key=os.getenv("GEMINI_API_KEY"),
+                            modelo=resolver_modelo("crud")
+                        )
+                    except Exception as e:
+                        resultado_crud = {
+                            "acao": "erro",
+                            "explicacao": f"Erro ao processar instrução com a IA: {e}",
+                            "dados": {}
+                        }
+
+                    acao = resultado_crud.get("acao", "desconhecido")
+                    explicacao = resultado_crud.get("explicacao", "")
+                    dados = resultado_crud.get("dados", {})
+
+                    # Execução da Ação de CRUD no Banco de Dados
+                    registro_log = {
+                        "comando": comando_final,
+                        "acao": acao,
+                        "explicacao": explicacao,
+                        "timestamp": datetime.now().strftime("%H:%M:%S"),
+                        "status": "info",
+                        "detalhes": ""
+                    }
+
+                    if acao == "adicionar":
+                        titulo = (dados.get("titulo") or "").strip()
+                        if not titulo:
+                            registro_log["status"] = "erro"
+                            registro_log["detalhes"] = "A IA não conseguiu identificar o título da HQ para cadastrar."
+                        else:
+                            edicao = (dados.get("edicao") or "").strip()
+                            editora = (dados.get("editora") or "Desconhecida").strip()
+                            genero = (dados.get("genero") or "Outro").strip()
+                            escritor = (dados.get("escritor") or "Não informado").strip()
+                            ilustrador = (dados.get("ilustrador") or "Não informado").strip()
+                            prateleira_item = (dados.get("prateleira") or prat_padrao).strip()
+                            lido = (dados.get("lido") or "Não Lido").strip()
+                            try:
+                                avaliacao = int(dados.get("avaliacao") or 0)
+                            except (ValueError, TypeError):
+                                avaliacao = 0
+                            resumo = (dados.get("resumo") or "").strip()
+                            resenha = (dados.get("resenha") or "").strip()
+                            preco_pago = dados.get("preco_pago")
+                            if preco_pago and f"R$ {preco_pago}" not in resenha and f"{preco_pago}" not in resenha:
+                                info_preco = f"Comprado por R$ {float(preco_pago):.2f}"
+                                resenha = f"{info_preco}. {resenha}".strip()
+
+                            # Inserção da HQ
+                            resultado_salvar = database.salvar_hqs(
+                                itens=[{
+                                    "titulo": titulo,
+                                    "edicao": edicao,
+                                    "editora": editora,
+                                    "genero": genero,
+                                    "escritor": escritor,
+                                    "ilustrador": ilustrador,
+                                    "prateleira": prateleira_item,
+                                    "lido": lido,
+                                    "avaliacao": avaliacao,
+                                    "resumo": resumo,
+                                    "resenha": resenha
+                                }],
+                                prateleira=prateleira_item,
+                                ignorar_duplicadas=False,
+                                retornar_detalhes=True
+                            )
+                            if resultado_salvar["salvos"] > 0:
+                                registro_log["status"] = "sucesso"
+                                registro_log["detalhes"] = f"🎉 **'{titulo}'** adicionado com sucesso na prateleira `{prateleira_item}`!"
+                            else:
+                                registro_log["status"] = "aviso"
+                                registro_log["detalhes"] = f"⚠️ HQ '{titulo}' não foi inserida (já existia ou dados inválidos)."
+
+                    elif acao == "remover":
+                        titulo = (dados.get("titulo") or "").strip()
+                        edicao = (dados.get("edicao") or "").strip()
+                        hqs_encontradas = database.buscar_hqs_por_titulo_ou_edicao(titulo, edicao)
+                        if hqs_encontradas:
+                            removida = hqs_encontradas[0]
+                            database.deletar_hq(int(removida["id"]))
+                            registro_log["status"] = "sucesso"
+                            registro_log["detalhes"] = f"🗑️ **'{removida['titulo']}'** (ID #{removida['id']}) removido com sucesso da coleção!"
+                        else:
+                            registro_log["status"] = "aviso"
+                            registro_log["detalhes"] = f"⚠️ Nenhuma HQ correspondente a '{titulo}' foi encontrada para remoção."
+
+                    elif acao == "atualizar":
+                        titulo = (dados.get("titulo") or "").strip()
+                        edicao = (dados.get("edicao") or "").strip()
+                        campo = dados.get("campo", "")
+                        novo_valor = dados.get("novo_valor", "")
+
+                        hqs_encontradas = database.buscar_hqs_por_titulo_ou_edicao(titulo, edicao)
+                        if hqs_encontradas:
+                            hq_alvo = hqs_encontradas[0]
+                            if campo == "lido":
+                                status_novo = "Lido" if "lido" in str(novo_valor).lower() and "não" not in str(novo_valor).lower() else "Não Lido"
+                                database.definir_status_leitura(hq_alvo["id"], status_novo)
+                                registro_log["status"] = "sucesso"
+                                registro_log["detalhes"] = f"📖 Status de **'{hq_alvo['titulo']}'** alterado para **{status_novo}**!"
+                            elif campo == "avaliacao":
+                                try:
+                                    nova_nota = max(0, min(5, int(novo_valor)))
+                                    database.definir_avaliacao(hq_alvo["id"], nova_nota)
+                                    registro_log["status"] = "sucesso"
+                                    registro_log["detalhes"] = f"⭐ Avaliação de **'{hq_alvo['titulo']}'** alterada para **{nova_nota}/5**!"
+                                except ValueError:
+                                    registro_log["status"] = "erro"
+                                    registro_log["detalhes"] = f"Valor de nota inválido: '{novo_valor}'"
+                            elif campo == "prateleira":
+                                database.atualizar_hq(
+                                    hq_id=int(hq_alvo["id"]),
+                                    titulo=hq_alvo["titulo"],
+                                    edicao=hq_alvo["edicao"],
+                                    editora=hq_alvo["editora"],
+                                    prateleira=str(novo_valor),
+                                    genero=hq_alvo.get("genero", "Outro"),
+                                    escritor=hq_alvo.get("escritor", "Não informado"),
+                                    ilustrador=hq_alvo.get("ilustrador", "Não informado"),
+                                    lido=hq_alvo.get("lido", "Não Lido"),
+                                    avaliacao=int(hq_alvo.get("avaliacao") or 0),
+                                    capa=hq_alvo.get("capa") or "",
+                                    resenha=hq_alvo.get("resenha") or "",
+                                    resumo=hq_alvo.get("resumo") or ""
+                                )
+                                registro_log["status"] = "sucesso"
+                                registro_log["detalhes"] = f"📍 Prateleira de **'{hq_alvo['titulo']}'** alterada para `{novo_valor}`!"
+                            elif campo == "resumo":
+                                database.definir_resumo(hq_alvo["id"], str(novo_valor))
+                                registro_log["status"] = "sucesso"
+                                registro_log["detalhes"] = f"📝 Resumo de **'{hq_alvo['titulo']}'** atualizado com sucesso!"
+                            elif campo == "resenha":
+                                database.definir_resenha(hq_alvo["id"], str(novo_valor))
+                                registro_log["status"] = "sucesso"
+                                registro_log["detalhes"] = f"✍️ Resenha de **'{hq_alvo['titulo']}'** atualizada com sucesso!"
+                            else:
+                                registro_log["status"] = "info"
+                                registro_log["detalhes"] = f"Campo '{campo}' não suportado para atualização automática."
+                        else:
+                            registro_log["status"] = "aviso"
+                            registro_log["detalhes"] = f"⚠️ Não foi possível localizar a HQ '{titulo}' para atualizar."
+
+                    elif acao == "adicionar_desejo":
+                        tit = (dados.get("titulo") or "").strip()
+                        ed = (dados.get("edicao") or "").strip()
+                        edit = (dados.get("editora") or "").strip()
+                        preco = float(dados.get("melhor_preco") or 0.0)
+                        obs = (dados.get("observacoes") or "").strip()
+                        if tit:
+                            database.adicionar_item_lista_desejos(
+                                titulo=tit,
+                                edicao=ed,
+                                editora=edit,
+                                melhor_preco=preco,
+                                observacoes=obs or f"Adicionado via CRUD assistido em {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+                            )
+                            registro_log["status"] = "sucesso"
+                            registro_log["detalhes"] = f"⭐ **'{tit}'** adicionado à sua Lista de Desejos!"
+                        else:
+                            registro_log["status"] = "erro"
+                            registro_log["detalhes"] = "Título da HQ não identificado para a Lista de Desejos."
+
+                    elif acao == "remover_desejo":
+                        tit = (dados.get("titulo") or "").strip()
+                        df_w = database.listar_lista_desejos()
+                        if not df_w.empty and tit:
+                            matches = df_w[df_w["titulo"].str.lower().str.contains(tit.lower(), na=False)]
+                            if not matches.empty:
+                                del_id = int(matches.iloc[0]["id"])
+                                database.deletar_item_lista_desejos(del_id)
+                                registro_log["status"] = "sucesso"
+                                registro_log["detalhes"] = f"🗑️ **'{matches.iloc[0]['titulo']}'** removido da Lista de Desejos!"
+                            else:
+                                registro_log["status"] = "aviso"
+                                registro_log["detalhes"] = f"Item '{tit}' não encontrado na Lista de Desejos."
+
+                    elif acao == "consultar":
+                        registro_log["status"] = "info"
+                        registro_log["detalhes"] = dados.get("resposta") or explicacao
+
+                    else:
+                        registro_log["status"] = "info"
+                        registro_log["detalhes"] = explicacao or "Comando não reconhecido ou operação não executada."
+
+                    st.session_state["historico_crud_assistido"].insert(0, registro_log)
+                    st.rerun()
+
+        # Exibição do histórico de operações realizadas
+        if st.session_state["historico_crud_assistido"]:
+            col_h_t, col_h_c = st.columns([4, 1])
+            with col_h_t:
+                st.markdown("##### 📋 Operações Recentes")
+            with col_h_c:
+                if st.button("🗑️ Limpar Histórico", key="btn_clear_crud_history", use_container_width=True):
+                    st.session_state["historico_crud_assistido"] = []
+                    st.rerun()
+            for item_op in st.session_state["historico_crud_assistido"][:6]:
+                with st.container(border=True):
+                    c_st, c_tm = st.columns([4, 1])
+                    with c_st:
+                        st.caption(f"💬 Comando: *\"{item_op['comando']}\"*")
+                    with c_tm:
+                        st.caption(f"🕒 `{item_op['timestamp']}`")
+
+                    if item_op["status"] == "sucesso":
+                        st.success(item_op["detalhes"] or item_op.get("explicacao", ""), icon="✅")
+                    elif item_op["status"] == "aviso":
+                        st.warning(item_op["detalhes"] or item_op.get("explicacao", ""), icon="⚠️")
+                    elif item_op["status"] == "erro":
+                        st.error(item_op["detalhes"] or item_op.get("explicacao", ""), icon="❌")
+                    else:
+                        st.info(item_op["detalhes"] or item_op.get("explicacao", ""), icon="ℹ️")
+
+    st.markdown("---")
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_crud_ass_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
+def renderizar_pagina_radar_precos():
+    col_nav_t, col_nav_b = st.columns([3, 1.2])
+    with col_nav_t:
+        st.title("🛒 Radar de Preços em Lojas & Lista de Desejos")
+        st.markdown("Pesquise preços e ofertas em tempo real no Google Shopping e gerencie sua Lista de Desejos.")
+    with col_nav_b:
+        st.write("")
+        if st.button("⬅️ Voltar ao Catálogo", type="primary", use_container_width=True, key="btn_voltar_radar_prec_top"):
+            voltar_ao_catalogo()
+    st.markdown("---")
+    # -------------------------------------------------------------
+    # SEÇÃO 5: RADAR DE PREÇOS EM LOJAS & LISTA DE DESEJOS (SERPAPI)
+    # -------------------------------------------------------------
+    with st.expander("🛒 Radar de Preços em Lojas & Lista de Desejos", expanded=True):
+        st.markdown(
+            "Pesquise preços e disponibilidade de **Livros, Revistas, HQs e Mangás** em tempo real via **SerpApi (Google Shopping)** e adicione à sua **Lista de Desejos** com 1 clique!"
+        )
+
+        termo_preco_audio_acionado = None
+        tab_preco_texto, tab_preco_audio = st.tabs(["✍️ Digitar Título", "🎙️ Falar Título por Áudio"])
+
+        with tab_preco_texto:
+            col_busca_p1, col_busca_p2 = st.columns([3, 1])
+            with col_busca_p1:
+                termo_preco_input = st.text_input(
+                    "Título da HQ / Livro para pesquisar preços nas lojas:",
+                    placeholder="Ex: Watchmen Edição Definitiva, Sandman, Flash Omnibus, Akira...",
+                    key="input_busca_precos_lojas"
+                )
+            with col_busca_p2:
+                st.write("")
+                st.write("")
+                btn_pesquisar_preco = st.button("🔍 Consultar Preços", type="primary", use_container_width=True, key="btn_executar_busca_preco")
+
+        with tab_preco_audio:
+            st.caption("Fale o título da edição para consultar ofertas em tempo real no Google Shopping:")
+            tab_mic_p, tab_up_p = st.tabs(["🎙️ Gravar Microfone", "📁 Enviar Arquivo de Áudio"])
+            audio_preco = None
+            mime_preco = "audio/wav"
+
+            with tab_mic_p:
+                rec_p = st.audio_input("Fale o título da obra (ex: 'Watchmen Edição Definitiva'):", key="rec_mic_preco")
+                if rec_p is not None:
+                    audio_preco = rec_p.getvalue()
+                    mime_preco = rec_p.type or "audio/wav"
+
+            with tab_up_p:
+                up_p = st.file_uploader("Selecione um arquivo de áudio:", type=["wav", "mp3", "m4a", "ogg", "webm", "aac"], key="up_audio_preco")
+                if up_p is not None:
+                    audio_preco = up_p.getvalue()
+                    mime_preco = up_p.type or "audio/mp3"
+
+            if audio_preco:
+                if st.button("🔍 Transcrever & Consultar Preços por Voz", type="primary", key="btn_exec_audio_preco", use_container_width=True):
+                    if not os.getenv("GEMINI_API_KEY"):
+                        st.error("Chave de API do Gemini não configurada!")
+                    else:
+                        with st.spinner("🎙️ Transcrevendo título com Gemini..."):
+                            try:
+                                termo_preco_audio_acionado = gemini_service.transcrever_audio(
+                                    audio_bytes=audio_preco,
+                                    mime_type=mime_preco,
+                                    tipo_contexto="busca_preco",
+                                    api_key=os.getenv("GEMINI_API_KEY"),
+                                    modelo=resolver_modelo("audio")
+                                )
+                            except Exception as e:
+                                st.error(f"Erro ao transcrever áudio: {e}")
+
+        termo_final_preco = termo_preco_audio_acionado or (termo_preco_input.strip() if 'btn_pesquisar_preco' in locals() and btn_pesquisar_preco and termo_preco_input.strip() else None)
+
+        if termo_final_preco:
+            with st.spinner(f"🛒 Consultando ofertas de '{termo_final_preco}' via SerpApi (Google Shopping)..."):
+                try:
+                    dados_cotacao = gemini_service.pesquisar_precos_serpapi(
+                        termo_busca=termo_final_preco
+                    )
+                    st.session_state["radar_precos_resultado"] = dados_cotacao
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Erro ao consultar a API do SerpApi: {e}")
+
+        # 2. Exibição do Retorno da API SerpApi
+        if st.session_state.get("radar_precos_resultado"):
+            cotacao = st.session_state["radar_precos_resultado"]
+            termo_pesquisado = cotacao.get("termo") or termo_preco_input.strip()
+            itens_encontrados = cotacao.get("itens", [])
+            total_encontrados = cotacao.get("total_encontrados", len(itens_encontrados))
+            raw_results = cotacao.get("raw_results", {})
+
+            st.markdown(f"### 📋 Resultados no Google Shopping: **{termo_pesquisado}**")
+            st.caption(f"Exibindo **{total_encontrados}** oferta(s) de Livros e Revistas filtradas da API.")
+
+            if not itens_encontrados:
+                st.warning(f"⚠️ Nenhuma oferta de Livro ou Revista encontrada para **'{termo_pesquisado}'** no Google Shopping.")
+            else:
+                # Renderiza os itens em grid de 2 a 3 colunas
+                cols_por_linha = 2
+                for i in range(0, len(itens_encontrados), cols_por_linha):
+                    chunk = itens_encontrados[i:i + cols_por_linha]
+                    cols = st.columns(cols_por_linha)
+                    for idx_col, item in enumerate(chunk):
+                        idx_global = i + idx_col
+                        with cols[idx_col]:
+                            with st.container(border=True):
+                                c_img, c_info = st.columns([1, 2])
+                                with c_img:
+                                    thumb_url = item.get("thumbnail") or item.get("serpapi_thumbnail")
+                                    if thumb_url:
+                                        st.image(obter_imagem_capa(thumb_url), width="stretch")
+                                    else:
+                                        st.caption("🖼️ Sem miniatura")
+
+                                with c_info:
+                                    tit_item = item.get("title", "Sem título")
+                                    preco_item = item.get("price", "Preço não informado")
+                                    preco_num = float(item.get("extracted_price") or 0.0)
+                                    loja_item = item.get("source", "Loja não informada")
+                                    raw_link = item.get("product_link") or item.get("link") or ""
+                                    link_item = gemini_service.sanitizar_url_oferta(raw_link) if raw_link else gemini_service.gerar_link_loja(loja_item, tit_item)
+                                    condicao = item.get("second_hand_condition", "")
+                                    frete = item.get("delivery", "")
+                                    rating = item.get("rating")
+                                    reviews = item.get("reviews")
+
+                                    st.markdown(f"**{tit_item}**")
+                                    st.markdown(f"🏪 **Loja:** `{loja_item}`")
+                                    st.markdown(f"🏷️ **Preço:** <span style='font-size: 1.15rem; font-weight: bold; color: #00d26a;'>{preco_item}</span>", unsafe_allow_html=True)
+
+                                    detalhes_extras = []
+                                    if condicao:
+                                        detalhes_extras.append(f"📦 {condicao.capitalize()}")
+                                    if frete:
+                                        detalhes_extras.append(f"🚚 {frete}")
+                                    if rating:
+                                        rev_str = f" ({reviews})" if reviews else ""
+                                        detalhes_extras.append(f"⭐ {rating}{rev_str}")
+                                    if detalhes_extras:
+                                        st.caption(" • ".join(detalhes_extras))
+
+                                    if link_item:
+                                        st.link_button("🔗 Ver Oferta na Loja", url=link_item, use_container_width=True)
+
+                                    # Botão para adicionar direto à Lista de Desejos
+                                    if st.button(f"⭐ Salvar na Lista de Desejos", key=f"btn_add_wish_serp_{idx_global}", use_container_width=True):
+                                        database.adicionar_item_lista_desejos(
+                                            titulo=tit_item,
+                                            edicao="",
+                                            editora="",
+                                            melhor_preco=preco_num,
+                                            melhor_loja=loja_item,
+                                            link_oferta=link_item,
+                                            observacoes=f"Adicionado via SerpApi Google Shopping em {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+                                        )
+                                        st.success(f"🎉 **'{tit_item[:40]}...'** adicionado à sua Lista de Desejos!")
+                                        st.rerun()
+
+            # Visualização de todo o conteúdo de retorno bruto da API
+            with st.expander("🔍 Ver Conteúdo Bruto de Retorno da API SerpApi (JSON)", expanded=False):
+                st.json(raw_results if raw_results else cotacao)
+
+            col_c1, _ = st.columns([1, 3])
+            with col_c1:
+                if st.button("❌ Fechar Pesquisa", use_container_width=True, key="btn_fechar_radar_cotacao"):
+                    st.session_state["radar_precos_resultado"] = None
+                    st.rerun()
+
+        st.markdown("---")
+        st.subheader("⭐ Sua Lista de Desejos Atual")
+
+        df_desejos = database.listar_lista_desejos()
+
+        if isinstance(df_desejos, pd.DataFrame) and not df_desejos.empty:
+            st.write(
+                f"Exibindo **{len(df_desejos)}** item(ns) na Lista de Desejos: *(Dê 2 cliques em qualquer célula para editar o Preço, Loja, Edição ou Link diretamente)*"
+            )
+
+            df_desejos_editado = st.data_editor(
+                df_desejos,
+                use_container_width=True,
+                num_rows="fixed",
+                disabled=["id", "criado_em"],
+                hide_index=True,
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", disabled=True),
+                    "titulo": st.column_config.TextColumn("Título da HQ", required=True),
+                    "edicao": st.column_config.TextColumn("Edição / Vol."),
+                    "editora": st.column_config.TextColumn("Editora"),
+                    "melhor_preco": st.column_config.NumberColumn("Melhor Preço (R$)", format="R$ %.2f", min_value=0.0, step=1.0),
+                    "melhor_loja": st.column_config.TextColumn("Melhor Loja"),
+                    "link_oferta": st.column_config.TextColumn("Link da Oferta (URL)", help="Cole a URL direta da loja"),
+                    "observacoes": st.column_config.TextColumn("Observações / Origem"),
+                    "criado_em": st.column_config.TextColumn("Data da Inclusão", disabled=True)
+                },
+                key="tabela_desejos_editavel"
+            )
+
+            # Detecta alterações no grid
+            houve_alt_desejos = not df_desejos_editado.equals(df_desejos)
+
+            col_save_w_grid, col_info_w_grid = st.columns([1, 2])
+            with col_save_w_grid:
+                if houve_alt_desejos:
+                    if st.button("💾 Salvar Alterações na Lista", type="primary", use_container_width=True, key="btn_save_desejos_grid"):
+                        for _, row in df_desejos_editado.iterrows():
+                            database.atualizar_item_lista_desejos(
+                                item_id=int(row["id"]),
+                                titulo=str(row["titulo"]).strip(),
+                                edicao=str(row.get("edicao", "") or "").strip(),
+                                editora=str(row.get("editora", "") or "").strip(),
+                                melhor_preco=float(row.get("melhor_preco") or 0.0),
+                                melhor_loja=str(row.get("melhor_loja", "") or "").strip(),
+                                link_oferta=str(row.get("link_oferta", "") or "").strip(),
+                                observacoes=str(row.get("observacoes", "") or "").strip()
+                            )
+                        st.success("🎉 Alterações na Lista de Desejos salvas com sucesso!")
+                        st.rerun()
+
+            with col_info_w_grid:
+                if houve_alt_desejos:
+                    st.caption("⚠️ Você fez alterações no grid. Clique em 'Salvar Alterações' para gravar.")
+
+            st.markdown("---")
+            st.write("🛠️ **Ações Rápidas da Lista de Desejos:**")
+            col_act_w_edit, col_act_w_add, col_act_w_del = st.columns(3)
+
+            with col_act_w_edit:
+                if st.button("✏️ Editar por Formulário", use_container_width=True, help="Editar preço, loja e dados de um item por ID"):
+                    dialog_editar_desejo()
+
+            with col_act_w_add:
+                if st.button("➕ Adicionar Manualmente", use_container_width=True, help="Cadastrar novo quadrinho desejado sem precisar buscar"):
+                    dialog_adicionar_desejo_manual()
+
+            with col_act_w_del:
+                id_w_del = st.number_input("ID para remover:", min_value=1, step=1, key="input_del_wishlist")
+                if st.button("🗑️ Remover da Lista", type="secondary", use_container_width=True):
+                    if database.deletar_item_lista_desejos(int(id_w_del)):
+                        st.success(f"Item #{id_w_del} removido da Lista de Desejos!")
+                        st.rerun()
+                    else:
+                        st.warning("Item não encontrado.")
+        else:
+            st.info("Sua Lista de Desejos está vazia.")
+            if st.button("➕ Adicionar Primeiro Item Manualmente", type="primary", use_container_width=True, key="btn_add_first_wish"):
+                dialog_adicionar_desejo_manual()
+    if st.button("⬅️ Voltar ao Catálogo Principal", key="btn_voltar_radar_prec_bottom", use_container_width=True):
+        voltar_ao_catalogo()
+
+
+
+if st.query_params.get("pagina") == "captura_prateleira" or st.session_state.get("pagina_atual") == "captura_prateleira":
+    renderizar_pagina_captura_prateleira()
+    st.stop()
+
+if st.query_params.get("pagina") == "curador_virtual" or st.session_state.get("pagina_atual") == "curador_virtual":
+    renderizar_pagina_curador_virtual()
+    st.stop()
+
+if st.query_params.get("pagina") == "crud_assistido" or st.session_state.get("pagina_atual") == "crud_assistido":
+    renderizar_pagina_crud_assistido()
+    st.stop()
+
+if st.query_params.get("pagina") == "radar_precos" or st.session_state.get("pagina_atual") == "radar_precos":
+    renderizar_pagina_radar_precos()
+    st.stop()
+
+
 # -------------------------------------------------------------
 # CABEÇALHO PRINCIPAL
 # -------------------------------------------------------------
@@ -5488,244 +6971,6 @@ st.markdown("---")
 
 
 # -------------------------------------------------------------
-# SEÇÃO 1: IDENTIFICAÇÃO DA PRATELEIRA E CAPTURA
-# -------------------------------------------------------------
-col_shelf, col_hint = st.columns([2, 2])
-
-lista_prateleiras_cadastradas = [p for p in database.obter_prateleiras() if p and p != "Estante 1 - Prateleira 1"]
-
-with col_shelf:
-    if lista_prateleiras_cadastradas:
-        prat_atual = st.session_state.get("prateleira_atual", "")
-        opcoes_prat = ["-- Selecione uma prateleira --"] + list(lista_prateleiras_cadastradas)
-        if prat_atual and prat_atual not in opcoes_prat and prat_atual != "➕ Nova / Digitar outro nome...":
-            opcoes_prat.insert(1, prat_atual)
-        opcoes_prat.append("➕ Nova / Digitar outro nome...")
-
-        idx_padrao = opcoes_prat.index(prat_atual) if prat_atual in opcoes_prat else 0
-
-        prat_selecionada = st.selectbox(
-            "📍 **Prateleira / Localização Atual:**",
-            options=opcoes_prat,
-            index=idx_padrao,
-            help="Selecione uma prateleira já cadastrada ou digite uma nova para onde as HQs fotografadas serão salvas."
-        )
-
-        if prat_selecionada == "-- Selecione uma prateleira --":
-            prateleira_input = ""
-            st.session_state["prateleira_atual"] = ""
-        elif prat_selecionada == "➕ Nova / Digitar outro nome...":
-            prateleira_input = st.text_input(
-                "✍️ Digite o nome da nova prateleira:",
-                placeholder="Ex: Estante Marvel - Prateleira 1, Caixa Mangás...",
-                help="Digite o nome da nova prateleira."
-            )
-            if prateleira_input.strip():
-                st.session_state["prateleira_atual"] = prateleira_input.strip()
-        else:
-            prateleira_input = prat_selecionada
-            st.session_state["prateleira_atual"] = prat_selecionada
-    else:
-        prateleira_input = st.text_input(
-            "📍 **Prateleira / Localização Atual:**",
-            value=st.session_state.get("prateleira_atual", ""),
-            placeholder="Ex: Estante Marvel - Prateleira 1, Caixa Mangás...",
-            help="Digite a prateleira ou localização onde as HQs estão guardadas."
-        )
-        st.session_state["prateleira_atual"] = prateleira_input
-
-with col_hint:
-    st.info(
-        "💡 **Dica para melhor precisão:** "
-        "Enquadre bem as lombadas com boa iluminação e evite reflexos intensos.",
-        icon="✨"
-    )
-
-st.subheader("📸 Captura da Foto da Prateleira")
-
-# Abas de entrada: Câmera ou Upload de Imagem (útil para testes ou fotos já salvas)
-tab_upload, tab_camera = st.tabs(["📁 Enviar Foto / Câmera Nativa (Recomendado)", "📷 Câmera Web ao Vivo (st.camera_input)"])
-
-imagem_para_processar = None
-
-with tab_upload:
-    st.markdown(
-        "📱 **Dica para celular:** Ao tocar no botão abaixo, escolha **\"Câmera\"** para fotografar a prateleira em alta resolução."
-    )
-    foto_upload = st.file_uploader(
-        "Selecione uma imagem ou tire uma foto:",
-        type=["jpg", "jpeg", "png", "webp"],
-        help="Funciona diretamente no celular sem necessidade de HTTPS."
-    )
-    if foto_upload is not None:
-        imagem_para_processar = Image.open(foto_upload)
-
-with tab_camera:
-    st.caption(
-        "⚠️ *Aviso de segurança dos navegadores:* O streaming ao vivo de webcam requer conexão segura (HTTPS ou localhost). "
-        "Se a câmera não abrir no celular via IP local (HTTP), use a aba **\"Câmera Nativa\"** ao lado ou habilite a flag de origem segura no Chrome."
-    )
-    foto_camera = st.camera_input("Aponte para a prateleira:")
-    if foto_camera is not None:
-        imagem_para_processar = Image.open(foto_camera)
-
-
-# -------------------------------------------------------------
-# PROCESSAMENTO COM IA & REVISÃO INTERATIVA
-# -------------------------------------------------------------
-if imagem_para_processar is not None:
-    st.image(imagem_para_processar, caption="Pré-visualização da Foto Capturada", use_container_width=True)
-
-    col_btn_proc, _ = st.columns([1.2, 2])
-    with col_btn_proc:
-        botao_analisar = st.button("🔍 1. Identificar HQs na Foto", type="primary", use_container_width=True)
-
-    if botao_analisar:
-        if not os.getenv("GEMINI_API_KEY"):
-            st.error("❌ Chave de API do Gemini não configurada! Insira-a na barra lateral.")
-        else:
-            status_placeholder = st.empty()
-            with st.spinner(f"🤖 Analisando lombadas com {resolver_modelo('visao')}..."):
-                try:
-                    def atualizar_status(mensagem: str):
-                        status_placeholder.info(mensagem, icon="⏳")
-
-                    # Envia para a API do Gemini com retentativas automáticas e fallback
-                    hqs_detectadas = gemini_service.processar_foto_prateleira(
-                        imagem=imagem_para_processar,
-                        api_key=os.getenv("GEMINI_API_KEY"),
-                        modelo=resolver_modelo("visao"),
-                        status_callback=atualizar_status
-                    )
-                    status_placeholder.empty()
-
-                    if hqs_detectadas:
-                        st.session_state["hqs_em_revisao"] = hqs_detectadas
-                        st.session_state["ultimo_resultado_salvamento"] = None
-                        st.rerun()
-                    else:
-                        st.warning("⚠️ Nenhum quadrinho pôde ser identificado nesta foto. Tente aproximar ou melhorar a iluminação.")
-                except Exception as ex:
-                    status_placeholder.empty()
-                    st.error(f"Erro ao processar imagem: {ex}")
-
-# Exibe a tabela de revisão e edição se houver itens identificados aguardando confirmação
-if st.session_state.get("hqs_em_revisao"):
-    st.markdown("### 📋 2. Revisão e Edição dos Itens Identificados")
-    st.info(
-        "💡 **Edição Manual Habilitada:** Você pode alterar qualquer dado diretamente nas células abaixo (Título, Edição, Editora, Autores, Resumo), adicionar novas linhas ou excluir itens antes de confirmar o salvamento.",
-        icon="✏️"
-    )
-
-    df_revisao = pd.DataFrame(st.session_state["hqs_em_revisao"])
-    colunas_obrigatorias = ["titulo", "edicao", "editora", "genero", "escritor", "ilustrador", "resumo"]
-    for col in colunas_obrigatorias:
-        if col not in df_revisao.columns:
-            df_revisao[col] = ""
-
-    df_revisao = df_revisao[colunas_obrigatorias]
-
-    df_editado = st.data_editor(
-        df_revisao,
-        use_container_width=True,
-        num_rows="dynamic",
-        column_config={
-            "titulo": st.column_config.TextColumn("Título da HQ *", required=True),
-            "edicao": st.column_config.TextColumn("Edição / Volume"),
-            "editora": st.column_config.TextColumn("Editora"),
-            "genero": st.column_config.TextColumn("Gênero"),
-            "escritor": st.column_config.TextColumn("Roteirista / Escritor"),
-            "ilustrador": st.column_config.TextColumn("Desenhista / Arte"),
-            "resumo": st.column_config.TextColumn("Resumo da História")
-        },
-        key="data_editor_revisao_hqs"
-    )
-
-    st.caption(f"📍 Os itens confirmados serão associados à prateleira: **`{prateleira_input.strip() or 'Não especificada'}`**")
-
-    col_salvar, col_descartar, _ = st.columns([1.5, 1.2, 2])
-    with col_salvar:
-        botao_confirmar_salvar = st.button("💾 3. Confirmar & Salvar no Catálogo", type="primary", use_container_width=True)
-    with col_descartar:
-        botao_descartar = st.button("🗑️ Descartar Revisão", use_container_width=True)
-
-    if botao_descartar:
-        st.session_state["hqs_em_revisao"] = []
-        st.rerun()
-
-    if botao_confirmar_salvar:
-        if not prateleira_input.strip() or prateleira_input.strip() == "-- Selecione uma prateleira --":
-            st.error("❌ Por favor, selecione ou informe o nome da Prateleira Atual antes de salvar.")
-        else:
-            itens_para_salvar = []
-            if isinstance(df_editado, pd.DataFrame):
-                registros = df_editado.to_dict(orient="records")
-            else:
-                registros = st.session_state["hqs_em_revisao"]
-
-            for r in registros:
-                tit = str(r.get("titulo") or "").strip()
-                if tit:
-                    itens_para_salvar.append(r)
-
-            if not itens_para_salvar:
-                st.warning("⚠️ Nenhum quadrinho com título preenchido para salvar.")
-            else:
-                resultado = database.salvar_hqs(
-                    itens_para_salvar,
-                    prateleira_input.strip(),
-                    ignorar_duplicadas=True,
-                    retornar_detalhes=True
-                )
-                st.session_state["ultimos_itens_salvos"] = resultado["itens_salvos"]
-                st.session_state["ultimo_resultado_salvamento"] = resultado
-                st.session_state["hqs_em_revisao"] = []
-                st.rerun()
-
-# Exibe o feedback do último salvamento se houver
-if st.session_state.get("ultimo_resultado_salvamento"):
-    resultado_ultimo = st.session_state["ultimo_resultado_salvamento"]
-    total_salvo = resultado_ultimo["salvos"]
-    total_duplicados = resultado_ultimo["duplicados"]
-    itens_duplicados = resultado_ultimo.get("itens_duplicados", [])
-    prat_usada = prateleira_input.strip() if prateleira_input.strip() and prateleira_input.strip() != "-- Selecione uma prateleira --" else "sua coleção"
-
-    if total_salvo > 0 and total_duplicados > 0:
-        st.success(f"🎉 **{total_salvo} HQ(s) nova(s) salva(s) com sucesso** na prateleira `{prat_usada}`!")
-        st.info(f"ℹ️ **{total_duplicados} HQ(s) ignorada(s)** pois já constavam no catálogo com mesmo Título e Edição.")
-    elif total_salvo > 0:
-        st.success(f"🎉 **{total_salvo} HQ(s) salva(s) com sucesso** na prateleira `{prat_usada}`!")
-    elif total_duplicados > 0:
-        st.warning(f"⚠️ Nenhuma nova HQ gravada: todas as **{total_duplicados} HQ(s)** já estavam cadastradas no catálogo.")
-
-    if itens_duplicados:
-        with st.expander(f"🔍 Ver detalhes das {len(itens_duplicados)} HQ(s) ignoradas por duplicidade"):
-            for dup in itens_duplicados:
-                st.write(f"- ⚠️ **{dup.get('titulo')}** ({dup.get('edicao') or 'Sem Edição'}) - Editora: *{dup.get('editora') or 'Desconhecida'}* — `{dup.get('motivo_duplicata')}`")
-
-# Exibe resumo visual imediato dos últimos itens detectados e salvos
-if st.session_state.get("ultimos_itens_salvos"):
-    st.markdown("### 📋 Itens Recém-Salvos no Catálogo")
-    st.dataframe(
-        st.session_state["ultimos_itens_salvos"],
-        use_container_width=True,
-        column_config={
-            "titulo": "Título da HQ",
-            "edicao": "Edição / Volume",
-            "editora": "Editora",
-            "genero": "Gênero",
-            "escritor": "Roteirista / Escritor",
-            "ilustrador": "Desenhista / Arte",
-            "resumo": "Resumo da História"
-        }
-    )
-
-st.markdown("---")
-
-
-
-
-# -------------------------------------------------------------
 # SEÇÃO 2: VISUALIZAÇÃO DO INVENTÁRIO COMPLETO
 # -------------------------------------------------------------
 with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=True):
@@ -5765,7 +7010,7 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
             "🕒 Data de Cadastro": "criado_em",
             "🆔 ID Sequencial": "id"
         }
-        coluna_ordem_sel = st.selectbox("Ordenar pela coluna:", list(colunas_ordem.keys()), index=0)
+        coluna_ordem_sel = st.selectbox("Ordenar pela coluna:", list(colunas_ordem.keys()), index=list(colunas_ordem.keys()).index("🕒 Data de Cadastro"), key="inv_main_col_ordem")
         chave_coluna = colunas_ordem[coluna_ordem_sel]
 
     with col_filtro_direcao:
@@ -5779,7 +7024,7 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
                 "⬆️ A-Z (Alfabética A-Z)": "asc",
                 "⬇️ Z-A (Alfabética Z-A)": "desc"
             }
-        direcao_ordem_sel = st.selectbox("Ordem:", list(opcoes_direcao.keys()), index=0)
+        direcao_ordem_sel = st.selectbox("Ordem:", list(opcoes_direcao.keys()), index=1 if chave_coluna in ["id", "criado_em"] else 0, key="inv_main_dir_ordem")
         sufixo_direcao = opcoes_direcao[direcao_ordem_sel]
         ordem_val = f"{chave_coluna}_{sufixo_direcao}"
         ordem_selecionada = f"{coluna_ordem_sel} ({direcao_ordem_sel})"
@@ -6144,627 +7389,3 @@ with st.expander("📚 Ver Inventário Atual (Banco de Dados SQLite)", expanded=
         st.info("Nenhum quadrinho encontrado com os filtros aplicados ou banco de dados ainda vazio.")
 
 st.markdown("---")
-
-# -------------------------------------------------------------
-# SEÇÃO 3: CURADOR VIRTUAL: RECOMENDAÇÕES DA COLEÇÃO
-# -------------------------------------------------------------
-with st.expander("💬 Curador Virtual: Assistente & Recomendações da Coleção", expanded=True):
-    st.markdown(
-        "Peça recomendações personalizadas com base nos **Resumos das Histórias**, gêneros e enredos cadastrados no seu próprio acervo!"
-    )
-
-    pergunta_curador_acionada = None
-
-    # Botões de perguntas rápidas da coleção
-    col_cur1, col_cur2, col_cur3, col_cur_clear = st.columns([1.2, 1.2, 1.2, 0.6])
-    with col_cur1:
-        if st.button("🇧🇷 Temas Históricos", use_container_width=True, help="Buscar quadrinhos sobre história no acervo"):
-            pergunta_curador_acionada = "Eu gostaria de ler alguma coisa relacionado a temas históricos no Brasil ou no mundo."
-    with col_cur2:
-        if st.button("⭐ Melhores Não Lidos", use_container_width=True, help="Indicar HQs com boas notas que ainda não li"):
-            pergunta_curador_acionada = "Quais são as melhores HQs que eu ainda não li na minha coleção?"
-    with col_cur3:
-        if st.button("🎲 Surpreenda-me", use_container_width=True, help="Pedir uma recomendação aleatória com base na história"):
-            pergunta_curador_acionada = "Me dê uma recomendação especial da minha coleção para ler hoje com base no resumo da história."
-    with col_cur_clear:
-        if st.button("🗑️ Limpar", key="btn_limpar_curador", use_container_width=True, help="Limpar conversa do curador"):
-            st.session_state["chat_mensagens_curador"] = [
-                {
-                    "role": "assistant",
-                    "content": "👋 Conversa reiniciada! Como posso te ajudar a explorar seu catálogo de HQs hoje?"
-                }
-            ]
-            st.rerun()
-
-    # Container de exibição das mensagens do curador
-    chat_container_curador = st.container(height=340)
-    with chat_container_curador:
-        for msg in st.session_state["chat_mensagens_curador"]:
-            with st.chat_message(msg["role"], avatar="🤖" if msg["role"] == "assistant" else "👤"):
-                st.markdown(msg["content"])
-
-    # Opção de envio por Áudio para o Curador
-    with st.expander("🎙️ Falar com o Curador por Voz / Áudio", expanded=False):
-        st.caption("Fale diretamente com o Curador sobre temas, sugestões de leitura ou dúvidas sobre seu acervo:")
-        tab_mic_c, tab_up_c = st.tabs(["🎙️ Gravar Microfone", "📁 Enviar Arquivo de Áudio"])
-        audio_curador = None
-        mime_curador = "audio/wav"
-        with tab_mic_c:
-            rec_c = st.audio_input("Fale sua pergunta sobre o acervo:", key="rec_mic_curador")
-            if rec_c is not None:
-                audio_curador = rec_c.getvalue()
-                mime_curador = rec_c.type or "audio/wav"
-        with tab_up_c:
-            up_c = st.file_uploader("Ou envie áudio gravado:", type=["wav", "mp3", "m4a", "ogg", "webm", "aac"], key="up_audio_curador")
-            if up_c is not None:
-                audio_curador = up_c.getvalue()
-                mime_curador = up_c.type or "audio/mp3"
-
-        if audio_curador:
-            if st.button("✨ Enviar Pergunta por Áudio", type="primary", key="btn_enviar_audio_curador", use_container_width=True):
-                if not os.getenv("GEMINI_API_KEY"):
-                    st.error("Chave de API do Gemini não configurada!")
-                else:
-                    with st.spinner("🎙️ Transcrevendo sua fala com Gemini..."):
-                        try:
-                            pergunta_curador_acionada = gemini_service.transcrever_audio(
-                                audio_bytes=audio_curador,
-                                mime_type=mime_curador,
-                                tipo_contexto="curador",
-                                api_key=os.getenv("GEMINI_API_KEY"),
-                                modelo=resolver_modelo("audio")
-                            )
-                        except Exception as e:
-                            st.error(f"Erro ao transcrever áudio: {e}")
-
-    # Entrada de texto do Curador
-    texto_chat_curador = st.chat_input("Pergunte ao Curador sobre suas HQs (ex: 'Quero ler algo de suspense ou terror')...", key="input_chat_curador")
-    pergunta_curador_final = pergunta_curador_acionada or texto_chat_curador
-
-    if pergunta_curador_final:
-        st.session_state["chat_mensagens_curador"].append({"role": "user", "content": pergunta_curador_final})
-
-        catalogo_atual = database.obter_contexto_hqs_para_chat()
-        with st.spinner("🤖 Analisando os resumos e enredos da sua coleção..."):
-            resposta_curador = gemini_service.consultar_chatbot_colecao(
-                pergunta=pergunta_curador_final,
-                catalogo_hqs=catalogo_atual,
-                historico_mensagens=st.session_state["chat_mensagens_curador"][:-1],
-                api_key=os.getenv("GEMINI_API_KEY"),
-                modelo=resolver_modelo("chat")
-            )
-
-        st.session_state["chat_mensagens_curador"].append({"role": "assistant", "content": resposta_curador})
-        st.rerun()
-
-st.markdown("---")
-
-# -------------------------------------------------------------
-# SEÇÃO 4: OPERAÇÕES DE CRUD ASSISTIDAS (AGENT / MCP)
-# -------------------------------------------------------------
-with st.expander("🛠️ Operações de CRUD assistidas", expanded=True):
-    st.markdown(
-        "Gerencie seu acervo de quadrinhos através de comandos em linguagem natural com a IA. "
-        "Você pode **adicionar** novas HQs com enriquecimento de dados e anotação de compras, **remover** edições existentes, **atualizar** status de leitura/avaliação/prateleira, ou gerenciar sua Lista de Desejos."
-    )
-
-    comando_audio_acionado = None
-
-    tab_crud_texto, tab_crud_audio = st.tabs(["✍️ Digitar Instrução", "🎙️ Falar Instrução por Áudio"])
-
-    with tab_crud_texto:
-        # Formulário para envio do comando digitado
-        with st.form("form_crud_assistido", clear_on_submit=True):
-            texto_comando = st.text_input(
-                "💬 **Digite a instrução para o assistente de CRUD:**",
-                placeholder="Ex: 'Adicione à minha coleção a edição definitiva de Watchmen que comprei hoje por R$ 120,00' ou 'Remova da minha coleção a edição X'...",
-                key="input_texto_crud_cmd"
-            )
-            col_exec_btn, _ = st.columns([1.2, 4])
-            with col_exec_btn:
-                btn_executar_crud = st.form_submit_button("🚀 Executar Ação", type="primary", use_container_width=True)
-
-    with tab_crud_audio:
-        st.caption("Fale naturalmente seu comando de gerenciamento do acervo (adicionar, remover ou alterar edições):")
-        tab_mic_crud, tab_up_crud = st.tabs(["🎙️ Gravar Microfone", "📁 Enviar Arquivo de Áudio"])
-        audio_crud = None
-        mime_crud = "audio/wav"
-
-        with tab_mic_crud:
-            rec_crud = st.audio_input("Grave seu comando (ex: 'Adicione Watchmen à minha coleção que comprei por 120 reais'):", key="rec_mic_crud")
-            if rec_crud is not None:
-                audio_crud = rec_crud.getvalue()
-                mime_crud = rec_crud.type or "audio/wav"
-
-        with tab_up_crud:
-            up_crud = st.file_uploader("Selecione um arquivo de áudio:", type=["wav", "mp3", "m4a", "ogg", "webm", "aac"], key="up_audio_crud")
-            if up_crud is not None:
-                audio_crud = up_crud.getvalue()
-                mime_crud = up_crud.type or "audio/mp3"
-
-        if audio_crud:
-            if st.button("🚀 Transcrever & Executar Ação por Voz", type="primary", key="btn_exec_audio_crud", use_container_width=True):
-                if not os.getenv("GEMINI_API_KEY"):
-                    st.error("Chave de API do Gemini não configurada!")
-                else:
-                    with st.spinner("🎙️ Transcrevendo seu comando com Gemini..."):
-                        try:
-                            comando_audio_acionado = gemini_service.transcrever_audio(
-                                audio_bytes=audio_crud,
-                                mime_type=mime_crud,
-                                tipo_contexto="crud",
-                                api_key=os.getenv("GEMINI_API_KEY"),
-                                modelo=resolver_modelo("audio")
-                            )
-                        except Exception as e:
-                            st.error(f"Erro ao transcrever áudio: {e}")
-
-    comando_final = comando_audio_acionado or (texto_comando.strip() if 'btn_executar_crud' in locals() and btn_executar_crud and texto_comando.strip() else None)
-
-    if comando_final:
-        if not os.getenv("GEMINI_API_KEY"):
-            st.error("❌ Chave de API do Gemini não configurada! Insira-a na barra lateral.")
-        else:
-            with st.spinner("🤖 Interpretando comando e executando operação no banco de dados..."):
-                catalogo_completo = database.obter_contexto_hqs_para_chat()
-                prat_padrao = st.session_state.get("prateleira_atual", "Estante 1 - Prateleira 1")
-
-                try:
-                    resultado_crud = gemini_service.processar_comando_crud_assistido(
-                        comando=comando_final,
-                        catalogo_hqs=catalogo_completo,
-                        prateleira_padrao=prat_padrao,
-                        api_key=os.getenv("GEMINI_API_KEY"),
-                        modelo=resolver_modelo("crud")
-                    )
-                except Exception as e:
-                    resultado_crud = {
-                        "acao": "erro",
-                        "explicacao": f"Erro ao processar instrução com a IA: {e}",
-                        "dados": {}
-                    }
-
-                acao = resultado_crud.get("acao", "desconhecido")
-                explicacao = resultado_crud.get("explicacao", "")
-                dados = resultado_crud.get("dados", {})
-
-                # Execução da Ação de CRUD no Banco de Dados
-                registro_log = {
-                    "comando": comando_final,
-                    "acao": acao,
-                    "explicacao": explicacao,
-                    "timestamp": datetime.now().strftime("%H:%M:%S"),
-                    "status": "info",
-                    "detalhes": ""
-                }
-
-                if acao == "adicionar":
-                    titulo = (dados.get("titulo") or "").strip()
-                    if not titulo:
-                        registro_log["status"] = "erro"
-                        registro_log["detalhes"] = "A IA não conseguiu identificar o título da HQ para cadastrar."
-                    else:
-                        edicao = (dados.get("edicao") or "").strip()
-                        editora = (dados.get("editora") or "Desconhecida").strip()
-                        genero = (dados.get("genero") or "Outro").strip()
-                        escritor = (dados.get("escritor") or "Não informado").strip()
-                        ilustrador = (dados.get("ilustrador") or "Não informado").strip()
-                        prateleira_item = (dados.get("prateleira") or prat_padrao).strip()
-                        lido = (dados.get("lido") or "Não Lido").strip()
-                        try:
-                            avaliacao = int(dados.get("avaliacao") or 0)
-                        except (ValueError, TypeError):
-                            avaliacao = 0
-                        resumo = (dados.get("resumo") or "").strip()
-                        resenha = (dados.get("resenha") or "").strip()
-                        preco_pago = dados.get("preco_pago")
-                        if preco_pago and f"R$ {preco_pago}" not in resenha and f"{preco_pago}" not in resenha:
-                            info_preco = f"Comprado por R$ {float(preco_pago):.2f}"
-                            resenha = f"{info_preco}. {resenha}".strip()
-
-                        # Inserção da HQ
-                        resultado_salvar = database.salvar_hqs(
-                            itens=[{
-                                "titulo": titulo,
-                                "edicao": edicao,
-                                "editora": editora,
-                                "genero": genero,
-                                "escritor": escritor,
-                                "ilustrador": ilustrador,
-                                "prateleira": prateleira_item,
-                                "lido": lido,
-                                "avaliacao": avaliacao,
-                                "resumo": resumo,
-                                "resenha": resenha
-                            }],
-                            prateleira=prateleira_item,
-                            ignorar_duplicadas=False,
-                            retornar_detalhes=True
-                        )
-                        if resultado_salvar["salvos"] > 0:
-                            registro_log["status"] = "sucesso"
-                            registro_log["detalhes"] = f"🎉 **'{titulo}'** adicionado com sucesso na prateleira `{prateleira_item}`!"
-                        else:
-                            registro_log["status"] = "aviso"
-                            registro_log["detalhes"] = f"⚠️ HQ '{titulo}' não foi inserida (já existia ou dados inválidos)."
-
-                elif acao == "remover":
-                    titulo = (dados.get("titulo") or "").strip()
-                    edicao = (dados.get("edicao") or "").strip()
-                    hqs_encontradas = database.buscar_hqs_por_titulo_ou_edicao(titulo, edicao)
-                    if hqs_encontradas:
-                        removida = hqs_encontradas[0]
-                        database.deletar_hq(int(removida["id"]))
-                        registro_log["status"] = "sucesso"
-                        registro_log["detalhes"] = f"🗑️ **'{removida['titulo']}'** (ID #{removida['id']}) removido com sucesso da coleção!"
-                    else:
-                        registro_log["status"] = "aviso"
-                        registro_log["detalhes"] = f"⚠️ Nenhuma HQ correspondente a '{titulo}' foi encontrada para remoção."
-
-                elif acao == "atualizar":
-                    titulo = (dados.get("titulo") or "").strip()
-                    edicao = (dados.get("edicao") or "").strip()
-                    campo = dados.get("campo", "")
-                    novo_valor = dados.get("novo_valor", "")
-
-                    hqs_encontradas = database.buscar_hqs_por_titulo_ou_edicao(titulo, edicao)
-                    if hqs_encontradas:
-                        hq_alvo = hqs_encontradas[0]
-                        if campo == "lido":
-                            status_novo = "Lido" if "lido" in str(novo_valor).lower() and "não" not in str(novo_valor).lower() else "Não Lido"
-                            database.definir_status_leitura(hq_alvo["id"], status_novo)
-                            registro_log["status"] = "sucesso"
-                            registro_log["detalhes"] = f"📖 Status de **'{hq_alvo['titulo']}'** alterado para **{status_novo}**!"
-                        elif campo == "avaliacao":
-                            try:
-                                nova_nota = max(0, min(5, int(novo_valor)))
-                                database.definir_avaliacao(hq_alvo["id"], nova_nota)
-                                registro_log["status"] = "sucesso"
-                                registro_log["detalhes"] = f"⭐ Avaliação de **'{hq_alvo['titulo']}'** alterada para **{nova_nota}/5**!"
-                            except ValueError:
-                                registro_log["status"] = "erro"
-                                registro_log["detalhes"] = f"Valor de nota inválido: '{novo_valor}'"
-                        elif campo == "prateleira":
-                            database.atualizar_hq(
-                                hq_id=int(hq_alvo["id"]),
-                                titulo=hq_alvo["titulo"],
-                                edicao=hq_alvo["edicao"],
-                                editora=hq_alvo["editora"],
-                                prateleira=str(novo_valor),
-                                genero=hq_alvo.get("genero", "Outro"),
-                                escritor=hq_alvo.get("escritor", "Não informado"),
-                                ilustrador=hq_alvo.get("ilustrador", "Não informado"),
-                                lido=hq_alvo.get("lido", "Não Lido"),
-                                avaliacao=int(hq_alvo.get("avaliacao") or 0),
-                                capa=hq_alvo.get("capa") or "",
-                                resenha=hq_alvo.get("resenha") or "",
-                                resumo=hq_alvo.get("resumo") or ""
-                            )
-                            registro_log["status"] = "sucesso"
-                            registro_log["detalhes"] = f"📍 Prateleira de **'{hq_alvo['titulo']}'** alterada para `{novo_valor}`!"
-                        elif campo == "resumo":
-                            database.definir_resumo(hq_alvo["id"], str(novo_valor))
-                            registro_log["status"] = "sucesso"
-                            registro_log["detalhes"] = f"📝 Resumo de **'{hq_alvo['titulo']}'** atualizado com sucesso!"
-                        elif campo == "resenha":
-                            database.definir_resenha(hq_alvo["id"], str(novo_valor))
-                            registro_log["status"] = "sucesso"
-                            registro_log["detalhes"] = f"✍️ Resenha de **'{hq_alvo['titulo']}'** atualizada com sucesso!"
-                        else:
-                            registro_log["status"] = "info"
-                            registro_log["detalhes"] = f"Campo '{campo}' não suportado para atualização automática."
-                    else:
-                        registro_log["status"] = "aviso"
-                        registro_log["detalhes"] = f"⚠️ Não foi possível localizar a HQ '{titulo}' para atualizar."
-
-                elif acao == "adicionar_desejo":
-                    tit = (dados.get("titulo") or "").strip()
-                    ed = (dados.get("edicao") or "").strip()
-                    edit = (dados.get("editora") or "").strip()
-                    preco = float(dados.get("melhor_preco") or 0.0)
-                    obs = (dados.get("observacoes") or "").strip()
-                    if tit:
-                        database.adicionar_item_lista_desejos(
-                            titulo=tit,
-                            edicao=ed,
-                            editora=edit,
-                            melhor_preco=preco,
-                            observacoes=obs or f"Adicionado via CRUD assistido em {datetime.now().strftime('%d/%m/%Y %H:%M')}"
-                        )
-                        registro_log["status"] = "sucesso"
-                        registro_log["detalhes"] = f"⭐ **'{tit}'** adicionado à sua Lista de Desejos!"
-                    else:
-                        registro_log["status"] = "erro"
-                        registro_log["detalhes"] = "Título da HQ não identificado para a Lista de Desejos."
-
-                elif acao == "remover_desejo":
-                    tit = (dados.get("titulo") or "").strip()
-                    df_w = database.listar_lista_desejos()
-                    if not df_w.empty and tit:
-                        matches = df_w[df_w["titulo"].str.lower().str.contains(tit.lower(), na=False)]
-                        if not matches.empty:
-                            del_id = int(matches.iloc[0]["id"])
-                            database.deletar_item_lista_desejos(del_id)
-                            registro_log["status"] = "sucesso"
-                            registro_log["detalhes"] = f"🗑️ **'{matches.iloc[0]['titulo']}'** removido da Lista de Desejos!"
-                        else:
-                            registro_log["status"] = "aviso"
-                            registro_log["detalhes"] = f"Item '{tit}' não encontrado na Lista de Desejos."
-
-                elif acao == "consultar":
-                    registro_log["status"] = "info"
-                    registro_log["detalhes"] = dados.get("resposta") or explicacao
-
-                else:
-                    registro_log["status"] = "info"
-                    registro_log["detalhes"] = explicacao or "Comando não reconhecido ou operação não executada."
-
-                st.session_state["historico_crud_assistido"].insert(0, registro_log)
-                st.rerun()
-
-    # Exibição do histórico de operações realizadas
-    if st.session_state["historico_crud_assistido"]:
-        col_h_t, col_h_c = st.columns([4, 1])
-        with col_h_t:
-            st.markdown("##### 📋 Operações Recentes")
-        with col_h_c:
-            if st.button("🗑️ Limpar Histórico", key="btn_clear_crud_history", use_container_width=True):
-                st.session_state["historico_crud_assistido"] = []
-                st.rerun()
-        for item_op in st.session_state["historico_crud_assistido"][:6]:
-            with st.container(border=True):
-                c_st, c_tm = st.columns([4, 1])
-                with c_st:
-                    st.caption(f"💬 Comando: *\"{item_op['comando']}\"*")
-                with c_tm:
-                    st.caption(f"🕒 `{item_op['timestamp']}`")
-
-                if item_op["status"] == "sucesso":
-                    st.success(item_op["detalhes"] or item_op.get("explicacao", ""), icon="✅")
-                elif item_op["status"] == "aviso":
-                    st.warning(item_op["detalhes"] or item_op.get("explicacao", ""), icon="⚠️")
-                elif item_op["status"] == "erro":
-                    st.error(item_op["detalhes"] or item_op.get("explicacao", ""), icon="❌")
-                else:
-                    st.info(item_op["detalhes"] or item_op.get("explicacao", ""), icon="ℹ️")
-
-st.markdown("---")
-
-# -------------------------------------------------------------
-# SEÇÃO 5: RADAR DE PREÇOS EM LOJAS & LISTA DE DESEJOS (SERPAPI)
-# -------------------------------------------------------------
-with st.expander("🛒 Radar de Preços em Lojas & Lista de Desejos", expanded=False):
-    st.markdown(
-        "Pesquise preços e disponibilidade de **Livros, Revistas, HQs e Mangás** em tempo real via **SerpApi (Google Shopping)** e adicione à sua **Lista de Desejos** com 1 clique!"
-    )
-
-    termo_preco_audio_acionado = None
-    tab_preco_texto, tab_preco_audio = st.tabs(["✍️ Digitar Título", "🎙️ Falar Título por Áudio"])
-
-    with tab_preco_texto:
-        col_busca_p1, col_busca_p2 = st.columns([3, 1])
-        with col_busca_p1:
-            termo_preco_input = st.text_input(
-                "Título da HQ / Livro para pesquisar preços nas lojas:",
-                placeholder="Ex: Watchmen Edição Definitiva, Sandman, Flash Omnibus, Akira...",
-                key="input_busca_precos_lojas"
-            )
-        with col_busca_p2:
-            st.write("")
-            st.write("")
-            btn_pesquisar_preco = st.button("🔍 Consultar Preços", type="primary", use_container_width=True, key="btn_executar_busca_preco")
-
-    with tab_preco_audio:
-        st.caption("Fale o título da edição para consultar ofertas em tempo real no Google Shopping:")
-        tab_mic_p, tab_up_p = st.tabs(["🎙️ Gravar Microfone", "📁 Enviar Arquivo de Áudio"])
-        audio_preco = None
-        mime_preco = "audio/wav"
-
-        with tab_mic_p:
-            rec_p = st.audio_input("Fale o título da obra (ex: 'Watchmen Edição Definitiva'):", key="rec_mic_preco")
-            if rec_p is not None:
-                audio_preco = rec_p.getvalue()
-                mime_preco = rec_p.type or "audio/wav"
-
-        with tab_up_p:
-            up_p = st.file_uploader("Selecione um arquivo de áudio:", type=["wav", "mp3", "m4a", "ogg", "webm", "aac"], key="up_audio_preco")
-            if up_p is not None:
-                audio_preco = up_p.getvalue()
-                mime_preco = up_p.type or "audio/mp3"
-
-        if audio_preco:
-            if st.button("🔍 Transcrever & Consultar Preços por Voz", type="primary", key="btn_exec_audio_preco", use_container_width=True):
-                if not os.getenv("GEMINI_API_KEY"):
-                    st.error("Chave de API do Gemini não configurada!")
-                else:
-                    with st.spinner("🎙️ Transcrevendo título com Gemini..."):
-                        try:
-                            termo_preco_audio_acionado = gemini_service.transcrever_audio(
-                                audio_bytes=audio_preco,
-                                mime_type=mime_preco,
-                                tipo_contexto="busca_preco",
-                                api_key=os.getenv("GEMINI_API_KEY"),
-                                modelo=resolver_modelo("audio")
-                            )
-                        except Exception as e:
-                            st.error(f"Erro ao transcrever áudio: {e}")
-
-    termo_final_preco = termo_preco_audio_acionado or (termo_preco_input.strip() if 'btn_pesquisar_preco' in locals() and btn_pesquisar_preco and termo_preco_input.strip() else None)
-
-    if termo_final_preco:
-        with st.spinner(f"🛒 Consultando ofertas de '{termo_final_preco}' via SerpApi (Google Shopping)..."):
-            try:
-                dados_cotacao = gemini_service.pesquisar_precos_serpapi(
-                    termo_busca=termo_final_preco
-                )
-                st.session_state["radar_precos_resultado"] = dados_cotacao
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Erro ao consultar a API do SerpApi: {e}")
-
-    # 2. Exibição do Retorno da API SerpApi
-    if st.session_state.get("radar_precos_resultado"):
-        cotacao = st.session_state["radar_precos_resultado"]
-        termo_pesquisado = cotacao.get("termo") or termo_preco_input.strip()
-        itens_encontrados = cotacao.get("itens", [])
-        total_encontrados = cotacao.get("total_encontrados", len(itens_encontrados))
-        raw_results = cotacao.get("raw_results", {})
-
-        st.markdown(f"### 📋 Resultados no Google Shopping: **{termo_pesquisado}**")
-        st.caption(f"Exibindo **{total_encontrados}** oferta(s) de Livros e Revistas filtradas da API.")
-
-        if not itens_encontrados:
-            st.warning(f"⚠️ Nenhuma oferta de Livro ou Revista encontrada para **'{termo_pesquisado}'** no Google Shopping.")
-        else:
-            # Renderiza os itens em grid de 2 a 3 colunas
-            cols_por_linha = 2
-            for i in range(0, len(itens_encontrados), cols_por_linha):
-                chunk = itens_encontrados[i:i + cols_por_linha]
-                cols = st.columns(cols_por_linha)
-                for idx_col, item in enumerate(chunk):
-                    idx_global = i + idx_col
-                    with cols[idx_col]:
-                        with st.container(border=True):
-                            c_img, c_info = st.columns([1, 2])
-                            with c_img:
-                                thumb_url = item.get("thumbnail") or item.get("serpapi_thumbnail")
-                                if thumb_url:
-                                    st.image(obter_imagem_capa(thumb_url), width="stretch")
-                                else:
-                                    st.caption("🖼️ Sem miniatura")
-
-                            with c_info:
-                                tit_item = item.get("title", "Sem título")
-                                preco_item = item.get("price", "Preço não informado")
-                                preco_num = float(item.get("extracted_price") or 0.0)
-                                loja_item = item.get("source", "Loja não informada")
-                                raw_link = item.get("product_link") or item.get("link") or ""
-                                link_item = gemini_service.sanitizar_url_oferta(raw_link) if raw_link else gemini_service.gerar_link_loja(loja_item, tit_item)
-                                condicao = item.get("second_hand_condition", "")
-                                frete = item.get("delivery", "")
-                                rating = item.get("rating")
-                                reviews = item.get("reviews")
-
-                                st.markdown(f"**{tit_item}**")
-                                st.markdown(f"🏪 **Loja:** `{loja_item}`")
-                                st.markdown(f"🏷️ **Preço:** <span style='font-size: 1.15rem; font-weight: bold; color: #00d26a;'>{preco_item}</span>", unsafe_allow_html=True)
-
-                                detalhes_extras = []
-                                if condicao:
-                                    detalhes_extras.append(f"📦 {condicao.capitalize()}")
-                                if frete:
-                                    detalhes_extras.append(f"🚚 {frete}")
-                                if rating:
-                                    rev_str = f" ({reviews})" if reviews else ""
-                                    detalhes_extras.append(f"⭐ {rating}{rev_str}")
-                                if detalhes_extras:
-                                    st.caption(" • ".join(detalhes_extras))
-
-                                if link_item:
-                                    st.link_button("🔗 Ver Oferta na Loja", url=link_item, use_container_width=True)
-
-                                # Botão para adicionar direto à Lista de Desejos
-                                if st.button(f"⭐ Salvar na Lista de Desejos", key=f"btn_add_wish_serp_{idx_global}", use_container_width=True):
-                                    database.adicionar_item_lista_desejos(
-                                        titulo=tit_item,
-                                        edicao="",
-                                        editora="",
-                                        melhor_preco=preco_num,
-                                        melhor_loja=loja_item,
-                                        link_oferta=link_item,
-                                        observacoes=f"Adicionado via SerpApi Google Shopping em {datetime.now().strftime('%d/%m/%Y %H:%M')}"
-                                    )
-                                    st.success(f"🎉 **'{tit_item[:40]}...'** adicionado à sua Lista de Desejos!")
-                                    st.rerun()
-
-        # Visualização de todo o conteúdo de retorno bruto da API
-        with st.expander("🔍 Ver Conteúdo Bruto de Retorno da API SerpApi (JSON)", expanded=False):
-            st.json(raw_results if raw_results else cotacao)
-
-        col_c1, _ = st.columns([1, 3])
-        with col_c1:
-            if st.button("❌ Fechar Pesquisa", use_container_width=True, key="btn_fechar_radar_cotacao"):
-                st.session_state["radar_precos_resultado"] = None
-                st.rerun()
-
-    st.markdown("---")
-    st.subheader("⭐ Sua Lista de Desejos Atual")
-
-    df_desejos = database.listar_lista_desejos()
-
-    if isinstance(df_desejos, pd.DataFrame) and not df_desejos.empty:
-        st.write(
-            f"Exibindo **{len(df_desejos)}** item(ns) na Lista de Desejos: *(Dê 2 cliques em qualquer célula para editar o Preço, Loja, Edição ou Link diretamente)*"
-        )
-
-        df_desejos_editado = st.data_editor(
-            df_desejos,
-            use_container_width=True,
-            num_rows="fixed",
-            disabled=["id", "criado_em"],
-            hide_index=True,
-            column_config={
-                "id": st.column_config.NumberColumn("ID", disabled=True),
-                "titulo": st.column_config.TextColumn("Título da HQ", required=True),
-                "edicao": st.column_config.TextColumn("Edição / Vol."),
-                "editora": st.column_config.TextColumn("Editora"),
-                "melhor_preco": st.column_config.NumberColumn("Melhor Preço (R$)", format="R$ %.2f", min_value=0.0, step=1.0),
-                "melhor_loja": st.column_config.TextColumn("Melhor Loja"),
-                "link_oferta": st.column_config.TextColumn("Link da Oferta (URL)", help="Cole a URL direta da loja"),
-                "observacoes": st.column_config.TextColumn("Observações / Origem"),
-                "criado_em": st.column_config.TextColumn("Data da Inclusão", disabled=True)
-            },
-            key="tabela_desejos_editavel"
-        )
-
-        # Detecta alterações no grid
-        houve_alt_desejos = not df_desejos_editado.equals(df_desejos)
-
-        col_save_w_grid, col_info_w_grid = st.columns([1, 2])
-        with col_save_w_grid:
-            if houve_alt_desejos:
-                if st.button("💾 Salvar Alterações na Lista", type="primary", use_container_width=True, key="btn_save_desejos_grid"):
-                    for _, row in df_desejos_editado.iterrows():
-                        database.atualizar_item_lista_desejos(
-                            item_id=int(row["id"]),
-                            titulo=str(row["titulo"]).strip(),
-                            edicao=str(row.get("edicao", "") or "").strip(),
-                            editora=str(row.get("editora", "") or "").strip(),
-                            melhor_preco=float(row.get("melhor_preco") or 0.0),
-                            melhor_loja=str(row.get("melhor_loja", "") or "").strip(),
-                            link_oferta=str(row.get("link_oferta", "") or "").strip(),
-                            observacoes=str(row.get("observacoes", "") or "").strip()
-                        )
-                    st.success("🎉 Alterações na Lista de Desejos salvas com sucesso!")
-                    st.rerun()
-
-        with col_info_w_grid:
-            if houve_alt_desejos:
-                st.caption("⚠️ Você fez alterações no grid. Clique em 'Salvar Alterações' para gravar.")
-
-        st.markdown("---")
-        st.write("🛠️ **Ações Rápidas da Lista de Desejos:**")
-        col_act_w_edit, col_act_w_add, col_act_w_del = st.columns(3)
-
-        with col_act_w_edit:
-            if st.button("✏️ Editar por Formulário", use_container_width=True, help="Editar preço, loja e dados de um item por ID"):
-                dialog_editar_desejo()
-
-        with col_act_w_add:
-            if st.button("➕ Adicionar Manualmente", use_container_width=True, help="Cadastrar novo quadrinho desejado sem precisar buscar"):
-                dialog_adicionar_desejo_manual()
-
-        with col_act_w_del:
-            id_w_del = st.number_input("ID para remover:", min_value=1, step=1, key="input_del_wishlist")
-            if st.button("🗑️ Remover da Lista", type="secondary", use_container_width=True):
-                if database.deletar_item_lista_desejos(int(id_w_del)):
-                    st.success(f"Item #{id_w_del} removido da Lista de Desejos!")
-                    st.rerun()
-                else:
-                    st.warning("Item não encontrado.")
-    else:
-        st.info("Sua Lista de Desejos está vazia.")
-        if st.button("➕ Adicionar Primeiro Item Manualmente", type="primary", use_container_width=True, key="btn_add_first_wish"):
-            dialog_adicionar_desejo_manual()
-
-

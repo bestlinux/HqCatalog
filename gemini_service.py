@@ -1889,6 +1889,7 @@ def assegurar_camoufox_instalado() -> bool:
 
 _CACHE_CAPAS_GQ: Dict[str, str] = {}
 _CACHE_KEY_V2 = True
+_CACHE_KEY_V3 = True
 
 
 def _guardar_capa_gq_cache(url_edicao: str, url_img: str, b64_str: str) -> None:
@@ -3977,6 +3978,36 @@ def eh_html_valido_guia_dos_quadrinhos(html: str) -> bool:
 
 
 
+def _extrair_titulo_edicao_gq(cabecalho_raw: str, url_orig: str = "", editora_ref: str = "") -> Tuple[str, str]:
+    """Extrai Título e Edição/Volume a partir do cabeçalho da página ou do slug da URL do Guia dos Quadrinhos."""
+    tit_out = ""
+    ed_out = ""
+    cand = (cabecalho_raw or "").strip()
+    if cand:
+        cand = re.sub(r"\s*[\|\-]\s*Guia dos Quadrinhos.*$", "", cand, flags=re.I).strip()
+        if editora_ref and cand.lower().endswith(f" - {editora_ref.lower()}"):
+            cand = cand[:-(len(editora_ref) + 3)].strip()
+        m_ed = re.search(r"^(.*?)\s*(?:-\s*)?(?:n[º°o\.]*|#|vol(?:ume)?\.?|edi[çc][ãa]o)\s*([0-9]+[a-zA-Z]?)\b.*$", cand, re.I)
+        if m_ed:
+            tit_out = m_ed.group(1).strip(" -–:")
+            ed_out = m_ed.group(2).strip()
+        else:
+            tit_out = cand.strip(" -–:")
+    if (not tit_out or not ed_out) and url_orig:
+        m_slug = re.search(r"/edicao/([^/]+)/", url_orig, re.I)
+        if m_slug:
+            slug = m_slug.group(1).strip()
+            m_s_ed = re.search(r"^(.*?)-(?:n|vol|volume|edicao)-([0-9]+[a-zA-Z]?)$", slug, re.I)
+            if m_s_ed:
+                if not tit_out:
+                    tit_out = m_s_ed.group(1).replace("-", " ").title()
+                if not ed_out:
+                    ed_out = m_s_ed.group(2)
+            elif not tit_out:
+                tit_out = slug.replace("-", " ").title()
+    return tit_out, ed_out
+
+
 def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dict[str, Any]:
     """
     Extrai todos os dados catalográficos, ficha técnica e a lista completa de histórias
@@ -4034,6 +4065,30 @@ def extrair_dados_html_guia_dos_quadrinhos(html: str, url_orig: str = "") -> Dic
     m_for = re.search(r"Formato:\s*([^\n\r]+)", texto_total, re.I)
     if m_for:
         res["formato"] = m_for.group(1).strip()
+
+    # Gênero
+    m_gen = re.search(r"G[êe]nero:\s*([^\n\r]+)", texto_total, re.I)
+    if m_gen:
+        res["genero"] = m_gen.group(1).strip()
+
+    # Título e Edição a partir das tags da página ou URL
+    cab_cand = ""
+    for sel_id in ["nome_titulo_lb", "titulo_edicao", "lblTitulo"]:
+        t_el = soup.find(id=sel_id)
+        if t_el and t_el.get_text(strip=True):
+            cab_cand = t_el.get_text(" ", strip=True)
+            break
+    if not cab_cand:
+        h1_el = soup.find("h1")
+        if h1_el and h1_el.get_text(strip=True):
+            cab_cand = h1_el.get_text(" ", strip=True)
+    if not cab_cand and soup.title and soup.title.string:
+        cab_cand = soup.title.string.strip()
+    tit_ext, ed_ext = _extrair_titulo_edicao_gq(cab_cand, url_orig, res.get("editora", ""))
+    if tit_ext:
+        res["titulo"] = tit_ext
+    if ed_ext:
+        res["edicao"] = ed_ext
 
     # Capa oficial no Guia dos Quadrinhos (id="ampliar_capa" ou tags img)
     ampliar_tag = soup.find(id="ampliar_capa")
@@ -4278,6 +4333,17 @@ def extrair_dados_texto_ou_html_gq(conteudo: str, url_orig: str = "") -> Dict[st
     m_pag = re.search(r"Número de páginas:\s*([^\n\r]+)", conteudo, re.I)
     if m_pag:
         res["paginas"] = m_pag.group(1).strip()
+
+    # Gênero
+    m_gen_txt = re.search(r"G[êe]nero:\s*([^\n\r]+)", conteudo, re.I)
+    if m_gen_txt:
+        res["genero"] = m_gen_txt.group(1).strip()
+
+    tit_t, ed_t = _extrair_titulo_edicao_gq("", url_orig, res.get("editora", ""))
+    if tit_t:
+        res["titulo"] = tit_t
+    if ed_t:
+        res["edicao"] = ed_t
 
     # Roteiristas, Desenhistas e Histórias
     roteiristas = []
